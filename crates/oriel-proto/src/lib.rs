@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 pub mod keys;
 
 pub const ALPN: &[u8] = b"oriel/1";
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 pub const DEFAULT_PORT: u16 = 48600;
 /// Upper bound for a single control/input message.
 pub const MAX_MESSAGE_LEN: usize = 4 * 1024 * 1024;
@@ -146,6 +146,10 @@ pub enum ClientMsg {
     },
     /// Sent on graceful disconnect.
     Bye,
+    /// A gamepad went away; the host unplugs its virtual pad.
+    GamepadRemoved {
+        pad: u8,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -189,6 +193,12 @@ pub enum HostMsg {
     /// Human-readable notice, e.g. "secure desktop active".
     Notice {
         text: String,
+    },
+    /// Set a gamepad's rumble motors (0 stops them) until the next update.
+    Rumble {
+        pad: u8,
+        strong: u16,
+        weak: u16,
     },
 }
 
@@ -268,6 +278,46 @@ pub enum Datagram {
     FrameAck { surface: SurfaceId, seq: u64 },
     /// Host → client: one 10 ms Opus packet (48 kHz stereo).
     Audio { seq: u32, data: Vec<u8> },
+    /// Client → host: a gamepad's full state, sent on change and every
+    /// 100 ms; `seq` (per pad) discards reordered ones.
+    Gamepad {
+        pad: u8,
+        seq: u32,
+        state: GamepadState,
+    },
+}
+
+/// A gamepad in XInput terms (Xbox layout).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GamepadState {
+    /// [`gamepad`] button bits.
+    pub buttons: u16,
+    pub left_trigger: u8,
+    pub right_trigger: u8,
+    /// Sticks; positive is right and up.
+    pub lx: i16,
+    pub ly: i16,
+    pub rx: i16,
+    pub ry: i16,
+}
+
+/// Gamepad button bits (the XInput values).
+pub mod gamepad {
+    pub const DPAD_UP: u16 = 0x0001;
+    pub const DPAD_DOWN: u16 = 0x0002;
+    pub const DPAD_LEFT: u16 = 0x0004;
+    pub const DPAD_RIGHT: u16 = 0x0008;
+    pub const START: u16 = 0x0010;
+    pub const BACK: u16 = 0x0020;
+    pub const LEFT_THUMB: u16 = 0x0040;
+    pub const RIGHT_THUMB: u16 = 0x0080;
+    pub const LEFT_SHOULDER: u16 = 0x0100;
+    pub const RIGHT_SHOULDER: u16 = 0x0200;
+    pub const GUIDE: u16 = 0x0400;
+    pub const A: u16 = 0x1000;
+    pub const B: u16 = 0x2000;
+    pub const X: u16 = 0x4000;
+    pub const Y: u16 = 0x8000;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

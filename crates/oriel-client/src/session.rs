@@ -46,6 +46,8 @@ pub struct Session {
     pub clock: Arc<Mutex<crate::stats::ClockSync>>,
     /// The renderer offers zero-copy decoding here once it exists.
     pub interop: decode::InteropSlot,
+    /// Gamepads are forwarded only while the viewer window has focus.
+    pub focused: Arc<std::sync::atomic::AtomicBool>,
     rt: tokio::runtime::Handle,
 }
 
@@ -72,15 +74,29 @@ impl Session {
     }
 }
 
+/// What a session asks for and uses locally.
+pub struct SessionOptions {
+    pub settings: StreamSettings,
+    pub hardware_decode: bool,
+    /// Local output for the host's sound (`None`: the default device).
+    pub playback_device: Option<String>,
+    /// Forward local gamepads while the viewer has focus.
+    pub gamepads: bool,
+}
+
 pub fn start(
     rt: &tokio::runtime::Handle,
     conn: quinn::Connection,
     ctl: ControlStream,
-    settings: StreamSettings,
-    hardware_decode: bool,
-    playback_device: Option<String>,
+    options: SessionOptions,
     sink: Sink,
 ) -> Session {
+    let SessionOptions {
+        settings,
+        hardware_decode,
+        playback_device,
+        gamepads,
+    } = options;
     let _guard = rt.enter();
     let (ctl_tx, mut ctl_rx) = mpsc::unbounded_channel::<ClientMsg>();
     let (input_tx, mut input_rx) = mpsc::unbounded_channel::<InputEvent>();
@@ -136,6 +152,10 @@ pub fn start(
         }
     });
 
+    let focused = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let rumble =
+        gamepads.then(|| crate::gamepad::spawn(conn.clone(), ctl_tx.clone(), focused.clone()));
+
     let reader_sink = sink.clone();
     let reader_clock = clock.clone();
     tokio::spawn(async move {
@@ -143,6 +163,12 @@ pub fn start(
             if let HostMsg::Pong { id, host_us } = msg {
                 if let Some(sent) = pings.lock().remove(&id) {
                     reader_clock.lock().sample(sent, Instant::now(), host_us);
+                }
+                continue;
+            }
+            if let HostMsg::Rumble { pad, strong, weak } = msg {
+                if let Some(r) = &rumble {
+                    let _ = r.send((pad, strong, weak));
                 }
                 continue;
             }
@@ -239,6 +265,7 @@ pub fn start(
         audio: audio_stats,
         clock,
         interop,
+        focused,
         rt: rt.clone(),
     }
 }

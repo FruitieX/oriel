@@ -17,6 +17,10 @@ display) and the client (connects to hosts).
 - System audio (Opus) from the host output you pick in the menu, played on
   the local output chosen in Settings; text clipboard sync; display
   selection.
+- Gamepads: the client's controllers appear on the host as Xbox 360 pads,
+  with rumble, while the viewer has focus. Windows hosts need the
+  [ViGEmBus](https://github.com/nefarius/ViGEmBus/releases) driver; Linux
+  hosts need write access to `/dev/uinput`.
 - Shortcuts for the menu, fullscreen, next/previous display, statistics and
   disconnecting; rebind them in Settings → Input.
 - Codecs: HEVC/H.264/AV1 through FFmpeg, and

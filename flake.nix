@@ -44,6 +44,8 @@
           alsa-lib
           pipewire
           libva
+          # gilrs (gamepads)
+          systemd
         ];
     in
     {
@@ -94,7 +96,7 @@
               pkgs.ffmpeg_8.dev
               pkgs.opus
             ]
-            ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux ([ pkgs.pipewire.dev ] ++ linuxRuntimeLibs pkgs);
+            ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux ([ pkgs.pipewire.dev pkgs.systemd.dev ] ++ linuxRuntimeLibs pkgs);
             postFixup = lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
               wrapProgram $out/bin/oriel \
                 --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath (linuxRuntimeLibs pkgs ++ [ pyrowave ])}
@@ -160,7 +162,7 @@
                   opus
                   vulkan-headers
                 ]
-                ++ lib.optionals isLinux ([ pipewire.dev ] ++ linuxRuntimeLibs pkgs);
+                ++ lib.optionals isLinux ([ pipewire.dev systemd.dev ] ++ linuxRuntimeLibs pkgs);
 
               LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
             }

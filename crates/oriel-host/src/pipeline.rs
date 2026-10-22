@@ -50,6 +50,12 @@ pub enum Event {
     },
     Notice(String),
     Clipboard(String),
+    /// A game set a virtual gamepad's motors.
+    Rumble {
+        pad: u8,
+        strong: u16,
+        weak: u16,
+    },
     /// The pipeline gave up; the session should end.
     Failed(String),
 }

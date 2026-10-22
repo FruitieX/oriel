@@ -38,9 +38,12 @@ pub async fn run(
         &tokio::runtime::Handle::current(),
         connected.conn.clone(),
         connected.ctl,
-        settings,
-        hardware,
-        None,
+        session::SessionOptions {
+            settings,
+            hardware_decode: hardware,
+            playback_device: None,
+            gamepads: false,
+        },
         sink,
     );
     let start = Instant::now();
@@ -48,6 +51,8 @@ pub async fn run(
     let mut last_report = Instant::now();
     let mut wiggle = 0i32;
     let still = std::env::var_os("ORIEL_HEADLESS_STILL").is_some();
+    let fake_pad = std::env::var_os("ORIEL_DEBUG_GAMEPAD").is_some();
+    let mut pad_seq = 0u32;
     // Debugging aid: press this HID usage (hex) once, two seconds in.
     let mut press: Option<u16> = std::env::var("ORIEL_DEBUG_PRESS")
         .ok()
@@ -87,6 +92,27 @@ pub async fn run(
         // Exercise the input path: the test pattern draws the pointer.
         // ORIEL_HEADLESS_STILL keeps the host's mouse still (on a real
         // desktop, hover effects would keep the screen changing).
+        // ORIEL_DEBUG_GAMEPAD: a synthetic controller pressing A on and
+        // off every second, to test the host's virtual pads.
+        if fake_pad {
+            let state = oriel_proto::GamepadState {
+                buttons: if start.elapsed().as_secs().is_multiple_of(2) {
+                    oriel_proto::gamepad::A
+                } else {
+                    0
+                },
+                ..Default::default()
+            };
+            pad_seq += 1;
+            let dg = oriel_proto::Datagram::Gamepad {
+                pad: 0,
+                seq: pad_seq,
+                state,
+            };
+            if let Ok(bytes) = oriel_proto::encode(&dg) {
+                let _ = s.conn.send_datagram(bytes.into());
+            }
+        }
         if !still {
             wiggle += 1;
             s.input(InputEvent::MouseMove {

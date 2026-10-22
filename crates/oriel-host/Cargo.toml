@@ -23,9 +23,14 @@ arboard.workspace = true
 zbus = { version = "5", default-features = false, features = ["tokio"] }
 pipewire = "0.10"
 futures-util = { version = "0.3", default-features = false }
+# Virtual gamepads through uinput.
+evdev = "0.13"
+libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 windows-service.workspace = true
+# Virtual Xbox 360 gamepads through the ViGEmBus driver.
+vigem-client = { version = "0.1", features = ["unstable_xtarget_notification"] }
 windows = { workspace = true, features = [
   "Win32_System_RemoteDesktop",
   "Win32_System_Environment",

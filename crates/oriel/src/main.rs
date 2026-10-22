@@ -435,6 +435,7 @@ fn run() -> Result<()> {
                         show_stats: stats,
                         codec_key,
                         playback_device: file.playback_device.clone(),
+                        gamepads: file.gamepads,
                         screenshot: screenshot
                             .map(|p| (p, Duration::from_secs_f64(screenshot_after))),
                     }),

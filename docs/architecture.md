@@ -98,6 +98,18 @@ Audio stops after 100 ms of digital silence without advancing the sequence
 number, so the client sees no loss and simply re-primes its buffer. The window cursor is set to the host's cursor image; in relative mode
 the pointer is locked and raw motion is sent.
 
+## Gamepads
+
+The client reads controllers with gilrs and, while the viewer has focus,
+sends each pad's full XInput-style state as a datagram on change and every
+100 ms (a per-pad sequence number drops reordered ones). The host plugs in
+a virtual Xbox 360 pad when a pad first reports: ViGEmBus on Windows, a
+uinput device that looks like the kernel's xpad on Linux (vendor 045e,
+product 028e, so SDL and games map it). Rumble goes back as
+`HostMsg::Rumble` on the reliable stream: ViGEm reports motor levels;
+on Linux the virtual pad accepts games' uploaded rumble effects and reports
+when they play and stop.
+
 ## PyroWave and automatic codec switching
 
 PyroWave is loaded at runtime from its C API library (built by

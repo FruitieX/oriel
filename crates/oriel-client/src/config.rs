@@ -33,6 +33,8 @@ pub struct ClientConfig {
     /// Local output for remote sound (an `oriel_audio::OutputDevice` id);
     /// unset plays on the default device.
     pub playback_device: Option<String>,
+    /// Forward gamepads to the host while the viewer has focus.
+    pub gamepads: bool,
     /// Shortcuts for the other viewer commands, by command id (see
     /// [`Command::id`]): a missing entry uses the default, an empty one
     /// disables the shortcut.
@@ -101,6 +103,7 @@ impl Default for ClientConfig {
             show_stats: false,
             share: false,
             playback_device: None,
+            gamepads: true,
             shortcuts: Default::default(),
             hosts: Default::default(),
         }

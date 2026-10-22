@@ -56,6 +56,8 @@ pub struct ViewerOptions {
     pub codec_key: String,
     /// Local output for the host's sound (`None`: the default device).
     pub playback_device: Option<String>,
+    /// Forward local gamepads to the host.
+    pub gamepads: bool,
 }
 
 /// Choices made during a session, remembered for the next one.
@@ -97,9 +99,12 @@ pub fn run(
         rt.handle(),
         connected.conn.clone(),
         connected.ctl,
-        options.settings.clone(),
-        options.hardware_decode,
-        options.playback_device.clone(),
+        session::SessionOptions {
+            settings: options.settings.clone(),
+            hardware_decode: options.hardware_decode,
+            playback_device: options.playback_device.clone(),
+            gamepads: options.gamepads,
+        },
         sink.clone(),
     );
     let mut viewer = Viewer::new(session.clone(), connected.host_name, options);
@@ -1220,6 +1225,9 @@ impl ApplicationHandler<UiEvent> for Viewer {
             WindowEvent::RedrawRequested => self.draw(),
             WindowEvent::Focused(focused) => {
                 self.focused = focused;
+                self.session
+                    .focused
+                    .store(focused, std::sync::atomic::Ordering::Relaxed);
                 if !focused {
                     self.release_all();
                 }

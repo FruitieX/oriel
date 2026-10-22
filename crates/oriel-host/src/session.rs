@@ -155,12 +155,31 @@ pub async fn run(
         anyhow::Ok(())
     });
 
+    // Virtual gamepads, created when a client's pad first reports.
+    let (pad_tx, pad_rx) = crossbeam_channel::unbounded();
+    let rumble_events = ev_tx_audio.clone();
+    let pad_notices = ev_tx_audio.clone();
+    let gamepads = crate::gamepad::spawn(
+        pad_rx,
+        Arc::new(move |pad, strong, weak| {
+            let _ = rumble_events.send(Event::Rumble { pad, strong, weak });
+        }),
+        move |text| {
+            let _ = pad_notices.send(Event::Notice(text));
+        },
+    );
+
     let datagram_conn = conn.clone();
     let datagram_shared = shared.clone();
+    let datagram_pads = pad_tx.clone();
     let datagram_task = tokio::spawn(async move {
         while let Ok(bytes) = datagram_conn.read_datagram().await {
-            if let Ok(Datagram::FrameAck { seq, .. }) = oriel_proto::decode(&bytes) {
-                datagram_shared.decoded(seq);
+            match oriel_proto::decode(&bytes) {
+                Ok(Datagram::FrameAck { seq, .. }) => datagram_shared.decoded(seq),
+                Ok(Datagram::Gamepad { pad, seq, state }) => {
+                    let _ = datagram_pads.send(crate::gamepad::Cmd::State { pad, seq, state });
+                }
+                _ => {}
             }
         }
     });
@@ -195,6 +214,9 @@ pub async fn run(
                     Some(Event::CursorPos { x, y }) => {
                         let dg = Datagram::CursorPosition { surface: 1, x, y };
                         let _ = conn.send_datagram(oriel_proto::encode(&dg)?.into());
+                    }
+                    Some(Event::Rumble { pad, strong, weak }) => {
+                        write_msg(&mut ctl_send, &HostMsg::Rumble { pad, strong, weak }).await?
                     }
                     Some(Event::Notice(text)) => {
                         write_msg(&mut ctl_send, &HostMsg::Notice { text }).await?
@@ -231,6 +253,9 @@ pub async fn run(
                         }
                     }
                     Some(ClientMsg::SetBitrate { kbps }) => { let _ = cmd_tx.send(Cmd::Bitrate(kbps)); }
+                    Some(ClientMsg::GamepadRemoved { pad }) => {
+                        let _ = pad_tx.send(crate::gamepad::Cmd::Remove { pad });
+                    }
                     Some(ClientMsg::SetAudioDevice { id }) => {
                         if settings.audio {
                             // Stop the old capture before opening the new one.
@@ -261,6 +286,11 @@ pub async fn run(
     input_task.abort();
     ctl_task.abort();
     datagram_task.abort();
+    // Unplug the virtual pads (the datagram task held the other sender).
+    drop(pad_tx);
+    tokio::task::spawn_blocking(move || {
+        let _ = gamepads.join();
+    });
     rtt_task.abort();
     let _ = tokio::task::spawn_blocking(move || {
         let _ = pipeline.join();

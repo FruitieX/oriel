@@ -459,6 +459,7 @@ impl Launcher {
             screenshot: None,
             codec_key,
             playback_device: c.playback_device.clone(),
+            gamepads: c.gamepads,
         })
     }
 
@@ -1181,6 +1182,9 @@ impl Launcher {
                                         }
                                     }
                                 });
+                            ui.end_row();
+                            ui.label("Gamepads");
+                            ui.checkbox(&mut c.gamepads, "Use controllers on the remote computer");
                             ui.end_row();
                             for command in Command::ALL {
                                 ui.label(command.label());

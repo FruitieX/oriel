@@ -26,6 +26,7 @@ serde.workspace = true
 png = "0.18"
 ash = { version = "0.38", default-features = false, features = ["std"] }
 toml.workspace = true
+gilrs = "0.11"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 wayland-client = { version = "0.31", features = ["system", "dlopen"] }
@@ -40,3 +41,7 @@ windows = { workspace = true, features = [
   "Win32_UI_Input_KeyboardAndMouse",
   "Win32_UI_WindowsAndMessaging",
 ] }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+# Fake controllers for the gamepad tests.
+evdev = "0.13"

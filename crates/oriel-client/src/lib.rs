@@ -5,6 +5,7 @@ pub mod app;
 pub mod config;
 pub mod connection;
 mod decode;
+mod gamepad;
 pub mod headless;
 #[cfg(target_os = "linux")]
 mod inhibit;

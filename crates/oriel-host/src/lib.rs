@@ -4,6 +4,7 @@
 pub mod capture;
 mod clipboard;
 mod cursor;
+mod gamepad;
 #[cfg(target_os = "linux")]
 mod gnome;
 pub mod input;
