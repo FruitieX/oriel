@@ -266,10 +266,22 @@ impl Pipeline {
 
     fn run(&mut self) -> Result<()> {
         let mut bitrate = self.config.bitrate_kbps;
+        // Outlives a capturer that is reopened for the same target (after a
+        // desktop switch, say), so a virtual monitor is not recreated.
+        let mut keep: Option<(
+            capture::Target,
+            Option<Arc<dyn std::any::Any + Send + Sync>>,
+        )> = None;
         loop {
+            if keep.as_ref().is_some_and(|(t, _)| *t != self.config.target) {
+                // Release the old target first (a virtual monitor in
+                // another mode must go before the new one is added).
+                drop(keep.take());
+            }
             let Some(mut cap) = self.open_capturer()? else {
                 return Ok(());
             };
+            keep = Some((self.config.target, cap.keep_alive()));
             *self.shared.geometry.lock() = cap.geometry();
             loop {
                 let (mut enc, codec) = self.open_encoder(cap.as_ref(), bitrate)?;

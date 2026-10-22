@@ -264,6 +264,8 @@ pub struct DxgiCapturer {
     have_image: bool,
     new_shape: Option<CursorShape>,
     shape_buf: Vec<u8>,
+    /// The virtual monitor being captured, kept while this capturer lives.
+    virtual_monitor: Option<std::sync::Arc<super::sudovda::VirtualMonitor>>,
 }
 
 impl DxgiCapturer {
@@ -279,6 +281,23 @@ impl DxgiCapturer {
                 .with_context(|| format!("no display {i}"))?,
             None => outputs.into_iter().next().context("no displays attached")?,
         };
+        Self::open_entry(entry, None)
+    }
+
+    /// Capture a virtual monitor.
+    pub fn open_virtual(monitor: std::sync::Arc<super::sudovda::VirtualMonitor>) -> Result<Self> {
+        crate::win::follow_input_desktop();
+        let entry = outputs()?
+            .into_iter()
+            .find(|o| o.desc.DeviceName == monitor.device_name)
+            .context("the virtual monitor is not attached to the desktop")?;
+        Self::open_entry(entry, Some(monitor))
+    }
+
+    fn open_entry(
+        entry: OutputEntry,
+        virtual_monitor: Option<std::sync::Arc<super::sudovda::VirtualMonitor>>,
+    ) -> Result<Self> {
         let mut device = None;
         let mut context = None;
         unsafe {
@@ -334,6 +353,7 @@ impl DxgiCapturer {
             have_image: false,
             new_shape: None,
             shape_buf: Vec::new(),
+            virtual_monitor,
         })
     }
 
@@ -448,6 +468,12 @@ impl Capturer for DxgiCapturer {
             width: self.size.0,
             height: self.size.1,
         }
+    }
+
+    fn keep_alive(&self) -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> {
+        self.virtual_monitor
+            .clone()
+            .map(|m| m as std::sync::Arc<dyn std::any::Any + Send + Sync>)
     }
 
     fn hw_device(&self) -> HwDevice {

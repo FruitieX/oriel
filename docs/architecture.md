@@ -80,6 +80,15 @@ rate (0/1) whose `maxFramerate` becomes its refresh rate (asking for a fixed
 rate fails with "no more input formats"). Input follows whichever session
 is current, so it moves with display switches.
 
+On Windows the virtual monitor comes from the SudoVDA indirect display
+driver (`capture/sudovda.rs`): IOCTLs on its device interface add a
+monitor with a fixed GUID (so Windows remembers its placement) and return
+its adapter LUID and target id, which DisplayConfig maps to the
+`\\.\DISPLAYn` that Desktop Duplication captures. The driver drops all its
+monitors when not pinged within its watchdog timeout, so a thread pings it
+while any exist. The pipeline keeps the monitor across capture restarts
+(desktop switches) and releases it before switching targets.
+
 Testing without a desktop: run PipeWire, WirePlumber (plus a null sink for
 audio) and `gnome-shell --headless --wayland --virtual-monitor 1920x1080`
 inside `dbus-run-session`, then `oriel host` there (`XDG_CURRENT_DESKTOP=GNOME`).

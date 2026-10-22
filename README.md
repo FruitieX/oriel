@@ -26,8 +26,11 @@ display) and the client (connects to hosts).
   hosts need write access to `/dev/uinput`.
 - Use the client as an extra display: the host creates a virtual monitor
   in the mode you pick in the menu (default: the client's screen). GNOME
-  hosts for now. The client draws the host's cursor when the host's own
-  mouse moves it onto that display.
+  hosts work as they are; Windows hosts need the
+  [SudoVDA](https://github.com/SudoMaker/SudoVDA) driver (installed by
+  [Apollo](https://github.com/ClassicOldSong/Apollo/releases)'s installer;
+  oriel only needs the driver, not Apollo). The client draws the host's
+  cursor when the host's own mouse moves it onto that display.
 - Shortcuts for the menu, fullscreen, next/previous display, statistics and
   disconnecting; rebind them in Settings → Input.
 - Codecs: HEVC/H.264/AV1 through FFmpeg, and

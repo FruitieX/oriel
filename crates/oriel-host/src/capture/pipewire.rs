@@ -148,6 +148,10 @@ impl Capturer for PipeWireCapturer {
         Ok((&self.frame, self.stride))
     }
 
+    fn keep_alive(&self) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
+        Some(self.session.clone())
+    }
+
     fn cursor(&mut self) -> CursorPos {
         self.shared.0.lock().cursor
     }

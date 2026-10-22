@@ -13,6 +13,8 @@ use crate::cursor::CursorPos;
 mod dxgi;
 #[cfg(target_os = "linux")]
 mod pipewire;
+#[cfg(windows)]
+mod sudovda;
 pub mod test_pattern;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -38,6 +40,12 @@ pub trait Capturer {
     fn size(&self) -> (u32, u32);
 
     fn geometry(&self) -> Geometry;
+
+    /// Something to keep alive while capturing the same target again
+    /// (a virtual monitor), so a restarted capture finds it unchanged.
+    fn keep_alive(&self) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
+        None
+    }
 
     /// Device the frames live on, for zero-copy encoding.
     fn hw_device(&self) -> HwDevice {
@@ -79,6 +87,8 @@ pub fn virtual_display_available(source: SourceKind) -> bool {
     match source {
         #[cfg(target_os = "linux")]
         SourceKind::Auto => crate::gnome::GnomeSession::available(),
+        #[cfg(windows)]
+        SourceKind::Auto => sudovda::available(),
         _ => false,
     }
 }
@@ -126,7 +136,9 @@ pub fn open(source: SourceKind, target: Target, test: &TestState) -> Result<Box<
         #[cfg(windows)]
         SourceKind::Auto => match target {
             Target::Display(display) => Ok(Box::new(dxgi::DxgiCapturer::open(display)?)),
-            Target::Virtual(_) => anyhow::bail!("virtual displays are not supported on this host"),
+            Target::Virtual(mode) => Ok(Box::new(dxgi::DxgiCapturer::open_virtual(
+                sudovda::acquire(mode)?,
+            )?)),
         },
         #[cfg(target_os = "linux")]
         SourceKind::Auto => {
