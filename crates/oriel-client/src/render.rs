@@ -111,6 +111,10 @@ pub struct Renderer {
     >,
     /// The picture to draw: CPU-uploaded planes, or a GPU plane set.
     current: Option<Current>,
+    /// Recently shown GPU pictures, kept until the GPU is surely done
+    /// sampling them (a VAAPI surface is reused once released).
+    #[cfg(not(target_os = "macos"))]
+    shown: std::collections::VecDeque<crate::decode::GpuPicture>,
     #[cfg(not(target_os = "macos"))]
     pub interop: Option<std::sync::Arc<crate::interop::VkInterop>>,
     srgb_target: bool,
@@ -150,9 +154,12 @@ impl Renderer {
         let (_instance, surface, adapter) = found.context("no compatible GPU adapter")?;
         let info = adapter.get_info();
         let adapter_info = format!("{} ({:?})", info.name, info.backend);
+        // DMA-BUF import lets VAAPI frames be drawn without copies.
+        let required_features = adapter.features() & wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF;
         let (device, queue) =
             pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
                 label: Some("oriel"),
+                required_features,
                 ..Default::default()
             }))?;
 
@@ -291,6 +298,8 @@ impl Renderer {
             video: None,
             #[cfg(not(target_os = "macos"))]
             gpu_sets: Default::default(),
+            #[cfg(not(target_os = "macos"))]
+            shown: Default::default(),
             current: None,
             #[cfg(not(target_os = "macos"))]
             interop,
@@ -316,9 +325,10 @@ impl Renderer {
         }
     }
 
-    /// Show a zero-copy plane set (full-range BT.709 4:2:0 from PyroWave).
+    /// Show a zero-copy plane set.
     #[cfg(not(target_os = "macos"))]
-    pub fn show_gpu(&mut self, set: &std::sync::Arc<crate::interop::PlaneSet>) {
+    pub fn show_gpu(&mut self, picture: crate::decode::GpuPicture) {
+        let set = &picture.set;
         let key = std::sync::Arc::as_ptr(set) as usize;
         self.gpu_sets.retain(|_, (weak, _)| weak.strong_count() > 0);
         if !self.gpu_sets.contains_key(&key) {
@@ -327,12 +337,18 @@ impl Renderer {
                 .iter()
                 .map(|t| t.create_view(&Default::default()))
                 .collect();
-            let bind_group = self.bind_planes([&views[0], &views[1], &views[2]]);
+            let dummy = self.dummy.create_view(&Default::default());
+            let bind_group =
+                self.bind_planes([&views[0], &views[1], views.get(2).unwrap_or(&dummy)]);
             self.gpu_sets
                 .insert(key, (std::sync::Arc::downgrade(set), bind_group));
         }
-        self.write_params(ColorMatrix::Bt709, true, false);
+        self.write_params(picture.matrix, picture.full_range, set.nv12);
         self.current = Some(Current::Gpu(key, set.size));
+        self.shown.push_back(picture);
+        while self.shown.len() > 3 {
+            self.shown.pop_front();
+        }
     }
 
     fn write_params(&self, matrix: ColorMatrix, full_range: bool, nv12: bool) {

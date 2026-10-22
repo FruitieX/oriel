@@ -11,7 +11,9 @@ mod encoder;
 pub mod pyrowave;
 mod util;
 
-pub use decoder::{ColorMatrix, DecodedFrame, Decoder, PlaneFormat};
+pub use decoder::{ColorMatrix, DecodedFrame, Decoder, Frame, PlaneFormat};
+#[cfg(target_os = "linux")]
+pub use decoder::{DmabufFrame, DmabufPlane};
 pub use encoder::{
     EncodedFrame, Encoder, EncoderConfig, EncoderInput, HwDevice, available_codecs,
     available_encoders,

@@ -1214,7 +1214,9 @@ impl ApplicationHandler<UiEvent> for Launcher {
         };
         // egui-winit asks for a repaint on every event, including redraws
         // themselves; following that blindly redraws in a busy loop.
-        if !matches!(event, WindowEvent::RedrawRequested) && egui.on_window_event(window, &event).repaint {
+        if !matches!(event, WindowEvent::RedrawRequested)
+            && egui.on_window_event(window, &event).repaint
+        {
             window.request_redraw();
         }
         match event {

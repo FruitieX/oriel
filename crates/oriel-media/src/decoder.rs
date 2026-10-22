@@ -98,6 +98,50 @@ impl Drop for DecodedFrame {
     }
 }
 
+/// One plane of a [`DmabufFrame`]. The fd stays owned by the frame.
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy, Debug)]
+pub struct DmabufPlane {
+    pub fd: std::os::fd::RawFd,
+    pub offset: u64,
+    pub pitch: u64,
+    pub modifier: u64,
+}
+
+/// An 8-bit NV12 hardware frame exported as DMA-BUF planes (VAAPI). While
+/// it lives the decoder will not reuse its surface.
+#[cfg(target_os = "linux")]
+pub struct DmabufFrame {
+    /// The DRM PRIME mapping, which references the VAAPI frame.
+    frame: *mut ff::AVFrame,
+    /// Identifies the decoder surface: the same surface always exports the
+    /// same memory, so its imported textures can be reused.
+    pub surface: usize,
+    pub width: u32,
+    pub height: u32,
+    /// Luma (R8) and interleaved chroma (GR88).
+    pub planes: [DmabufPlane; 2],
+    pub matrix: ColorMatrix,
+    pub full_range: bool,
+}
+
+#[cfg(target_os = "linux")]
+unsafe impl Send for DmabufFrame {}
+
+#[cfg(target_os = "linux")]
+impl Drop for DmabufFrame {
+    fn drop(&mut self) {
+        unsafe { ff::av_frame_free(&mut self.frame) };
+    }
+}
+
+/// A decoded frame: in CPU memory, or left on the GPU as DMA-BUFs.
+pub enum Frame {
+    Cpu(DecodedFrame),
+    #[cfg(target_os = "linux")]
+    Dmabuf(DmabufFrame),
+}
+
 struct FfDecoder {
     ctx: *mut ff::AVCodecContext,
     pkt: *mut ff::AVPacket,
@@ -107,6 +151,8 @@ struct FfDecoder {
     /// Converts formats the renderer does not handle to YUV420P.
     sws: *mut ff::SwsContext,
     description: String,
+    /// Hand out hardware frames as DMA-BUFs instead of downloading them.
+    export_dmabuf: bool,
 }
 
 unsafe impl Send for FfDecoder {}
@@ -142,7 +188,7 @@ fn hw_device_types() -> &'static [ff::AVHWDeviceType] {
 }
 
 impl FfDecoder {
-    fn open(codec: Codec, hardware: bool) -> Result<Self> {
+    fn open(codec: Codec, hardware: bool, export_dmabuf: bool) -> Result<Self> {
         let id = match codec {
             Codec::H264 => ff::AVCodecID::AV_CODEC_ID_H264,
             Codec::Hevc => ff::AVCodecID::AV_CODEC_ID_HEVC,
@@ -162,6 +208,7 @@ impl FfDecoder {
                 hw_format: None,
                 sws: ptr::null_mut(),
                 description: String::new(),
+                export_dmabuf: export_dmabuf && cfg!(target_os = "linux"),
             };
             let ctx = &mut *dec.ctx;
             ctx.flags |= ff::AV_CODEC_FLAG_LOW_DELAY as c_int;
@@ -172,6 +219,11 @@ impl FfDecoder {
 
             if hardware {
                 dec.try_hardware(decoder);
+            }
+            if dec.export_dmabuf {
+                // Exported frames stay referenced by the renderer for a few
+                // frames; keep enough surfaces for the decoder meanwhile.
+                ctx.extra_hw_frames = 6;
             }
             check(
                 ff::avcodec_open2(dec.ctx, decoder, ptr::null_mut()),
@@ -225,7 +277,7 @@ impl FfDecoder {
     }
 
     /// Decode one access unit. Returns the newest frame it produced.
-    fn decode(&mut self, data: &[u8]) -> Result<Option<DecodedFrame>> {
+    fn decode(&mut self, data: &[u8]) -> Result<Option<Frame>> {
         unsafe {
             check(
                 ff::av_new_packet(self.pkt, data.len() as c_int),
@@ -249,10 +301,23 @@ impl FfDecoder {
         }
     }
 
-    unsafe fn take_frame(&mut self) -> Result<DecodedFrame> {
+    unsafe fn take_frame(&mut self) -> Result<Frame> {
         unsafe {
             let mut out = ff::av_frame_alloc();
             if Some((*self.frame).format) == self.hw_format.map(|f| f as c_int) {
+                #[cfg(target_os = "linux")]
+                if self.export_dmabuf {
+                    match self.map_dmabuf() {
+                        Ok(frame) => {
+                            ff::av_frame_free(&mut out);
+                            return Ok(Frame::Dmabuf(frame));
+                        }
+                        Err(e) => {
+                            tracing::info!("DMA-BUF export unavailable, downloading frames: {e:#}");
+                            self.export_dmabuf = false;
+                        }
+                    }
+                }
                 let ret = ff::av_hwframe_transfer_data(out, self.frame, 0);
                 if ret < 0 {
                     ff::av_frame_free(&mut out);
@@ -281,22 +346,64 @@ impl FfDecoder {
                 out = self.convert_to_yuv420p(out)?;
                 PlaneFormat::Yuv420p
             };
-            let matrix = match (*out).colorspace {
-                ff::AVColorSpace::AVCOL_SPC_BT709 => ColorMatrix::Bt709,
-                ff::AVColorSpace::AVCOL_SPC_BT2020_NCL | ff::AVColorSpace::AVCOL_SPC_BT2020_CL => {
-                    ColorMatrix::Bt2020
-                }
-                ff::AVColorSpace::AVCOL_SPC_UNSPECIFIED if (*out).height > 576 => {
-                    ColorMatrix::Bt709
-                }
-                _ => ColorMatrix::Bt601,
-            };
-            Ok(DecodedFrame {
+            let matrix = color_matrix(out);
+            Ok(Frame::Cpu(DecodedFrame {
                 frame: out,
                 format,
                 matrix,
                 full_range,
-            })
+            }))
+        }
+    }
+
+    /// Map the current VAAPI frame to DMA-BUF planes. Mapping for reading
+    /// waits for the decode to finish. On error the frame is left as is.
+    #[cfg(target_os = "linux")]
+    unsafe fn map_dmabuf(&mut self) -> Result<DmabufFrame> {
+        // DRM fourccs of the layers VAAPI exports NV12 as.
+        const R8: u32 = u32::from_le_bytes(*b"R8  ");
+        const GR88: u32 = u32::from_le_bytes(*b"GR88");
+        const NV12: u32 = u32::from_le_bytes(*b"NV12");
+        unsafe {
+            let src = self.frame;
+            let mut map = ff::av_frame_alloc();
+            (*map).format = ff::AVPixelFormat::AV_PIX_FMT_DRM_PRIME as c_int;
+            let ret = ff::av_hwframe_map(map, src, ff::AV_HWFRAME_MAP_READ as c_int);
+            if ret < 0 {
+                ff::av_frame_free(&mut map);
+                check(ret, "map frame to DRM PRIME")?;
+            }
+            let desc = &*((*map).data[0] as *const ff::AVDRMFrameDescriptor);
+            let layers = &desc.layers[..desc.nb_layers.clamp(0, 4) as usize];
+            let formats: Vec<u32> = layers.iter().map(|l| l.format).collect();
+            let planes: Vec<_> = layers
+                .iter()
+                .flat_map(|l| &l.planes[..l.nb_planes.clamp(0, 4) as usize])
+                .map(|p| {
+                    let object = &desc.objects[p.object_index.clamp(0, 3) as usize];
+                    DmabufPlane {
+                        fd: object.fd,
+                        offset: p.offset as u64,
+                        pitch: p.pitch as u64,
+                        modifier: object.format_modifier,
+                    }
+                })
+                .collect();
+            if !(formats == [R8, GR88] || formats == [NV12]) || planes.len() != 2 {
+                ff::av_frame_free(&mut map);
+                bail!("unsupported DRM layout {formats:08x?}");
+            }
+            let frame = DmabufFrame {
+                frame: map,
+                surface: (*src).data[3] as usize,
+                width: (*src).width as u32,
+                height: (*src).height as u32,
+                planes: [planes[0], planes[1]],
+                matrix: color_matrix(src),
+                full_range: (*src).color_range == ff::AVColorRange::AVCOL_RANGE_JPEG,
+            };
+            ff::av_frame_unref(src);
+            Ok(frame)
         }
     }
 
@@ -361,6 +468,18 @@ enum DecoderInner {
 
 impl Decoder {
     pub fn open(codec: Codec, width: u32, height: u32, hardware: bool) -> Result<Self> {
+        Self::open_with(codec, width, height, hardware, false)
+    }
+
+    /// Like [`Decoder::open`]; with `export_dmabuf`, hardware frames are
+    /// returned as [`Frame::Dmabuf`] where possible (Linux VAAPI).
+    pub fn open_with(
+        codec: Codec,
+        width: u32,
+        height: u32,
+        hardware: bool,
+        export_dmabuf: bool,
+    ) -> Result<Self> {
         if codec == Codec::PyroWave {
             let dec = crate::pyrowave::PyroDecoder::new(width, height)?;
             return Ok(Self {
@@ -368,7 +487,7 @@ impl Decoder {
                 description: "pyrowave (Vulkan)".into(),
             });
         }
-        let dec = FfDecoder::open(codec, hardware)?;
+        let dec = FfDecoder::open(codec, hardware, export_dmabuf)?;
         Ok(Self {
             description: dec.description.clone(),
             inner: DecoderInner::Ff(dec),
@@ -381,9 +500,20 @@ impl Decoder {
 
     /// Decode one frame's data. Returns the newest frame it produced.
     pub fn decode(&mut self, data: &[u8]) -> Result<Option<DecodedFrame>> {
+        match self.decode_frame(data)? {
+            None => Ok(None),
+            Some(Frame::Cpu(f)) => Ok(Some(f)),
+            #[cfg(target_os = "linux")]
+            Some(Frame::Dmabuf(_)) => bail!("decoder opened for DMA-BUF export"),
+        }
+    }
+
+    /// Decode one frame's data, keeping hardware frames on the GPU when the
+    /// decoder was opened for that.
+    pub fn decode_frame(&mut self, data: &[u8]) -> Result<Option<Frame>> {
         match &mut self.inner {
             DecoderInner::Ff(d) => d.decode(data),
-            DecoderInner::Pyro(d) => d.decode(data),
+            DecoderInner::Pyro(d) => Ok(d.decode(data)?.map(Frame::Cpu)),
         }
     }
 }
@@ -397,6 +527,19 @@ fn hw_name(format: ff::AVPixelFormat) -> String {
             std::ffi::CStr::from_ptr(name)
                 .to_string_lossy()
                 .into_owned()
+        }
+    }
+}
+
+unsafe fn color_matrix(frame: *const ff::AVFrame) -> ColorMatrix {
+    unsafe {
+        match (*frame).colorspace {
+            ff::AVColorSpace::AVCOL_SPC_BT709 => ColorMatrix::Bt709,
+            ff::AVColorSpace::AVCOL_SPC_BT2020_NCL | ff::AVColorSpace::AVCOL_SPC_BT2020_CL => {
+                ColorMatrix::Bt2020
+            }
+            ff::AVColorSpace::AVCOL_SPC_UNSPECIFIED if (*frame).height > 576 => ColorMatrix::Bt709,
+            _ => ColorMatrix::Bt601,
         }
     }
 }
@@ -429,6 +572,52 @@ mod tests {
     #[test]
     fn hevc_vaapi_roundtrip() {
         roundtrip(Codec::Hevc, "hevc_vaapi", true, 1280, 720);
+    }
+
+    /// VAAPI frames export as two DMA-BUF planes; skipped without a GPU.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn hevc_vaapi_dmabuf_export() {
+        let (w, h) = (1280, 720);
+        let config = EncoderConfig {
+            codec: Codec::Hevc,
+            width: w,
+            height: h,
+            fps: 60,
+            bitrate_kbps: 4000,
+            device: HwDevice::None,
+            encoder: Some("hevc_vaapi".into()),
+        };
+        let mut enc = match Encoder::open(&config) {
+            Ok(e) => e,
+            Err(e) => {
+                eprintln!("skipping: {e:#}");
+                return;
+            }
+        };
+        let mut dec = Decoder::open_with(Codec::Hevc, w, h, true, true).unwrap();
+        let bgra = vec![128u8; (w * h * 4) as usize];
+        let mut held = Vec::new();
+        for n in 0..8 {
+            let input = EncoderInput::Bgra {
+                data: &bgra,
+                stride: (w * 4) as usize,
+            };
+            let out = enc.encode(input, n == 0).unwrap().unwrap();
+            match dec.decode_frame(&out.data).unwrap().unwrap() {
+                Frame::Dmabuf(f) => {
+                    assert_eq!((f.width, f.height), (w, h));
+                    assert!(f.planes.iter().all(|p| p.fd >= 0 && p.pitch >= w as u64));
+                    eprintln!("{:?}", f.planes);
+                    // Hold a few frames, as the renderer does.
+                    held.push(f);
+                    if held.len() > 4 {
+                        held.remove(0);
+                    }
+                }
+                Frame::Cpu(_) => panic!("expected a DMA-BUF frame"),
+            }
+        }
     }
 
     /// Needs the PyroWave library and a Vulkan 1.3 GPU; skipped otherwise.

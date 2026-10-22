@@ -570,10 +570,10 @@ impl Viewer {
     fn draw(&mut self) {
         if let Some(ready) = self.session.frames.take() {
             if let Some(gfx) = &mut self.gfx {
-                match &ready.picture {
-                    crate::decode::Picture::Cpu(frame) => gfx.renderer.upload(frame),
+                match ready.picture {
+                    crate::decode::Picture::Cpu(frame) => gfx.renderer.upload(&frame),
                     #[cfg(not(target_os = "macos"))]
-                    crate::decode::Picture::Gpu(set) => gfx.renderer.show_gpu(set),
+                    crate::decode::Picture::Gpu(picture) => gfx.renderer.show_gpu(picture),
                 }
             }
             let now = Instant::now();

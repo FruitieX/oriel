@@ -1,6 +1,7 @@
-//! Zero-copy PyroWave decoding: plane textures are created in wgpu's
+//! Zero-copy decoding. PyroWave: plane textures are created in wgpu's
 //! Vulkan device with exportable memory and imported into a PyroWave
-//! device on the same GPU, which decodes straight into them.
+//! device on the same GPU, which decodes straight into them. VAAPI (Linux):
+//! decoded surfaces are imported into wgpu as DMA-BUFs.
 
 use std::sync::Arc;
 
@@ -9,16 +10,19 @@ use ash::vk;
 use oriel_media::{ExternalPlane, PYROWAVE_EXTERNAL_MEMORY};
 use wgpu::hal::{self, api::Vulkan};
 
-/// One frame's Y, Cb and Cr planes.
+/// One frame's planes: Y, Cb and Cr, or (NV12) Y and interleaved CbCr.
 pub struct PlaneSet {
-    pub textures: [wgpu::Texture; 3],
+    pub textures: Vec<wgpu::Texture>,
     pub size: (u32, u32),
+    pub nv12: bool,
 }
 
 pub struct VkInterop {
     device: wgpu::Device,
     pub device_uuid: [u8; 16],
     pub driver_uuid: [u8; 16],
+    /// DMA-BUFs can be imported (VAAPI zero-copy).
+    pub dmabuf: bool,
 }
 
 impl VkInterop {
@@ -47,6 +51,9 @@ impl VkInterop {
             device: device.clone(),
             device_uuid,
             driver_uuid,
+            dmabuf: device
+                .features()
+                .contains(wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF),
         }))
     }
 
@@ -59,8 +66,9 @@ impl VkInterop {
         let (v, ve) = self.create_plane(cw, ch)?;
         Ok((
             PlaneSet {
-                textures: [y, u, v],
+                textures: vec![y, u, v],
                 size: (w, h),
+                nv12: false,
             },
             [ye, ue, ve],
         ))
@@ -173,6 +181,82 @@ impl VkInterop {
                 },
             ))
         }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl VkInterop {
+    /// Import a VAAPI frame's NV12 planes as textures. The textures share
+    /// the surface's memory, so they show whatever it holds next.
+    pub fn import_dmabuf(&self, frame: &oriel_media::DmabufFrame) -> Result<PlaneSet> {
+        let (w, h) = (frame.width, frame.height);
+        let y = self.import_plane(&frame.planes[0], wgpu::TextureFormat::R8Unorm, w, h)?;
+        let uv = self.import_plane(
+            &frame.planes[1],
+            wgpu::TextureFormat::Rg8Unorm,
+            w.div_ceil(2),
+            h.div_ceil(2),
+        )?;
+        Ok(PlaneSet {
+            textures: vec![y, uv],
+            size: (w, h),
+            nv12: true,
+        })
+    }
+
+    fn import_plane(
+        &self,
+        plane: &oriel_media::DmabufPlane,
+        format: wgpu::TextureFormat,
+        w: u32,
+        h: u32,
+    ) -> Result<wgpu::Texture> {
+        use std::os::fd::BorrowedFd;
+        // The frame keeps its fd; Vulkan takes ownership of a duplicate.
+        let fd = unsafe { BorrowedFd::borrow_raw(plane.fd) }.try_clone_to_owned()?;
+        let size = wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        };
+        let hal = unsafe { self.device.as_hal::<Vulkan>() }.context("not a Vulkan device")?;
+        let hal_texture = unsafe {
+            hal.texture_from_dmabuf_fd(
+                fd,
+                &hal::TextureDescriptor {
+                    label: Some("vaapi plane"),
+                    size,
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format,
+                    usage: wgpu::TextureUses::RESOURCE,
+                    memory_flags: hal::MemoryFlags::empty(),
+                    view_formats: vec![],
+                },
+                plane.modifier,
+                plane.pitch,
+                plane.offset,
+            )
+        }
+        .map_err(|e| anyhow!("import DMA-BUF plane: {e}"))?;
+        drop(hal);
+        Ok(unsafe {
+            self.device.create_texture_from_hal::<Vulkan>(
+                hal_texture,
+                &wgpu::TextureDescriptor {
+                    label: Some("vaapi plane"),
+                    size,
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                },
+                wgpu::TextureUses::RESOURCE,
+            )
+        })
     }
 }
 
