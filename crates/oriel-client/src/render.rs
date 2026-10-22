@@ -460,6 +460,28 @@ impl Renderer {
         egui_ctx: &egui::Context,
         output: egui::FullOutput,
     ) -> Result<()> {
+        // egui sends each texture change once; apply them even when this
+        // frame cannot be drawn (occluded windows, startup), or later frames
+        // refer to textures that never arrived.
+        for (id, deltas) in &output.textures_delta.set {
+            for delta in deltas {
+                self.egui
+                    .update_texture(&self.device, &self.queue, *id, delta);
+            }
+        }
+        let result = self.draw(viewport, egui_ctx, &output);
+        for id in &output.textures_delta.free {
+            self.egui.free_texture(id);
+        }
+        result
+    }
+
+    fn draw(
+        &mut self,
+        viewport: Option<Viewport>,
+        egui_ctx: &egui::Context,
+        output: &egui::FullOutput,
+    ) -> Result<()> {
         let texture = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(t)
             | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
@@ -467,7 +489,10 @@ impl Renderer {
                 self.surface.configure(&self.device, &self.config);
                 return Ok(());
             }
-            _ => return Ok(()),
+            other => {
+                tracing::debug!("skipping a frame: {other:?}");
+                return Ok(());
+            }
         };
         let view = texture.texture.create_view(&Default::default());
         let mut encoder = self
@@ -505,17 +530,11 @@ impl Renderer {
         }
 
         let pixels_per_point = output.pixels_per_point;
-        let primitives = egui_ctx.tessellate(output.shapes, pixels_per_point);
+        let primitives = egui_ctx.tessellate(output.shapes.clone(), pixels_per_point);
         let screen = egui_wgpu::ScreenDescriptor {
             size_in_pixels: [self.config.width, self.config.height],
             pixels_per_point,
         };
-        for (id, deltas) in &output.textures_delta.set {
-            for delta in deltas {
-                self.egui
-                    .update_texture(&self.device, &self.queue, *id, delta);
-            }
-        }
         let extra = self.egui.update_buffers(
             &self.device,
             &self.queue,
@@ -540,9 +559,6 @@ impl Renderer {
                 })
                 .forget_lifetime();
             self.egui.render(&mut pass, &primitives, &screen);
-        }
-        for id in &output.textures_delta.free {
-            self.egui.free_texture(id);
         }
 
         let readback = self.screenshot.take().and_then(|path| {
