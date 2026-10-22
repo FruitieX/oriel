@@ -192,6 +192,10 @@ struct Viewer {
     motion: (f64, f64),
 
     notices: Vec<(String, Instant)>,
+    /// The host's last health report.
+    host_health: Option<(oriel_proto::HostHealth, Instant)>,
+    diagnostics: crate::diagnostics::Diagnostics,
+    diagnosed: Instant,
     closed: Option<String>,
     first_frame: Option<Instant>,
     frames_presented: u64,
@@ -255,6 +259,9 @@ impl Viewer {
             wheel_px: (0.0, 0.0),
             motion: (0.0, 0.0),
             notices: Vec::new(),
+            host_health: None,
+            diagnostics: Default::default(),
+            diagnosed: Instant::now(),
             closed: None,
             first_frame: None,
             frames_presented: 0,
@@ -457,6 +464,7 @@ impl Viewer {
                 self.update_cursor();
                 self.request_redraw();
             }
+            HostMsg::Health(health) => self.host_health = Some((health, Instant::now())),
             HostMsg::Notice { text } => {
                 tracing::info!("host: {text}");
                 self.notices.push((text, Instant::now()));
@@ -690,7 +698,63 @@ impl Viewer {
 
     /// The overlay shows something that changes without new frames.
     fn overlay_ticks(&self) -> bool {
-        self.in_force.show_stats || self.menu_open || !self.notices.is_empty()
+        self.in_force.show_stats
+            || self.menu_open
+            || !self.notices.is_empty()
+            || !self.diagnostics.warnings().is_empty()
+    }
+
+    /// Look for problems that explain a slow stream, once a second.
+    fn diagnose(&mut self) {
+        let now = Instant::now();
+        if now.duration_since(self.diagnosed) < Duration::from_secs(1) || self.closed.is_some() {
+            return;
+        }
+        self.diagnosed = now;
+        let (summary, codec, software) = {
+            let mut s = self.session.stats.lock();
+            (s.summary(), s.codec_id, s.decoder.contains("(software)"))
+        };
+        let inputs = crate::diagnostics::Inputs {
+            host: self
+                .host_health
+                .filter(|(_, at)| at.elapsed() < Duration::from_secs(3))
+                .map(|(h, _)| h),
+            since_pong: self.session.last_pong.lock().elapsed(),
+            rtt_ms: self.session.rtt().as_secs_f32() * 1000.0,
+            fps: summary.fps,
+            decode_ms: summary.decode_ms,
+            encode_ms: summary.encode_ms,
+            latency_ms: if summary.fps > 0.0 {
+                self.latency_ms
+            } else {
+                0.0
+            },
+            codec,
+            bitrate_mbps: self.in_force.bitrate_kbps / 1000,
+            pyrowave_mbps: self.in_force.pyrowave_kbps / 1000,
+            software_decode: software,
+        };
+        // Debugging aid: pretend the network is slow, lossy and far away.
+        let mut inputs = inputs;
+        if std::env::var_os("ORIEL_DEBUG_BAD_NETWORK").is_some() {
+            inputs.rtt_ms += 100.0;
+            if let Some(h) = &mut inputs.host {
+                h.loss_permille = 45;
+                h.network_limited = true;
+                h.sent_fps = h.wanted_fps / 2;
+            }
+        }
+        let before = self.diagnostics.warnings();
+        self.diagnostics
+            .update(now, crate::diagnostics::detect(&inputs));
+        let after = self.diagnostics.warnings();
+        if before != after {
+            for (issue, text) in after.iter().filter(|w| !before.iter().any(|b| b.0 == w.0)) {
+                tracing::info!(?issue, "{text}");
+            }
+            self.request_redraw();
+        }
     }
 
     /// Change this host's settings (from shortcuts) and apply them.
@@ -870,6 +934,7 @@ impl Viewer {
     fn apply(&mut self, action: Action) {
         match action {
             Action::OpenMenu => self.set_menu(true),
+            Action::DismissWarning(issue) => self.diagnostics.dismiss(issue),
             Action::Run(command) => self.run_command(command),
             Action::CloseMenu => self.set_menu(false),
             Action::SecureAttention => self.session.input(InputEvent::SecureAttention),
@@ -943,6 +1008,7 @@ impl Viewer {
 
 enum Action {
     OpenMenu,
+    DismissWarning(crate::diagnostics::Issue),
     /// A command from the quick menu.
     Run(Command),
     CloseMenu,
@@ -969,6 +1035,7 @@ struct OverlayState {
     display: Option<u32>,
     stats_line: String,
     notices: Vec<String>,
+    warnings: Vec<(crate::diagnostics::Issue, String)>,
     closed: Option<String>,
     remote_cursor: Option<(egui::TextureId, egui::Vec2, egui::Pos2)>,
     menu_button: String,
@@ -1046,6 +1113,7 @@ impl From<&Viewer> for OverlayState {
                 .filter(|(_, at)| at.elapsed() < Duration::from_secs(5))
                 .map(|(t, _)| t.clone())
                 .collect(),
+            warnings: v.diagnostics.warnings(),
             closed: v.closed.clone(),
             remote_cursor,
             menu_button: v.in_force.menu_button.clone(),
@@ -1101,11 +1169,51 @@ fn overlay(ctx: &egui::Context, s: &OverlayState, settings: &mut MenuSettings) -
             });
     }
 
-    if !s.notices.is_empty() {
+    let screen = ctx.content_rect();
+    if (!s.notices.is_empty() || !s.warnings.is_empty()) && s.closed.is_none() {
         egui::Area::new(egui::Id::unique("notices"))
             .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 12.0))
-            .interactable(false)
+            .interactable(!s.warnings.is_empty())
             .show(ctx, |ui| {
+                let width = (screen.width() - 32.0).clamp(200.0, 520.0);
+                for (issue, text) in &s.warnings {
+                    egui::Frame::popup(ui.style())
+                        .fill(egui::Color32::from_rgba_unmultiplied(34, 39, 56, 235))
+                        .stroke(egui::Stroke::new(1.0, theme::AMBER.gamma_multiply(0.6)))
+                        .show(ui, |ui| {
+                            ui.set_width(width);
+                            ui.horizontal_top(|ui| {
+                                // A warning sign: an amber disc with "!".
+                                let (icon, _) = ui.allocate_exact_size(
+                                    egui::vec2(18.0, 18.0),
+                                    egui::Sense::hover(),
+                                );
+                                ui.painter().circle_filled(icon.center(), 8.0, theme::AMBER);
+                                ui.painter().text(
+                                    icon.center(),
+                                    egui::Align2::CENTER_CENTER,
+                                    "!",
+                                    egui::FontId::proportional(13.0),
+                                    egui::Color32::from_rgb(34, 39, 56),
+                                );
+                                let text_width = ui.available_width() - 34.0;
+                                ui.allocate_ui_with_layout(
+                                    egui::vec2(text_width, 0.0),
+                                    egui::Layout::top_down(egui::Align::Min),
+                                    |ui| {
+                                        ui.set_width(text_width);
+                                        ui.add(egui::Label::new(text.as_str()).wrap());
+                                    },
+                                );
+                                if theme::close_button(ui)
+                                    .on_hover_text("Hide until it happens again")
+                                    .clicked()
+                                {
+                                    actions.push(Action::DismissWarning(*issue));
+                                }
+                            });
+                        });
+                }
                 for n in &s.notices {
                     egui::Frame::popup(ui.style()).show(ui, |ui| {
                         ui.label(n);
@@ -1114,7 +1222,6 @@ fn overlay(ctx: &egui::Context, s: &OverlayState, settings: &mut MenuSettings) -
             });
     }
 
-    let screen = ctx.content_rect();
     if let Some(reason) = &s.closed {
         egui::Window::new("Disconnected")
             .title_bar(false)
@@ -1589,10 +1696,14 @@ impl ApplicationHandler<UiEvent> for Viewer {
                 self.shortcuts_inhibited = active;
             }
         }
+        self.diagnose();
         // Wake for the clipboard while focused; redraw only for overlays.
+        // Diagnostics need a look once a second either way.
         let periodic = self.overlay_ticks() || (self.focused && self.closed.is_none());
         event_loop.set_control_flow(if periodic {
             ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(250))
+        } else if self.closed.is_none() {
+            ControlFlow::WaitUntil(self.diagnosed + Duration::from_secs(1))
         } else {
             ControlFlow::Wait
         });

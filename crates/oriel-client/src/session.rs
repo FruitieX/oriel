@@ -43,6 +43,8 @@ pub struct Session {
     pub frames: decode::FrameSlot,
     pub stats: Arc<Mutex<Stats>>,
     pub clock: Arc<Mutex<crate::stats::ClockSync>>,
+    /// When the host last answered a ping.
+    pub last_pong: Arc<Mutex<Instant>>,
     /// The renderer offers zero-copy decoding here once it exists.
     pub interop: decode::InteropSlot,
     /// Gamepads are forwarded only while the viewer window has focus.
@@ -292,9 +294,12 @@ pub fn start(
 
     let reader_sink = sink.clone();
     let reader_clock = clock.clone();
+    let last_pong = Arc::new(Mutex::new(Instant::now()));
+    let reader_pong = last_pong.clone();
     tokio::spawn(async move {
         while let Ok(Some(msg)) = read_msg::<HostMsg>(&mut recv).await {
             if let HostMsg::Pong { id, host_us } = msg {
+                *reader_pong.lock() = Instant::now();
                 if let Some(sent) = pings.lock().remove(&id) {
                     reader_clock.lock().sample(sent, Instant::now(), host_us);
                 }
@@ -404,6 +409,7 @@ pub fn start(
         frames,
         stats,
         clock,
+        last_pong,
         interop,
         focused,
         speaker,

@@ -22,7 +22,7 @@ pub const ALPN: &[u8] = b"oriel/1";
 /// when it only checks whether the host is up.
 pub const PROBE_REASON: &[u8] = b"probe";
 
-pub const PROTOCOL_VERSION: u32 = 8;
+pub const PROTOCOL_VERSION: u32 = 9;
 pub const DEFAULT_PORT: u16 = 48600;
 /// Upper bound for a single control/input message.
 pub const MAX_MESSAGE_LEN: usize = 32 * 1024 * 1024;
@@ -241,6 +241,21 @@ pub enum HostMsg {
         strong: u16,
         weak: u16,
     },
+    /// Once a second while streaming: how well the host keeps up.
+    Health(HostHealth),
+}
+
+/// What only the host can see about a stream's last second.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct HostHealth {
+    /// Frames sent.
+    pub sent_fps: u16,
+    /// Frames the screen changed (up to the frame rate limit).
+    pub wanted_fps: u16,
+    /// Frames waited on the network: the link cannot carry the stream.
+    pub network_limited: bool,
+    /// Packets lost on the way to the client, per mille.
+    pub loss_permille: u16,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

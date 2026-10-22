@@ -285,6 +285,7 @@ pub fn spawn(
                             let mut s = stats.lock();
                             s.decoder = description;
                             s.codec = header.codec.name().to_string();
+                            s.codec_id = Some(header.codec);
                             s.resolution = size;
                             Some((d, header.codec, size))
                         }

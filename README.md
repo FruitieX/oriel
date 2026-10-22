@@ -39,6 +39,10 @@ display) and the client (connects to hosts).
   [PyroWave](https://github.com/Themaister/pyrowave) for fast LANs
   (`--codec pyrowave`, or `--codec auto` to switch between PyroWave and HEVC
   as the link allows).
+- Warnings that explain a slow stream while it lasts: a link that cannot
+  carry the bitrate, packet loss, high latency, a host that stops
+  answering, and slow encoding or decoding, each with what to try.
+  `ORIEL_DEBUG_BAD_NETWORK=1` fakes a bad network to see them.
 - Only paired devices can connect: pairing uses a PIN shown on the host and
   pins both devices' certificates.
 

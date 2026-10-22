@@ -9,6 +9,7 @@ pub struct Stats {
     frames: VecDeque<FrameSample>,
     pub decoder: String,
     pub codec: String,
+    pub codec_id: Option<oriel_proto::Codec>,
     pub resolution: (u32, u32),
     pub keyframes: u64,
 }

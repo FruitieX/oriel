@@ -52,6 +52,8 @@ pub enum Event {
         y: i32,
     },
     Notice(String),
+    /// The last second's frames (loss is the session's to add).
+    Health(oriel_proto::HostHealth),
     Clipboard(oriel_clipboard::Content),
     /// A game set a virtual gamepad's motors.
     Rumble {
@@ -454,7 +456,7 @@ impl Pipeline {
                 }
             }
 
-            if auto && window_start.elapsed() >= Duration::from_secs(1) {
+            if window_start.elapsed() >= Duration::from_secs(1) {
                 // Slow: the screen changed more often than we managed to
                 // send, because frames were waiting on the network.
                 let wanted = window_captured.min(
@@ -464,11 +466,17 @@ impl Pipeline {
                     && wanted >= 10
                     && (window_encoded as f64) < wanted as f64 * 0.75;
                 let ratio = window_encoded as f64 / wanted.max(1) as f64;
+                self.send(Event::Health(oriel_proto::HostHealth {
+                    sent_fps: window_encoded.min(u16::MAX as u32) as u16,
+                    wanted_fps: wanted.min(u16::MAX as u32) as u16,
+                    network_limited: slow,
+                    loss_permille: 0,
+                }))?;
                 window_start = Instant::now();
                 window_captured = 0;
                 window_encoded = 0;
                 window_blocked = false;
-                {
+                if auto {
                     if codec == Codec::PyroWave {
                         slow_windows = if slow { slow_windows + 1 } else { 0 };
                         if slow_windows >= 2 {

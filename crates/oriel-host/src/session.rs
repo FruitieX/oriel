@@ -238,6 +238,8 @@ pub async fn run(
         }
     });
 
+    // Packets sent and lost so far, for the loss in each health report.
+    let mut packets = (0u64, 0u64);
     let result: Result<()> = async {
         loop {
             tokio::select! {
@@ -263,6 +265,16 @@ pub async fn run(
                     }
                     Some(Event::Notice(text)) => {
                         write_msg(&mut ctl_send, &HostMsg::Notice { text }).await?
+                    }
+                    Some(Event::Health(mut health)) => {
+                        let path = conn.stats().path;
+                        let (sent, lost) = (
+                            path.sent_packets - packets.0,
+                            path.lost_packets - packets.1,
+                        );
+                        packets = (path.sent_packets, path.lost_packets);
+                        health.loss_permille = (lost * 1000 / sent.max(1)).min(1000) as u16;
+                        write_msg(&mut ctl_send, &HostMsg::Health(health)).await?
                     }
                     Some(Event::Clipboard(oriel_clipboard::Content::Text(text))) => {
                         write_msg(&mut ctl_send, &HostMsg::Clipboard { text }).await?
