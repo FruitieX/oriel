@@ -89,8 +89,17 @@ pub async fn run(
     }
     let mut display = settings.display;
 
-    let _audio = if settings.audio {
-        start_audio(&conn, options.source, &ev_tx_audio)
+    // Continues across device switches, so the client's jitter buffer
+    // does not mistake the new packets for stale ones.
+    let audio_seq = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let mut audio = if settings.audio {
+        start_audio(
+            &conn,
+            options.source,
+            settings.audio_device.clone(),
+            audio_seq.clone(),
+            &ev_tx_audio,
+        )
     } else {
         None
     };
@@ -222,6 +231,13 @@ pub async fn run(
                         }
                     }
                     Some(ClientMsg::SetBitrate { kbps }) => { let _ = cmd_tx.send(Cmd::Bitrate(kbps)); }
+                    Some(ClientMsg::SetAudioDevice { id }) => {
+                        if settings.audio {
+                            // Stop the old capture before opening the new one.
+                            drop(audio.take());
+                            audio = start_audio(&conn, options.source, id, audio_seq.clone(), &ev_tx_audio);
+                        }
+                    }
                     Some(ClientMsg::Ping { id }) => {
                         write_msg(&mut ctl_send, &HostMsg::Pong { id, host_us: crate::host_us() }).await?
                     }
@@ -294,13 +310,15 @@ async fn send_frame(
 fn start_audio(
     conn: &quinn::Connection,
     source: crate::capture::SourceKind,
+    device: Option<String>,
+    seq: Arc<std::sync::atomic::AtomicU32>,
     events: &tmpsc::UnboundedSender<Event>,
 ) -> Option<oriel_audio::Capture> {
     use crate::capture::SourceKind;
     let source = match source {
         SourceKind::TestPattern => oriel_audio::CaptureSource::TestTone,
         SourceKind::Auto if cfg!(any(windows, target_os = "linux")) => {
-            oriel_audio::CaptureSource::SystemOutput
+            oriel_audio::CaptureSource::SystemOutput(device)
         }
         SourceKind::Auto => {
             let _ = events.send(Event::Notice(
@@ -310,12 +328,11 @@ fn start_audio(
         }
     };
     let conn = conn.clone();
-    let mut seq = 0u32;
     match oriel_audio::start_capture(source, 128_000, move |data| {
+        let seq = seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if let Ok(bytes) = oriel_proto::encode(&Datagram::Audio { seq, data }) {
             let _ = conn.send_datagram(bytes.into());
         }
-        seq = seq.wrapping_add(1);
     }) {
         Ok(c) => Some(c),
         Err(e) => {

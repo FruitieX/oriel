@@ -383,6 +383,7 @@ fn run() -> Result<()> {
                 auto_codec,
                 pyrowave_kbps: pyrowave_bitrate.unwrap_or(file.pyrowave_kbps),
                 resolution: None,
+                audio_device: file.hosts.get(&host).and_then(|p| p.audio_device.clone()),
             };
             let codec_key = if auto_codec {
                 "auto".to_string()
@@ -433,6 +434,7 @@ fn run() -> Result<()> {
                         fullscreen,
                         show_stats: stats,
                         codec_key,
+                        playback_device: file.playback_device.clone(),
                         screenshot: screenshot
                             .map(|p| (p, Duration::from_secs_f64(screenshot_after))),
                     }),

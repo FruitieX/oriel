@@ -24,7 +24,13 @@ impl Drop for SinkCapture {
     }
 }
 
-pub fn capture_output(tx: crossbeam_channel::Sender<Vec<f32>>) -> Result<SinkCapture> {
+/// Capture what the sink named `target` (a node name), or the default
+/// sink, plays.
+pub fn capture_output(
+    tx: crossbeam_channel::Sender<Vec<f32>>,
+    target: Option<&str>,
+) -> Result<SinkCapture> {
+    let target = target.map(str::to_string);
     let (quit_tx, quit_rx) = pw::channel::channel::<()>();
     let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<()>>();
     let thread = std::thread::Builder::new()
@@ -37,17 +43,17 @@ pub fn capture_output(tx: crossbeam_channel::Sender<Vec<f32>>) -> Result<SinkCap
                 let core = context.connect_rc(None)?;
                 let ml = mainloop.clone();
                 let _quit = quit_rx.attach(mainloop.loop_(), move |_| ml.quit());
-                let stream = pw::stream::StreamBox::new(
-                    &core,
-                    "oriel-audio",
-                    pw::properties::properties! {
-                        *pw::keys::MEDIA_TYPE => "Audio",
-                        *pw::keys::MEDIA_CATEGORY => "Capture",
-                        *pw::keys::MEDIA_ROLE => "Music",
-                        "stream.capture.sink" => "true",
-                        *pw::keys::NODE_LATENCY => "480/48000",
-                    },
-                )?;
+                let mut props = pw::properties::properties! {
+                    *pw::keys::MEDIA_TYPE => "Audio",
+                    *pw::keys::MEDIA_CATEGORY => "Capture",
+                    *pw::keys::MEDIA_ROLE => "Music",
+                    "stream.capture.sink" => "true",
+                    *pw::keys::NODE_LATENCY => "480/48000",
+                };
+                if let Some(target) = &target {
+                    props.insert(*pw::keys::TARGET_OBJECT, target.as_str());
+                }
+                let stream = pw::stream::StreamBox::new(&core, "oriel-audio", props)?;
                 let _listener = stream
                     .add_local_listener_with_user_data(())
                     .process(move |stream, _| {

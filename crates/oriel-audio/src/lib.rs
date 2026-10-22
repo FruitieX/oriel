@@ -25,10 +25,12 @@ pub const CHANNELS: usize = 2;
 /// Samples per channel in one packet (10 ms).
 pub const FRAME: usize = 480;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CaptureSource {
-    /// What the default output device plays (WASAPI loopback on Windows).
-    SystemOutput,
+    /// What an output device plays (WASAPI loopback on Windows, a sink
+    /// monitor on PipeWire): the one with this [`OutputDevice::id`], or the
+    /// default one.
+    SystemOutput(Option<String>),
     /// A short beep every second, for testing.
     TestTone,
 }
@@ -75,7 +77,7 @@ pub fn start_capture(
             let (tx, rx) = crossbeam_channel::bounded::<Vec<f32>>(64);
             // The stream must stay on the thread that created it.
             let _stream = match source {
-                CaptureSource::SystemOutput => match open_system_output(tx) {
+                CaptureSource::SystemOutput(device) => match open_system_output(tx, device) {
                     Ok(s) => Some(s),
                     Err(e) => {
                         let _ = ready_tx.send(Err(e));
@@ -169,23 +171,97 @@ enum OutputCapture {
     PipeWire(linux::SinkCapture),
 }
 
-fn open_system_output(tx: crossbeam_channel::Sender<Vec<f32>>) -> Result<OutputCapture> {
+fn open_system_output(
+    tx: crossbeam_channel::Sender<Vec<f32>>,
+    device: Option<String>,
+) -> Result<OutputCapture> {
     #[cfg(target_os = "linux")]
-    return Ok(OutputCapture::PipeWire(linux::capture_output(tx)?));
+    return Ok(OutputCapture::PipeWire(linux::capture_output(
+        tx,
+        device
+            .as_deref()
+            .map(|id| id.strip_prefix("pipewire:").unwrap_or(id)),
+    )?));
     #[cfg(not(target_os = "linux"))]
-    Ok(OutputCapture::Cpal(open_loopback(tx)?))
+    Ok(OutputCapture::Cpal(open_loopback(tx, device.as_deref())?))
+}
+
+/// An audio output device.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutputDevice {
+    /// Stable identifier (a cpal device id such as `wasapi:...` or
+    /// `pipewire:<node name>`).
+    pub id: String,
+    pub name: String,
+}
+
+/// The audio API whose devices are listed and chosen: PipeWire where it
+/// runs (its sinks are what users know), else the platform default.
+fn device_host() -> cpal::Host {
+    #[cfg(target_os = "linux")]
+    if let Ok(host) = cpal::host_from_id(cpal::HostId::PipeWire) {
+        return host;
+    }
+    cpal::default_host()
+}
+
+/// The output devices that can be captured or played to.
+pub fn output_devices() -> Vec<OutputDevice> {
+    let host = device_host();
+    let Ok(devices) = host.output_devices() else {
+        return Vec::new();
+    };
+    let mut list: Vec<OutputDevice> = devices
+        .filter_map(|d| {
+            let id = d.id().ok()?;
+            let description = d.description().ok()?;
+            // PipeWire also lists the default-device alias and applications'
+            // playback streams; only real sinks can be both played to and
+            // captured.
+            if id.id() == "sink_default"
+                || (id.host() != cpal::default_host().id() && !description.supports_input())
+            {
+                return None;
+            }
+            Some(OutputDevice {
+                id: id.to_string(),
+                name: description.name().to_string(),
+            })
+        })
+        .collect();
+    list.sort_by(|a, b| a.name.cmp(&b.name));
+    list.dedup_by(|a, b| a.id == b.id);
+    list
+}
+
+/// The output device with this id, or the default one.
+fn output_device(id: Option<&str>) -> Result<cpal::Device> {
+    if let Some(id) = id {
+        let found = id
+            .parse::<cpal::DeviceId>()
+            .ok()
+            .and_then(|id| cpal::host_from_id(id.host()).ok()?.device_by_id(&id));
+        match found {
+            Some(d) => return Ok(d),
+            None => tracing::warn!(id, "audio device not found, using the default"),
+        }
+    }
+    cpal::default_host()
+        .default_output_device()
+        .context("no audio output device")
 }
 
 #[cfg_attr(target_os = "linux", allow(dead_code))]
-fn open_loopback(tx: crossbeam_channel::Sender<Vec<f32>>) -> Result<cpal::Stream> {
-    let host = cpal::default_host();
+fn open_loopback(
+    tx: crossbeam_channel::Sender<Vec<f32>>,
+    id: Option<&str>,
+) -> Result<cpal::Stream> {
     // On WASAPI an input stream on an output device records what it plays.
-    let device = host
-        .default_output_device()
-        .context("no audio output device")?;
+    let device = output_device(id)?;
     let supported = device.default_output_config()?;
     let config = supported.config();
     tracing::info!(
+        device = device.description().map(|d| d.name().to_string()).unwrap_or_default(),
         rate = config.sample_rate,
         channels = config.channels,
         format = ?supported.sample_format(),
@@ -259,7 +335,9 @@ const TARGET_MS: usize = 30;
 const MAX_MS: usize = 80;
 
 impl Player {
-    pub fn start() -> Result<Self> {
+    /// Play on the output device with this [`OutputDevice::id`], or the
+    /// default one.
+    pub fn start(device: Option<String>) -> Result<Self> {
         let (tx, rx) = crossbeam_channel::unbounded::<(u32, Vec<u8>)>();
         let stats = Arc::new(Mutex::new(PlayerStats::default()));
         let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<()>>();
@@ -268,13 +346,14 @@ impl Player {
             .name("oriel-audio-play".into())
             .spawn(move || {
                 let buffer = Arc::new(Mutex::new(VecDeque::<f32>::new()));
-                let stream = match open_output(buffer.clone(), thread_stats.clone()) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        let _ = ready_tx.send(Err(e));
-                        return;
-                    }
-                };
+                let stream =
+                    match open_output(device.as_deref(), buffer.clone(), thread_stats.clone()) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            let _ = ready_tx.send(Err(e));
+                            return;
+                        }
+                    };
                 let mut decoder = match opus::Decoder::new(SAMPLE_RATE, opus::Channels::Stereo) {
                     Ok(d) => d,
                     Err(e) => {
@@ -329,13 +408,11 @@ impl Player {
 }
 
 fn open_output(
+    id: Option<&str>,
     buffer: Arc<Mutex<VecDeque<f32>>>,
     stats: Arc<Mutex<PlayerStats>>,
 ) -> Result<cpal::Stream> {
-    let host = cpal::default_host();
-    let device = host
-        .default_output_device()
-        .context("no audio output device")?;
+    let device = output_device(id)?;
     let supported = device.default_output_config()?;
     let rate = supported.sample_rate();
     let channels = supported.channels() as usize;
@@ -446,5 +523,73 @@ mod tests {
             dec.decode_float(&packet[..n], &mut pcm, false).unwrap(),
             FRAME
         );
+    }
+}
+
+#[cfg(test)]
+mod device_tests {
+    /// Lists this machine's devices; run with --nocapture to see them.
+    #[test]
+    fn list_output_devices() {
+        let devices = super::output_devices();
+        for d in &devices {
+            eprintln!("{} — {}", d.name, d.id);
+        }
+        let mut ids: Vec<_> = devices.iter().map(|d| &d.id).collect();
+        ids.dedup();
+        assert_eq!(ids.len(), devices.len());
+    }
+}
+
+/// Needs a PipeWire with the sinks `oriel-sink-a` and `oriel-sink-b`;
+/// runs only with ORIEL_AUDIO_DEVICE_TEST set.
+#[cfg(all(test, target_os = "linux"))]
+mod routing_tests {
+    use super::*;
+
+    #[test]
+    fn plays_and_captures_chosen_devices() {
+        if std::env::var_os("ORIEL_AUDIO_DEVICE_TEST").is_none() {
+            eprintln!("skipping: ORIEL_AUDIO_DEVICE_TEST not set");
+            return;
+        }
+        let bytes = |sink: &str| {
+            let total = Arc::new(Mutex::new(0usize));
+            let t = total.clone();
+            let capture = start_capture(
+                CaptureSource::SystemOutput(Some(format!("pipewire:{sink}"))),
+                128_000,
+                move |p| *t.lock() += p.len(),
+            )
+            .unwrap();
+            (capture, total)
+        };
+        let (_a, a) = bytes("oriel-sink-a");
+        let (_b, b) = bytes("oriel-sink-b");
+        let player = Player::start(Some("pipewire:oriel-sink-b".into())).unwrap();
+        let mut enc = opus::Encoder::new(
+            SAMPLE_RATE,
+            opus::Channels::Stereo,
+            opus::Application::LowDelay,
+        )
+        .unwrap();
+        let mut out = vec![0u8; 1500];
+        let start = Instant::now();
+        for seq in 0..150u32 {
+            let pcm: Vec<f32> = (0..FRAME)
+                .flat_map(|i| {
+                    let t = (seq as usize * FRAME + i) as f32 / SAMPLE_RATE as f32;
+                    let v = (t * 440.0 * std::f32::consts::TAU).sin() * 0.5;
+                    [v, v]
+                })
+                .collect();
+            let n = enc.encode_float(&pcm, &mut out).unwrap();
+            player.push(seq, out[..n].to_vec());
+            let due = start + Duration::from_millis(10 * (seq as u64 + 1));
+            std::thread::sleep(due.saturating_duration_since(Instant::now()));
+        }
+        let (a, b) = (*a.lock(), *b.lock());
+        eprintln!("captured bytes: sink a {a}, sink b {b}");
+        assert!(b > 3 * a.max(1), "the tone should only reach sink b");
     }
 }

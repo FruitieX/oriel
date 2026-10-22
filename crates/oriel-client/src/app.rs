@@ -54,6 +54,8 @@ pub struct ViewerOptions {
     /// The codec choice key the settings came from (see
     /// [`crate::config::codec_choice`]).
     pub codec_key: String,
+    /// Local output for the host's sound (`None`: the default device).
+    pub playback_device: Option<String>,
 }
 
 /// Choices made during a session, remembered for the next one.
@@ -62,6 +64,8 @@ pub struct ViewerPrefs {
     pub fullscreen: bool,
     pub codec_key: String,
     pub resolution: Option<(u32, u32)>,
+    /// The host output being heard (`None`: the host's default).
+    pub audio_device: Option<String>,
 }
 
 /// Why the viewer window went away.
@@ -95,12 +99,14 @@ pub fn run(
         connected.ctl,
         options.settings.clone(),
         options.hardware_decode,
+        options.playback_device.clone(),
         sink.clone(),
     );
     let mut viewer = Viewer::new(session.clone(), connected.host_name, options);
     viewer.sink = Some(sink.clone());
     viewer.displays = connected.displays;
     viewer.host_codecs = connected.codecs;
+    viewer.audio_devices = connected.audio_devices;
     event_loop.run_app_on_demand(&mut viewer)?;
     session.close();
     rt.block_on(async {
@@ -111,6 +117,7 @@ pub fn run(
         fullscreen: viewer.fullscreen,
         codec_key: viewer.codec_key.clone(),
         resolution: viewer.resolution,
+        audio_device: viewer.audio_device.clone(),
     };
     Ok((viewer.exit.take().unwrap_or(ViewerExit::Closed), prefs))
 }
@@ -175,6 +182,8 @@ struct Viewer {
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     shortcuts_inhibited: bool,
     host_codecs: Vec<oriel_proto::Codec>,
+    audio_devices: Vec<oriel_proto::AudioDevice>,
+    audio_device: Option<String>,
     codec_key: String,
     resolution: Option<(u32, u32)>,
     fullscreen: bool,
@@ -227,6 +236,8 @@ impl Viewer {
             display: options.settings.display,
             shortcuts_inhibited: false,
             host_codecs: Vec::new(),
+            audio_devices: Vec::new(),
+            audio_device: options.settings.audio_device.clone(),
             codec_key: options.codec_key.clone(),
             resolution: options.settings.resolution,
             fullscreen: options.fullscreen,
@@ -697,6 +708,10 @@ impl Viewer {
                 self.sized_window = false;
                 self.session.send(ClientMsg::SetResolution { resolution });
             }
+            Action::SetAudioDevice(id) => {
+                self.audio_device = id.clone();
+                self.session.send(ClientMsg::SetAudioDevice { id });
+            }
             Action::SetBitrate(mbps) => {
                 self.bitrate_mbps = mbps;
                 self.session
@@ -728,6 +743,7 @@ enum Action {
     SelectDisplay(u32),
     SetCodec(String),
     SetResolution(Option<(u32, u32)>),
+    SetAudioDevice(Option<String>),
     Disconnect,
 }
 
@@ -751,6 +767,9 @@ struct OverlayState {
     codec_key: String,
     modes: Vec<(u32, u32)>,
     resolution: Option<(u32, u32)>,
+    /// Host outputs to choose from (empty without sound).
+    audio_devices: Vec<(String, String)>,
+    audio_device: Option<String>,
 }
 
 impl From<&Viewer> for OverlayState {
@@ -854,6 +873,15 @@ impl From<&Viewer> for OverlayState {
                     .unwrap_or_default()
             },
             resolution: v.resolution,
+            audio_devices: if v.options.settings.audio {
+                v.audio_devices
+                    .iter()
+                    .map(|d| (d.id.clone(), d.name.clone()))
+                    .collect()
+            } else {
+                Vec::new()
+            },
+            audio_device: v.audio_device.clone(),
         }
     }
 }
@@ -1007,6 +1035,34 @@ fn overlay(ctx: &egui::Context, s: &OverlayState, viewport: Option<Viewport>) ->
                                     && s.resolution != r
                                 {
                                     actions.push(Action::SetResolution(r));
+                                }
+                            }
+                        });
+                });
+            }
+            if !s.audio_devices.is_empty() {
+                ui.horizontal(|ui| {
+                    ui.label("Sound from:");
+                    let name = |id: &Option<String>| match id {
+                        None => "Host's default output".to_string(),
+                        Some(id) => s
+                            .audio_devices
+                            .iter()
+                            .find(|(i, _)| i == id)
+                            .map_or_else(|| id.clone(), |(_, n)| n.clone()),
+                    };
+                    egui::ComboBox::from_id_salt("audio-device")
+                        .selected_text(name(&s.audio_device))
+                        .show_ui(ui, |ui| {
+                            let choices = std::iter::once(None)
+                                .chain(s.audio_devices.iter().map(|(id, _)| Some(id.clone())));
+                            for choice in choices {
+                                if ui
+                                    .selectable_label(s.audio_device == choice, name(&choice))
+                                    .clicked()
+                                    && s.audio_device != choice
+                                {
+                                    actions.push(Action::SetAudioDevice(choice));
                                 }
                             }
                         });

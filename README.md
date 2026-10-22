@@ -14,7 +14,11 @@ display) and the client (connects to hosts).
 - A menu button in the bottom-right corner shows the shortcut
   (default **Ctrl+Alt+Shift+M**) that opens the menu and releases keyboard
   and mouse.
-- System audio (Opus), text clipboard sync, display selection.
+- System audio (Opus) from the host output you pick in the menu, played on
+  the local output chosen in Settings; text clipboard sync; display
+  selection.
+- Shortcuts for the menu, fullscreen, next/previous display, statistics and
+  disconnecting; rebind them in Settings → Input.
 - Codecs: HEVC/H.264/AV1 through FFmpeg, and
   [PyroWave](https://github.com/Themaister/pyrowave) for fast LANs
   (`--codec pyrowave`, or `--codec auto` to switch between PyroWave and HEVC
@@ -58,6 +62,13 @@ max_fps = 120
 codecs = ["hevc", "h264"]
 mouse = "auto"      # or "desktop", "captured"
 audio = true
+
+[shortcuts]         # defaults shown; "" disables one
+fullscreen = "Ctrl+Alt+Shift+F"
+next_display = "Ctrl+Alt+Shift+Right"
+previous_display = "Ctrl+Alt+Shift+Left"
+stats = "Ctrl+Alt+Shift+S"
+disconnect = "Ctrl+Alt+Shift+Q"
 ```
 
 ## Build

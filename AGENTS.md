@@ -35,6 +35,11 @@ Read [docs/architecture.md](docs/architecture.md) first.
   `--screenshot path.png`; `ORIEL_DEBUG_MENU=1` opens the menu at start.
 - Machines without a sound card: point `HOME` at a directory whose
   `.asoundrc` sets `pcm.!default { type null }`.
+- Audio device routing: run a private `pipewire` and `wireplumber` (in
+  `dbus-run-session`) with null sinks `oriel-sink-a`/`oriel-sink-b`, then
+  `ORIEL_AUDIO_DEVICE_TEST=1 cargo test -p oriel-audio routing`. Keep
+  `XDG_RUNTIME_DIR` short: PipeWire fails with "File name too long" on
+  long socket paths.
 - Do not test `av1_vaapi` on the Radeon 780M (honeydew): Mesa accepts the
   encoder but the GPU context is reset.
 

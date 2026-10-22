@@ -229,6 +229,16 @@ impl Host {
             name: self.options.name.clone(),
             displays: capture::list_displays(self.options.source),
             codecs: oriel_media::available_codecs(),
+            audio_devices: match self.options.source {
+                capture::SourceKind::Auto => oriel_audio::output_devices()
+                    .into_iter()
+                    .map(|d| oriel_proto::AudioDevice {
+                        id: d.id,
+                        name: d.name,
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            },
         })
         .await?;
 
@@ -298,6 +308,7 @@ impl Host {
             name: self.options.name.clone(),
             displays: Vec::new(),
             codecs: Vec::new(),
+            audio_devices: Vec::new(),
         })
         .await?;
         if !pairing::pair_as_host(&mut ctl, &pin, &client_fp, &self.identity.fingerprint).await? {

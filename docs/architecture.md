@@ -69,7 +69,8 @@ input session, with no permission dialog. One session is shared by the
 capturer and the injector. Frames arrive over PipeWire as BGRx in shared
 memory with the cursor as `SPA_META_Cursor` metadata (client-side cursor);
 input goes through `Notify*` calls with evdev key and button codes. System
-sound is a PipeWire capture of the default sink. Other desktops would use
+sound is a PipeWire capture of the default sink, or of the sink the client
+chose (`target.object`). Other desktops would use
 xdg-desktop-portal (ScreenCast + RemoteDesktop) behind the same interfaces.
 
 Testing without a desktop: run PipeWire, WirePlumber (plus a null sink for
@@ -79,9 +80,17 @@ inside `dbus-run-session`, then `oriel host` there (`XDG_CURRENT_DESKTOP=GNOME`)
 ## Client
 
 The decoder thread prefers VAAPI (Linux), D3D11VA (Windows) or VideoToolbox
-(macOS), downloads to NV12/I420 and publishes only the newest frame. The
-renderer uploads the planes and converts with the frame's own matrix and
-range. The window cursor is set to the host's cursor image; in relative mode
+(macOS) and publishes only the newest frame. On Linux with Vulkan, VAAPI
+frames stay on the GPU: each is mapped to DRM PRIME (which waits for the
+decode) and its NV12 planes are imported into wgpu as DMA-BUF textures,
+once per decoder surface; the renderer holds the last three shown frames so
+their surfaces are not reused while still sampled. Elsewhere frames are
+downloaded to NV12/I420 and uploaded. The shader converts with the frame's
+own matrix and range. `ORIEL_NO_ZERO_COPY=1` forces the copying paths.
+
+The Windows host sends nothing while the screen is unchanged: Desktop
+Duplication reports a frame for every present, so presents without dirty or
+move rectangles are skipped. The window cursor is set to the host's cursor image; in relative mode
 the pointer is locked and raw motion is sent.
 
 ## PyroWave and automatic codec switching

@@ -78,6 +78,7 @@ pub fn start(
     ctl: ControlStream,
     settings: StreamSettings,
     hardware_decode: bool,
+    playback_device: Option<String>,
     sink: Sink,
 ) -> Session {
     let _guard = rt.enter();
@@ -97,7 +98,7 @@ pub fn start(
     );
 
     let player = if settings.audio {
-        match oriel_audio::Player::start() {
+        match oriel_audio::Player::start(playback_device) {
             Ok(p) => Some(p),
             Err(e) => {
                 tracing::warn!("no audio output: {e:#}");

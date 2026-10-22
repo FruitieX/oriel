@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 pub mod keys;
 
 pub const ALPN: &[u8] = b"oriel/1";
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 pub const DEFAULT_PORT: u16 = 48600;
 /// Upper bound for a single control/input message.
 pub const MAX_MESSAGE_LEN: usize = 4 * 1024 * 1024;
@@ -57,6 +57,13 @@ pub struct DisplayInfo {
     pub modes: Vec<(u32, u32)>,
 }
 
+/// A host sound output that can be streamed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AudioDevice {
+    pub id: String,
+    pub name: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamSettings {
     /// Display to stream; `None` picks the primary display.
@@ -76,6 +83,9 @@ pub struct StreamSettings {
     pub pyrowave_kbps: u32,
     /// Switch the host display to this resolution for the session.
     pub resolution: Option<(u32, u32)>,
+    /// The host output whose sound is streamed (an [`AudioDevice::id`]);
+    /// `None` follows the host's default output.
+    pub audio_device: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -123,6 +133,10 @@ pub enum ClientMsg {
     SetResolution {
         resolution: Option<(u32, u32)>,
     },
+    /// Stream another host output's sound (as in `StreamSettings`).
+    SetAudioDevice {
+        id: Option<String>,
+    },
     Ping {
         id: u64,
     },
@@ -142,6 +156,8 @@ pub enum HostMsg {
         displays: Vec<DisplayInfo>,
         /// Codecs the host can encode.
         codecs: Vec<Codec>,
+        /// Sound outputs the client can choose to hear.
+        audio_devices: Vec<AudioDevice>,
     },
     Pair(PairMsg),
     PairResult {

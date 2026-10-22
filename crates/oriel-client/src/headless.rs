@@ -27,6 +27,9 @@ pub async fn run(
         connected.host_name,
         connected.displays.len()
     );
+    for d in &connected.audio_devices {
+        println!("host sound output: {} ({})", d.name, d.id);
+    }
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let sink: session::Sink = Arc::new(move |ev| {
         let _ = tx.send(ev);
@@ -37,6 +40,7 @@ pub async fn run(
         connected.ctl,
         settings,
         hardware,
+        None,
         sink,
     );
     let start = Instant::now();

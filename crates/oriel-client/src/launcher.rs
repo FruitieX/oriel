@@ -211,6 +211,7 @@ pub fn run(
         bindings: config.bindings(),
         recording: None,
         shortcut_hint: String::new(),
+        playback_devices: Vec::new(),
         config,
         paths,
         host,
@@ -363,6 +364,8 @@ struct Launcher {
     /// The command whose shortcut the next key press sets.
     recording: Option<Command>,
     shortcut_hint: String,
+    /// Local sound outputs, listed when the settings dialog opens.
+    playback_devices: Vec<oriel_audio::OutputDevice>,
     opened: Instant,
     screenshot_taken: bool,
 }
@@ -421,6 +424,7 @@ impl Launcher {
             fullscreen: Some(prefs.fullscreen),
             codec: Some(prefs.codec_key),
             resolution: Some(format_resolution(prefs.resolution)),
+            audio_device: prefs.audio_device,
         };
         let entry = self.config.hosts.entry(host.to_string()).or_default();
         if *entry != new {
@@ -445,6 +449,7 @@ impl Launcher {
                 auto_codec,
                 pyrowave_kbps: c.pyrowave_kbps,
                 resolution: prefs.resolution.as_deref().and_then(parse_resolution),
+                audio_device: prefs.audio_device.clone(),
             },
             hardware_decode: true,
             shortcuts: c.bindings(),
@@ -453,6 +458,7 @@ impl Launcher {
             show_stats: c.show_stats,
             screenshot: None,
             codec_key,
+            playback_device: c.playback_device.clone(),
         })
     }
 
@@ -492,6 +498,7 @@ impl Launcher {
                 self.bindings = self.config.bindings();
                 self.recording = None;
                 self.shortcut_hint.clear();
+                self.playback_devices = oriel_audio::output_devices();
                 self.settings_open = true;
             }
             Action::CloseSettings => {
@@ -1227,6 +1234,37 @@ impl Launcher {
                         SettingsTab::Sound => {
                             ui.label("Sound");
                             ui.checkbox(&mut c.audio, "Play the remote computer's sound");
+                            ui.end_row();
+                            ui.label("Play on");
+                            let devices = &self.playback_devices;
+                            let name = |id: &Option<String>| match id {
+                                None => "Default output".to_string(),
+                                Some(id) => devices.iter().find(|d| &d.id == id).map_or_else(
+                                    || format!("{id} (not found)"),
+                                    |d| d.name.clone(),
+                                ),
+                            };
+                            egui::ComboBox::from_id_salt("playback-device")
+                                .selected_text(name(&c.playback_device))
+                                .width(260.0)
+                                .show_ui(ui, |ui| {
+                                    let choices = std::iter::once(None)
+                                        .chain(devices.iter().map(|d| Some(d.id.clone())));
+                                    for choice in choices {
+                                        let label = name(&choice);
+                                        ui.selectable_value(&mut c.playback_device, choice, label);
+                                    }
+                                });
+                            ui.end_row();
+                            ui.label("");
+                            ui.label(
+                                egui::RichText::new(
+                                    "Which of the remote computer's outputs you hear is chosen \
+                                     in the menu while connected.",
+                                )
+                                .color(MUTED)
+                                .size(12.0),
+                            );
                             ui.end_row();
                         }
                     });

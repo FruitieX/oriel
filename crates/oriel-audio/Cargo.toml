@@ -14,3 +14,5 @@ crossbeam-channel.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 pipewire = "0.10"
+# Lists PipeWire sinks by their user-facing names.
+cpal = { version = "0.18", features = ["pipewire"] }

@@ -30,6 +30,9 @@ pub struct ClientConfig {
     pub show_stats: bool,
     /// Share this computer when oriel starts.
     pub share: bool,
+    /// Local output for remote sound (an `oriel_audio::OutputDevice` id);
+    /// unset plays on the default device.
+    pub playback_device: Option<String>,
     /// Shortcuts for the other viewer commands, by command id (see
     /// [`Command::id`]): a missing entry uses the default, an empty one
     /// disables the shortcut.
@@ -47,6 +50,8 @@ pub struct HostPrefs {
     pub codec: Option<String>,
     /// "native" or "WIDTHxHEIGHT".
     pub resolution: Option<String>,
+    /// The host output to hear; unset follows the host's default.
+    pub audio_device: Option<String>,
 }
 
 /// The codec choices offered in the UI, as (key, label).
@@ -95,6 +100,7 @@ impl Default for ClientConfig {
             fullscreen: false,
             show_stats: false,
             share: false,
+            playback_device: None,
             shortcuts: Default::default(),
             hosts: Default::default(),
         }
