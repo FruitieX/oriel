@@ -392,7 +392,8 @@ mod tests {
         let out = c.convert(&vec![0.5; 4410]);
         // 100 ms of mono at 44.1 kHz → ~4800 stereo frames at 48 kHz.
         assert!((out.len() as i64 / 2 - 4800).abs() <= 2, "{}", out.len());
-        assert!(out.iter().skip(2).all(|v| (*v - 0.5).abs() < 1e-6));
+        // The first frames interpolate from the previous chunk (silence).
+        assert!(out.iter().skip(4).all(|v| (*v - 0.5).abs() < 1e-6));
     }
 
     #[test]
