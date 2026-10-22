@@ -11,6 +11,8 @@ use crate::cursor::CursorPos;
 
 #[cfg(windows)]
 mod dxgi;
+#[cfg(target_os = "linux")]
+mod pipewire;
 pub mod test_pattern;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -73,6 +75,11 @@ pub fn list_displays(source: SourceKind) -> Vec<DisplayInfo> {
             tracing::warn!("cannot enumerate displays: {e:#}");
             Vec::new()
         }),
+        #[cfg(target_os = "linux")]
+        SourceKind::Auto => crate::gnome::list_displays().unwrap_or_else(|e| {
+            tracing::warn!("cannot enumerate displays: {e:#}");
+            Vec::new()
+        }),
         _ => vec![test_pattern::display()],
     }
 }
@@ -85,6 +92,13 @@ pub fn open(
     match source {
         #[cfg(windows)]
         SourceKind::Auto => Ok(Box::new(dxgi::DxgiCapturer::open(display)?)),
+        #[cfg(target_os = "linux")]
+        SourceKind::Auto => {
+            if !crate::gnome::GnomeSession::available() {
+                anyhow::bail!("hosting on Linux needs a GNOME session for now");
+            }
+            Ok(Box::new(pipewire::PipeWireCapturer::open(display)?))
+        }
         _ => {
             let _ = display;
             Ok(Box::new(test_pattern::TestPattern::new(test.clone())))

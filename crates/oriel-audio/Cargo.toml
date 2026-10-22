@@ -11,3 +11,6 @@ parking_lot.workspace = true
 cpal = "0.18"
 opus = "0.4"
 crossbeam-channel.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+pipewire = "0.10"

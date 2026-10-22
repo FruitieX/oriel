@@ -17,6 +17,9 @@ use anyhow::{Context, Result, bail};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use parking_lot::Mutex;
 
+#[cfg(target_os = "linux")]
+mod linux;
+
 pub const SAMPLE_RATE: u32 = 48_000;
 pub const CHANNELS: usize = 2;
 /// Samples per channel in one packet (10 ms).
@@ -72,7 +75,7 @@ pub fn start_capture(
             let (tx, rx) = crossbeam_channel::bounded::<Vec<f32>>(64);
             // The stream must stay on the thread that created it.
             let _stream = match source {
-                CaptureSource::SystemOutput => match open_loopback(tx) {
+                CaptureSource::SystemOutput => match open_system_output(tx) {
                     Ok(s) => Some(s),
                     Err(e) => {
                         let _ = ready_tx.send(Err(e));
@@ -158,6 +161,22 @@ impl Converter {
     }
 }
 
+/// Keeps a system output capture alive.
+#[allow(dead_code)]
+enum OutputCapture {
+    Cpal(cpal::Stream),
+    #[cfg(target_os = "linux")]
+    PipeWire(linux::SinkCapture),
+}
+
+fn open_system_output(tx: crossbeam_channel::Sender<Vec<f32>>) -> Result<OutputCapture> {
+    #[cfg(target_os = "linux")]
+    return Ok(OutputCapture::PipeWire(linux::capture_output(tx)?));
+    #[cfg(not(target_os = "linux"))]
+    Ok(OutputCapture::Cpal(open_loopback(tx)?))
+}
+
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 fn open_loopback(tx: crossbeam_channel::Sender<Vec<f32>>) -> Result<cpal::Stream> {
     let host = cpal::default_host();
     // On WASAPI an input stream on an output device records what it plays.

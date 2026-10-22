@@ -19,6 +19,11 @@ parking_lot.workspace = true
 rand.workspace = true
 arboard.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = { version = "5", default-features = false, features = ["tokio"] }
+pipewire = "0.10"
+futures-util = { version = "0.3", default-features = false }
+
 [target.'cfg(windows)'.dependencies]
 windows-service.workspace = true
 windows = { workspace = true, features = [

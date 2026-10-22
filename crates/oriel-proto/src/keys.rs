@@ -152,6 +152,79 @@ pub fn hid_to_set1(usage: u16) -> Option<u16> {
     })
 }
 
+/// Map a HID usage to a Linux evdev key code (`KEY_*`).
+pub fn hid_to_evdev(usage: u16) -> Option<u16> {
+    const LETTERS: [u16; 26] = [
+        30, 48, 46, 32, 18, 33, 34, 35, 23, 36, 37, 38, 50, 49, 24, 25, 16, 19, 31, 20, 22, 47, 17,
+        45, 21, 44,
+    ];
+    const NUMPAD1_9: [u16; 9] = [79, 80, 81, 75, 76, 77, 71, 72, 73];
+    Some(match usage {
+        A..=Z => LETTERS[(usage - A) as usize],
+        DIGIT1..=DIGIT0 => usage - DIGIT1 + 2, // KEY_1 = 2 ... KEY_0 = 11
+        ENTER => 28,
+        ESCAPE => 1,
+        BACKSPACE => 14,
+        TAB => 15,
+        SPACE => 57,
+        MINUS => 12,
+        EQUAL => 13,
+        BRACKET_LEFT => 26,
+        BRACKET_RIGHT => 27,
+        BACKSLASH | NON_US_HASH => 43,
+        SEMICOLON => 39,
+        QUOTE => 40,
+        BACKQUOTE => 41,
+        COMMA => 51,
+        PERIOD => 52,
+        SLASH => 53,
+        CAPS_LOCK => 58,
+        F1..=0x43 => usage - F1 + 59, // F1..F10 = 59..68
+        0x44 => 87,                   // F11
+        F12 => 88,
+        PRINT_SCREEN => 99,
+        SCROLL_LOCK => 70,
+        PAUSE => 119,
+        INSERT => 110,
+        HOME => 102,
+        PAGE_UP => 104,
+        DELETE => 111,
+        END => 107,
+        PAGE_DOWN => 109,
+        ARROW_RIGHT => 106,
+        ARROW_LEFT => 105,
+        ARROW_DOWN => 108,
+        ARROW_UP => 103,
+        NUM_LOCK => 69,
+        NUMPAD_DIVIDE => 98,
+        NUMPAD_MULTIPLY => 55,
+        NUMPAD_SUBTRACT => 74,
+        NUMPAD_ADD => 78,
+        NUMPAD_ENTER => 96,
+        NUMPAD1..=NUMPAD9 => NUMPAD1_9[(usage - NUMPAD1) as usize],
+        NUMPAD0 => 82,
+        NUMPAD_DECIMAL => 83,
+        NON_US_BACKSLASH => 86,
+        CONTEXT_MENU => 127,
+        NUMPAD_EQUAL => 117,
+        F13..=F24 => usage - F13 + 183,
+        INTL_RO => 89,
+        KANA_MODE => 93,
+        INTL_YEN => 124,
+        CONVERT => 92,
+        NON_CONVERT => 94,
+        CONTROL_LEFT => 29,
+        SHIFT_LEFT => 42,
+        ALT_LEFT => 56,
+        META_LEFT => 125,
+        CONTROL_RIGHT => 97,
+        SHIFT_RIGHT => 54,
+        ALT_RIGHT => 100,
+        META_RIGHT => 126,
+        _ => return None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -168,5 +241,21 @@ mod tests {
         assert_eq!(hid_to_set1(NUMPAD1 + 4), Some(0x4C)); // numpad 5
         assert_eq!(hid_to_set1(F24), Some(0x76));
         assert_eq!(hid_to_set1(PAUSE), None);
+    }
+
+    #[test]
+    fn evdev_matches_set1_for_plain_keys() {
+        // Classic evdev codes equal set-1 scancodes for non-extended keys.
+        for usage in
+            (A..=Z)
+                .chain(DIGIT1..=DIGIT0)
+                .chain([ENTER, SPACE, F1, CONTROL_LEFT, SHIFT_RIGHT])
+        {
+            let set1 = hid_to_set1(usage).unwrap();
+            assert_eq!(set1 & EXTENDED, 0);
+            assert_eq!(hid_to_evdev(usage), Some(set1), "usage {usage:#x}");
+        }
+        assert_eq!(hid_to_evdev(ARROW_UP), Some(103));
+        assert_eq!(hid_to_evdev(META_LEFT), Some(125));
     }
 }

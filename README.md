@@ -4,8 +4,8 @@ Low-latency remote desktop in Rust. One binary is both the host (shares a
 display) and the client (connects to hosts).
 
 - Hosts: Windows (Desktop Duplication + NVENC/AMF/QSV/Media Foundation via
-  FFmpeg, zero-copy on NVIDIA and AMD). Linux hosting is a test pattern for
-  now.
+  FFmpeg, zero-copy on NVIDIA and AMD) and Linux under GNOME (Mutter's
+  remote desktop API + PipeWire, no permission prompt; VAAPI encoding).
 - Clients: Linux (Wayland, X11), Windows; macOS should build but is untested.
 - Client-side cursor: the host sends cursor images, the client's own OS cursor
   draws them, so pointing feels local even with latency. When an application

@@ -265,7 +265,9 @@ fn start_audio(
     use crate::capture::SourceKind;
     let source = match source {
         SourceKind::TestPattern => oriel_audio::CaptureSource::TestTone,
-        SourceKind::Auto if cfg!(windows) => oriel_audio::CaptureSource::SystemOutput,
+        SourceKind::Auto if cfg!(any(windows, target_os = "linux")) => {
+            oriel_audio::CaptureSource::SystemOutput
+        }
         SourceKind::Auto => {
             let _ = events.send(Event::Notice(
                 "Audio capture is not supported on this host yet".into(),

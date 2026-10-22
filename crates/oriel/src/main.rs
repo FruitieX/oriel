@@ -574,7 +574,7 @@ impl LocalHost {
         oriel_host::HostOptions {
             listen: SocketAddr::from(([0, 0, 0, 0], DEFAULT_PORT)),
             name: oriel_client::connection::device_name(),
-            source: if cfg!(windows) {
+            source: if oriel_host::native_hosting_available() {
                 oriel_host::SourceKind::Auto
             } else {
                 oriel_host::SourceKind::TestPattern
@@ -617,8 +617,8 @@ impl oriel_client::launcher::HostControl for LocalHost {
     }
 
     fn description(&self) -> String {
-        if !cfg!(windows) {
-            return "Linux hosting streams a test pattern for now.".into();
+        if self.options.source == oriel_host::SourceKind::TestPattern {
+            return "Hosting needs Windows or a GNOME session; this shares a test pattern.".into();
         }
         let list: Vec<String> = oriel_host::capture::list_displays(self.options.source)
             .iter()

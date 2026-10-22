@@ -43,6 +43,10 @@ pub async fn run(
     let mut frames = 0u64;
     let mut last_report = Instant::now();
     let mut wiggle = 0i32;
+    // Debugging aid: press this HID usage (hex) once, two seconds in.
+    let mut press: Option<u16> = std::env::var("ORIEL_DEBUG_PRESS")
+        .ok()
+        .and_then(|v| u16::from_str_radix(v.trim_start_matches("0x"), 16).ok());
     let mut latency_ms = 0f32;
     while start.elapsed() < duration {
         let ev = match tokio::time::timeout(Duration::from_millis(100), rx.recv()).await {
@@ -67,6 +71,13 @@ pub async fn run(
             Some(UiEvent::Host(HostMsg::Notice { text })) => println!("host: {text}"),
             Some(UiEvent::Closed { reason, .. }) => bail!("session closed: {reason}"),
             _ => {}
+        }
+        if start.elapsed() > Duration::from_secs(2)
+            && let Some(usage) = press.take()
+        {
+            println!("pressing key {usage:#x}");
+            s.input(InputEvent::Key { usage, down: true });
+            s.input(InputEvent::Key { usage, down: false });
         }
         // Exercise the input path: the test pattern draws the pointer.
         wiggle += 1;

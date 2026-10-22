@@ -5,6 +5,8 @@ use oriel_proto::InputEvent;
 
 use crate::capture::{Geometry, SourceKind, TestState};
 
+#[cfg(target_os = "linux")]
+mod gnome;
 #[cfg(windows)]
 mod windows;
 
@@ -26,6 +28,8 @@ pub fn open(source: SourceKind, test: &TestState) -> Result<Box<dyn Injector>> {
     match source {
         #[cfg(windows)]
         SourceKind::Auto => Ok(Box::new(windows::SendInputInjector::new())),
+        #[cfg(target_os = "linux")]
+        SourceKind::Auto => Ok(Box::new(gnome::GnomeInjector::new(None)?)),
         _ => Ok(Box::new(TestInjector(test.clone()))),
     }
 }

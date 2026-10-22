@@ -61,6 +61,21 @@ effectively infinite GOP; keyframes come at stream start and on request
 - Input uses `SendInput` with set-1 scancodes so the host's layout applies,
   and follows the input desktop (lock screen, UAC) when allowed.
 
+## Linux host (GNOME)
+
+Mutter's own D-Bus API (`org.gnome.Mutter.RemoteDesktop` + `ScreenCast`, as
+used by gnome-remote-desktop) gives a screen cast of a monitor linked to an
+input session, with no permission dialog. One session is shared by the
+capturer and the injector. Frames arrive over PipeWire as BGRx in shared
+memory with the cursor as `SPA_META_Cursor` metadata (client-side cursor);
+input goes through `Notify*` calls with evdev key and button codes. System
+sound is a PipeWire capture of the default sink. Other desktops would use
+xdg-desktop-portal (ScreenCast + RemoteDesktop) behind the same interfaces.
+
+Testing without a desktop: run PipeWire, WirePlumber (plus a null sink for
+audio) and `gnome-shell --headless --wayland --virtual-monitor 1920x1080`
+inside `dbus-run-session`, then `oriel host` there (`XDG_CURRENT_DESKTOP=GNOME`).
+
 ## Client
 
 The decoder thread prefers VAAPI (Linux), D3D11VA (Windows) or VideoToolbox

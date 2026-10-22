@@ -4,6 +4,8 @@
 pub mod capture;
 mod clipboard;
 mod cursor;
+#[cfg(target_os = "linux")]
+mod gnome;
 pub mod input;
 mod pipeline;
 mod server;
@@ -23,6 +25,17 @@ pub(crate) fn host_us() -> u64 {
         .get_or_init(std::time::Instant::now)
         .elapsed()
         .as_micros() as u64
+}
+
+/// Whether this platform can share its real desktop (Windows, or Linux
+/// under GNOME); otherwise only the test pattern is available.
+pub fn native_hosting_available() -> bool {
+    #[cfg(windows)]
+    return true;
+    #[cfg(target_os = "linux")]
+    return gnome::GnomeSession::available();
+    #[allow(unreachable_code)]
+    false
 }
 
 /// Per-process setup that must happen before any capture or input call.
