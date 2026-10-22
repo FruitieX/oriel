@@ -133,6 +133,22 @@ pub fn install(host_args: &[String]) -> Result<()> {
     )?;
 
     adopt_user_identity(&data);
+    // The installing user may set a pairing PIN without administrator
+    // rights (the rest of the directory stays closed to them).
+    let user = current_user_sid();
+    let pin_dir = crate::server::pin_file(&data);
+    let pin_dir = pin_dir.parent().unwrap();
+    std::fs::create_dir_all(pin_dir)?;
+    if let Some(sid) = &user {
+        run(
+            "icacls",
+            &[
+                &pin_dir.to_string_lossy(),
+                "/grant:r",
+                &format!("*{sid}:(OI)(CI)M"),
+            ],
+        )?;
+    }
 
     // Let services generate Ctrl+Alt+Del (SendSAS).
     run(
@@ -189,6 +205,12 @@ pub fn install(host_args: &[String]) -> Result<()> {
     let service =
         manager.create_service(&info, ServiceAccess::START | ServiceAccess::CHANGE_CONFIG)?;
     service.set_description("Shares this computer's display with paired oriel clients")?;
+    // ...and start and stop the service.
+    if let Some(sid) = &user
+        && let Err(e) = allow_control(sid)
+    {
+        eprintln!("cannot let {sid} start and stop the service: {e:#}");
+    }
     service.start::<&str>(&[])?;
     println!("Service started. Pair a client with: oriel service pair");
     Ok(())
@@ -226,6 +248,42 @@ fn adopt_user_identity(data: &Path) {
             }
         }
     }
+}
+
+/// The SID of the user running this (with UAC, the user who approved the
+/// prompt from their own account).
+fn current_user_sid() -> Option<String> {
+    let out = std::process::Command::new("whoami")
+        .args(["/user", "/fo", "csv", "/nh"])
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let sid = text
+        .trim()
+        .rsplit(',')
+        .next()?
+        .trim_matches('"')
+        .to_string();
+    (sid.starts_with("S-1-5-21-")).then_some(sid)
+}
+
+/// Add an ACE to the service's security descriptor letting `sid` query,
+/// start and stop it.
+fn allow_control(sid: &str) -> Result<()> {
+    let out = std::process::Command::new("sc")
+        .args(["sdshow", SERVICE_NAME])
+        .output()
+        .context("run sc sdshow")?;
+    let sddl = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if !sddl.starts_with("D:") {
+        bail!("unexpected security descriptor {sddl:?}");
+    }
+    let ace = format!("(A;;CCLCSWRPWPLOCRRC;;;{sid})");
+    let sddl = match sddl.find("S:") {
+        Some(i) => format!("{}{ace}{}", &sddl[..i], &sddl[i..]),
+        None => format!("{sddl}{ace}"),
+    };
+    run("sc", &["sdset", SERVICE_NAME, &sddl])
 }
 
 const IDENTITY_FILES: [&str; 2] = ["identity.crt.der", "identity.key.der"];
@@ -502,7 +560,7 @@ pub fn set_running(running: bool) -> Result<()> {
 
 pub fn allow_pairing() -> Result<String> {
     let pin = oriel_net::pairing::generate_pin();
-    let path = data_dir().join(crate::server::PIN_FILE);
+    let path = crate::server::pin_file(&data_dir());
     std::fs::write(&path, &pin)
         .with_context(|| format!("write {} (run this as Administrator)", path.display()))?;
     Ok(pin)

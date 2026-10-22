@@ -11,9 +11,10 @@ display) and the client (connects to hosts).
   draws them, so pointing feels local even with latency. When an application
   on the host hides and confines the cursor (games), the client switches to
   relative mouse input automatically.
-- A menu button shows the shortcut (default **Ctrl+Alt+Shift+M**) that
-  opens the menu and releases keyboard and mouse. Drag it anywhere; Settings
-  → Window picks its look (logo and shortcut, shortcut, logo) or hides it.
+- A menu button opens quick actions (displays, full screen, statistics,
+  Ctrl+Alt+Del, disconnect, settings); its shortcut (default
+  **Ctrl+Alt+Shift+M**) opens the full menu. Drag it anywhere; Settings →
+  Window picks its look (logo and shortcut, shortcut, logo) or hides it.
 - System audio (Opus) from the host output you pick in the menu, played on
   the local output chosen in Settings; text clipboard sync; display
   selection.
@@ -57,15 +58,19 @@ On Windows, install with `oriel-VERSION-windows-x64-setup.exe` (from
 Program Files and, by default, the hosting service (shares this computer
 from startup, including the sign-in, lock and UAC screens, with a firewall
 rule for UDP 48600 on private networks) and the tray app at sign-in. The
-app then shows and controls the service; allowing pairing asks for
-administrator rights and shows the PIN. A portable ZIP is built too.
+app then shows and controls the service: the user who installed it can
+start and stop sharing and allow pairing without a UAC prompt (others are
+asked for administrator rights), and quitting the app leaves the service
+running. Each pairing PIN pairs one device within ten minutes. The service
+takes over the installing user's identity and paired clients, so clients
+paired before keep working. A portable ZIP is built too.
 
 Without the installer, the service can be set up by hand (in an
 Administrator terminal):
 
 ```powershell
 oriel.exe service install      # copies to Program Files, opens UDP 48600
-oriel.exe service pair         # prints a PIN valid for ten minutes
+oriel.exe service pair         # prints a single-use PIN valid for ten minutes
 ```
 
 The service keeps its own identity and pairings in `C:\ProgramData\oriel`

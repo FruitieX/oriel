@@ -784,16 +784,24 @@ impl ServiceHost {
 
 #[cfg(windows)]
 impl oriel_client::launcher::HostControl for ServiceHost {
+    // The installer lets its user start, stop and pair without
+    // administrator rights; others get a UAC prompt.
     fn start(&mut self) -> Result<()> {
         self.running.set(None);
-        Self::elevated("service start")
+        oriel_host::service::set_running(true).or_else(|_| Self::elevated("service start"))
     }
 
     fn stop(&mut self) {
         self.running.set(None);
-        if let Err(e) = Self::elevated("service stop") {
+        if let Err(e) =
+            oriel_host::service::set_running(false).or_else(|_| Self::elevated("service stop"))
+        {
             tracing::warn!("cannot stop the service: {e:#}");
         }
+    }
+
+    fn stops_with_app(&self) -> bool {
+        false
     }
 
     fn is_running(&self) -> bool {
@@ -824,8 +832,10 @@ impl oriel_client::launcher::HostControl for ServiceHost {
 
     fn allow_pairing(&mut self) -> Option<String> {
         let path = std::env::temp_dir().join(format!("oriel-pin-{}", std::process::id()));
-        let result = Self::elevated(&format!("service pair --pin-out \"{}\"", path.display()))
-            .and_then(|()| Ok(std::fs::read_to_string(&path)?));
+        let result = oriel_host::service::allow_pairing().or_else(|_| {
+            Self::elevated(&format!("service pair --pin-out \"{}\"", path.display()))
+                .and_then(|()| Ok(std::fs::read_to_string(&path)?))
+        });
         let _ = std::fs::remove_file(&path);
         match result {
             Ok(pin) => {

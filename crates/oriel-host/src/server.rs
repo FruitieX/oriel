@@ -138,10 +138,12 @@ impl HostControl {
 }
 
 const MAX_PAIR_FAILURES: u32 = 5;
-/// A PIN in this file (in the config directory) allows pairing for
+/// A PIN in this file under the config directory allows pairing for
 /// [`PIN_VALIDITY`] after it was written; used by unattended hosts
 /// (`oriel service pair`).
-pub const PIN_FILE: &str = "pairing-pin";
+pub fn pin_file(config_dir: &std::path::Path) -> std::path::PathBuf {
+    config_dir.join("pairing").join("pin")
+}
 /// A PIN pairs one device, within this time.
 const PIN_VALIDITY: Duration = Duration::from_secs(600);
 
@@ -317,7 +319,7 @@ impl Host {
         name: String,
         client_fp: Fingerprint,
     ) -> Result<()> {
-        let pin_file = self.paths.config_dir.join(PIN_FILE);
+        let pin_file = pin_file(&self.paths.config_dir);
         let file_pin = std::fs::metadata(&pin_file)
             .ok()
             .and_then(|m| m.modified().ok())

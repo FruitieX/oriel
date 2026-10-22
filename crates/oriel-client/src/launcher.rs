@@ -54,6 +54,10 @@ pub trait HostControl {
     /// Accept pairing requests with a fresh PIN, which is returned.
     fn allow_pairing(&mut self) -> Option<String>;
     fn pairing_pin(&self) -> Option<String>;
+    /// Whether hosting ends when the app quits (not for a service).
+    fn stops_with_app(&self) -> bool {
+        true
+    }
 }
 
 pub struct GuiOptions {
@@ -259,7 +263,9 @@ pub fn run(
             }
         }
     }
-    if let Some(host) = &mut launcher.host {
+    if let Some(host) = &mut launcher.host
+        && host.stops_with_app()
+    {
         host.stop();
     }
     Ok(())

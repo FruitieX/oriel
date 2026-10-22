@@ -870,6 +870,7 @@ impl Viewer {
     fn apply(&mut self, action: Action) {
         match action {
             Action::OpenMenu => self.set_menu(true),
+            Action::Run(command) => self.run_command(command),
             Action::CloseMenu => self.set_menu(false),
             Action::SecureAttention => self.session.input(InputEvent::SecureAttention),
             Action::MoveMenuButton(pos) => {
@@ -942,6 +943,8 @@ impl Viewer {
 
 enum Action {
     OpenMenu,
+    /// A command from the quick menu.
+    Run(Command),
     CloseMenu,
     SecureAttention,
     SelectDisplay(u32),
@@ -959,6 +962,11 @@ struct OverlayState {
     shortcut: String,
     menu_open: bool,
     show_stats: bool,
+    fullscreen: bool,
+    shortcuts: Bindings,
+    /// The host's displays, and the one streamed (none for an extra display).
+    displays: Vec<(u32, String)>,
+    display: Option<u32>,
     stats_line: String,
     notices: Vec<String>,
     closed: Option<String>,
@@ -1022,6 +1030,15 @@ impl From<&Viewer> for OverlayState {
             shortcut: v.shortcuts.menu().to_string(),
             menu_open: v.menu_open,
             show_stats: v.in_force.show_stats,
+            fullscreen: v.in_force.fullscreen,
+            shortcuts: v.shortcuts.clone(),
+            displays: v.displays.iter().map(|d| (d.id, d.name.clone())).collect(),
+            display: if v.in_force.virtual_display.is_some() {
+                None
+            } else {
+                v.display
+                    .or_else(|| v.displays.iter().find(|d| d.primary).map(|d| d.id))
+            },
             stats_line,
             notices: v
                 .notices
@@ -1278,7 +1295,11 @@ fn menu_button(ctx: &egui::Context, s: &OverlayState, actions: &mut Vec<Action>)
             let y = rect.center().y - galley.size().y / 2.0;
             painter.galley(egui::pos2(x, y), galley, egui::Color32::WHITE);
         }
-        let response = response.on_hover_text(format!("Menu ({}) · drag to move", s.shortcut));
+        let response = if s.menu_open {
+            response.on_hover_text("Close the menu · drag to move")
+        } else {
+            response.on_hover_text("Quick actions · drag to move")
+        };
         if response.dragged() {
             let half = egui::vec2(w / 2.0, h / 2.0);
             let c =
@@ -1286,14 +1307,68 @@ fn menu_button(ctx: &egui::Context, s: &OverlayState, actions: &mut Vec<Action>)
             let fx = (c.x - screen.min.x) / screen.width().max(1.0);
             let fy = (c.y - screen.min.y) / screen.height().max(1.0);
             actions.push(Action::MoveMenuButton([fx, fy]));
-        } else if response.clicked() {
-            actions.push(if s.menu_open {
-                Action::CloseMenu
+        } else if response.clicked() && s.menu_open {
+            actions.push(Action::CloseMenu);
+        }
+        if !s.menu_open {
+            let popup = egui::Popup::menu(&response);
+            // Debugging aid for screenshots.
+            let popup = if std::env::var_os("ORIEL_DEBUG_QUICK_MENU").is_some() {
+                popup.open(true)
             } else {
-                Action::OpenMenu
-            });
+                popup
+            };
+            popup.show(|ui| quick_menu(ui, s, actions));
         }
     });
+}
+
+/// The menu button's quick actions; the full menu is one of them.
+fn quick_menu(ui: &mut egui::Ui, s: &OverlayState, actions: &mut Vec<Action>) {
+    ui.set_min_width(220.0);
+    let item = |ui: &mut egui::Ui, label: &str, command: Option<Command>, selected: bool| {
+        let mut button = egui::Button::new(label).selected(selected);
+        if let Some(key) = command.and_then(|c| s.shortcuts.get(c)) {
+            button = button.shortcut_text(key.to_string());
+        }
+        ui.add(button).clicked()
+    };
+    if item(ui, "Settings…", Some(Command::Menu), false) {
+        actions.push(Action::OpenMenu);
+        ui.close();
+    }
+    ui.separator();
+    if s.displays.len() > 1 {
+        for (id, name) in &s.displays {
+            if item(ui, name, None, s.display == Some(*id)) {
+                actions.push(Action::SelectDisplay(*id));
+                ui.close();
+            }
+        }
+        ui.separator();
+    }
+    if item(ui, "Full screen", Some(Command::Fullscreen), s.fullscreen) {
+        actions.push(Action::Run(Command::Fullscreen));
+        ui.close();
+    }
+    if item(ui, "Statistics overlay", Some(Command::Stats), s.show_stats) {
+        actions.push(Action::Run(Command::Stats));
+        ui.close();
+    }
+    if item(ui, "Send Ctrl+Alt+Del", None, false) {
+        actions.push(Action::SecureAttention);
+        ui.close();
+    }
+    ui.separator();
+    let disconnect = egui::RichText::new("Disconnect").color(crate::theme::RED);
+    let mut button = egui::Button::new(disconnect);
+    if let Some(key) = s.shortcuts.get(Command::Disconnect) {
+        button = button.shortcut_text(key.to_string());
+    }
+    if ui.add(button).clicked() {
+        actions.push(Action::Disconnect);
+        ui.close();
+    }
 }
 
 impl ApplicationHandler<UiEvent> for Viewer {
