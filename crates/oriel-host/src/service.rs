@@ -171,22 +171,27 @@ pub fn install(host_args: &[String]) -> Result<()> {
         "netsh",
         &["advfirewall", "firewall", "delete", "rule", "name=oriel"],
     );
-    run(
-        "netsh",
-        &[
-            "advfirewall",
-            "firewall",
-            "add",
-            "rule",
-            "name=oriel",
-            "dir=in",
-            "action=allow",
-            "protocol=UDP",
-            &format!("localport={}", oriel_proto::DEFAULT_PORT),
-            &format!("program={exe_str}"),
-            "profile=private,domain",
-        ],
-    )?;
+    // Home networks are often marked Public; there, only the local subnet.
+    // (Both rules share the name, so deleting "oriel" removes both.)
+    for (profile, remote) in [("private,domain", "any"), ("public", "localsubnet")] {
+        run(
+            "netsh",
+            &[
+                "advfirewall",
+                "firewall",
+                "add",
+                "rule",
+                "name=oriel",
+                "dir=in",
+                "action=allow",
+                "protocol=UDP",
+                &format!("localport={}", oriel_proto::DEFAULT_PORT),
+                &format!("program={exe_str}"),
+                &format!("profile={profile}"),
+                &format!("remoteip={remote}"),
+            ],
+        )?;
+    }
 
     let mut launch_arguments: Vec<OsString> = vec!["service".into(), "run".into(), "--".into()];
     launch_arguments.extend(host_args.iter().map(OsString::from));

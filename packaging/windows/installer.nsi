@@ -105,8 +105,9 @@ Section "oriel (required)" SecApp
 SectionEnd
 
 Section "Share this computer" SecService
-  ; Registers and starts the service, the firewall rule (UDP 48600 on
-  ; private networks) and Ctrl+Alt+Del for services.
+  ; Registers and starts the service, the firewall rules (UDP 48600 on
+  ; private networks, and from the local subnet on public ones) and
+  ; Ctrl+Alt+Del for services.
   DetailPrint "Installing the oriel service…"
   nsExec::ExecToLog '"$INSTDIR\oriel.exe" service install'
   Pop $0
@@ -139,7 +140,7 @@ SectionEnd
 
 !insertmacro MUI_FUNCTION_DESCRIPTION_BEGIN
   !insertmacro MUI_DESCRIPTION_TEXT ${SecApp} "The oriel app, for connecting to your other computers."
-  !insertmacro MUI_DESCRIPTION_TEXT ${SecService} "A service that shares this computer from startup, also on the sign-in, lock and UAC screens. Adds a firewall rule for UDP 48600 on private networks."
+  !insertmacro MUI_DESCRIPTION_TEXT ${SecService} "A service that shares this computer from startup, also on the sign-in, lock and UAC screens. Opens UDP 48600 on private networks, and to the local subnet on public ones."
   !insertmacro MUI_DESCRIPTION_TEXT ${SecTray} "Start the oriel app in the notification area for every user."
   !insertmacro MUI_DESCRIPTION_TEXT ${SecDesktop} "Put an oriel shortcut on the desktop."
 !insertmacro MUI_FUNCTION_DESCRIPTION_END

@@ -57,7 +57,8 @@ On Windows, install with `oriel-VERSION-windows-x64-setup.exe` (from
 `scripts/package-windows.sh`, see below). It installs for every user in
 Program Files and, by default, the hosting service (shares this computer
 from startup, including the sign-in, lock and UAC screens, with a firewall
-rule for UDP 48600 on private networks) and the tray app at sign-in. The
+rule for UDP 48600 on private networks, and for the local subnet on
+networks Windows calls Public) and the tray app at sign-in. The
 app then shows and controls the service: the user who installed it can
 start and stop sharing and allow pairing without a UAC prompt (others are
 asked for administrator rights), and quitting the app leaves the service
