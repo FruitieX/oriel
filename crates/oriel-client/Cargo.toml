@@ -1,0 +1,24 @@
+[package]
+name = "oriel-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+oriel-proto.workspace = true
+oriel-net.workspace = true
+oriel-media.workspace = true
+anyhow.workspace = true
+bytes.workspace = true
+tokio.workspace = true
+quinn.workspace = true
+tracing.workspace = true
+winit.workspace = true
+wgpu.workspace = true
+egui.workspace = true
+egui-wgpu.workspace = true
+egui-winit.workspace = true
+pollster.workspace = true
+crossbeam-channel.workspace = true
+parking_lot.workspace = true
+serde.workspace = true

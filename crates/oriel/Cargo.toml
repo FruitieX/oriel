@@ -1,0 +1,17 @@
+[package]
+name = "oriel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+oriel-proto.workspace = true
+oriel-net.workspace = true
+oriel-host.workspace = true
+oriel-client.workspace = true
+oriel-media.workspace = true
+anyhow.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+clap.workspace = true

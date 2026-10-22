@@ -1,0 +1,46 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/FruitieX/oriel"
+
+[workspace.dependencies]
+oriel-proto = { path = "crates/oriel-proto" }
+oriel-net = { path = "crates/oriel-net" }
+oriel-media = { path = "crates/oriel-media" }
+oriel-host = { path = "crates/oriel-host" }
+oriel-client = { path = "crates/oriel-client" }
+
+anyhow = "1"
+thiserror = "2"
+bytes = "1"
+serde = { version = "1", features = ["derive"] }
+postcard = { version = "1", features = ["use-std"] }
+toml = "0.9"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util", "signal"] }
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring", "log"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "logging", "tls12"] }
+rcgen = "0.14"
+sha2 = "0.10"
+spake2 = "0.4"
+hmac = "0.12"
+rand = "0.9"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4", features = ["derive"] }
+directories = "6"
+ffmpeg-sys-next = "9"
+winit = "0.30"
+wgpu = "30"
+egui = "0.37"
+egui-wgpu = "0.37"
+egui-winit = "0.37"
+pollster = "0.4"
+crossbeam-channel = "0.5"
+parking_lot = "0.12"
+hex = "0.4"
+windows = "0.62"

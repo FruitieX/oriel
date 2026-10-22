@@ -1,0 +1,11 @@
+[package]
+name = "oriel-media"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+oriel-proto.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+ffmpeg-sys-next.workspace = true
