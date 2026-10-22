@@ -1,1 +1,3 @@
-*.bat text eol=crlf
+# Stored with CRLF as-is: line-ending conversion on checkout differs
+# between Git implementations and breaks Nix flake input hashes.
+*.bat -text
