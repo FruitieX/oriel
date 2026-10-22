@@ -10,12 +10,9 @@ use std::{net::SocketAddr, path::PathBuf, time::Duration};
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
-use oriel_client::{
-    MouseMode, ViewerOptions,
-    keymap::{Command as ViewerCommand, Shortcut},
-};
+use oriel_client::{ViewerOptions, keymap::Shortcut};
 use oriel_net::{Identity, Paths, TrustStore};
-use oriel_proto::{Codec, DEFAULT_PORT, StreamSettings};
+use oriel_proto::{Codec, DEFAULT_PORT};
 
 #[derive(Parser)]
 #[command(version, about = "Low-latency remote desktop: host and client in one")]
@@ -26,6 +23,10 @@ struct Cli {
     /// Also write logs to this file.
     #[arg(long, global = true)]
     log_file: Option<PathBuf>,
+    /// Start in the tray (Windows) or minimized; used when starting at
+    /// login.
+    #[arg(long)]
+    background: bool,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -237,6 +238,8 @@ fn run() -> Result<()> {
             )?)),
             oriel_client::launcher::GuiOptions {
                 start_sharing: config.share,
+                start_hidden: cli.background && cfg!(windows),
+                start_minimized: cli.background && !cfg!(windows),
                 log_path,
                 ..Default::default()
             },
@@ -366,92 +369,94 @@ fn run() -> Result<()> {
             screenshot,
             screenshot_after,
         } => {
-            let file = oriel_client::config::ClientConfig::load(&paths)?;
-            let (codecs, auto_codec) = if codec.is_empty() {
-                file.codecs()?
-            } else if codec.iter().any(|c| matches!(c, CodecArg::Auto)) {
-                (oriel_client::config::AUTO_CODECS.to_vec(), true)
-            } else {
-                (codec.into_iter().map(Into::into).collect(), false)
-            };
-            let settings = StreamSettings {
-                display,
-                codecs,
-                bitrate_kbps: bitrate.unwrap_or(file.bitrate_kbps),
-                max_fps: fps.unwrap_or(file.max_fps),
-                audio: file.audio && !no_audio,
-                auto_codec,
-                pyrowave_kbps: pyrowave_bitrate.unwrap_or(file.pyrowave_kbps),
-                resolution: None,
-                audio_device: file.hosts.get(&host).and_then(|p| p.audio_device.clone()),
-                virtual_display: file
-                    .hosts
-                    .get(&host)
-                    .and_then(|p| p.virtual_display.as_deref())
-                    .and_then(oriel_client::config::parse_virtual_mode),
-            };
-            let codec_key = if auto_codec {
-                "auto".to_string()
-            } else {
-                match settings.codecs.first() {
-                    Some(Codec::H264) => "h264",
-                    Some(Codec::Av1) => "av1",
-                    Some(Codec::PyroWave) => "pyrowave",
-                    _ => "hevc",
+            let mut file = oriel_client::config::ClientConfig::load(&paths)?;
+            // Flags override this host's settings for this run only.
+            let flags = !codec.is_empty()
+                || bitrate.is_some()
+                || fps.is_some()
+                || pyrowave_bitrate.is_some()
+                || fullscreen
+                || stats
+                || mouse.is_some()
+                || no_audio
+                || menu_shortcut.is_some();
+            {
+                let h = file.host_mut(&host);
+                if let Some(first) = codec.first() {
+                    let auto = codec.iter().any(|c| matches!(c, CodecArg::Auto));
+                    h.codec = Some(
+                        match (auto, Codec::from(*first)) {
+                            (true, _) => "auto",
+                            (_, Codec::H264) => "h264",
+                            (_, Codec::Av1) => "av1",
+                            (_, Codec::PyroWave) => "pyrowave",
+                            _ => "hevc",
+                        }
+                        .into(),
+                    );
                 }
-                .to_string()
-            };
+                if let Some(b) = bitrate {
+                    h.bitrate_kbps = Some(b);
+                }
+                if let Some(f) = fps {
+                    h.max_fps = Some(f);
+                }
+                if let Some(b) = pyrowave_bitrate {
+                    h.pyrowave_kbps = Some(b);
+                }
+                if fullscreen {
+                    h.fullscreen = Some(true);
+                }
+                if stats {
+                    h.show_stats = Some(true);
+                }
+                if no_audio {
+                    h.audio = Some(false);
+                }
+                if let Some(m) = mouse {
+                    h.mouse = Some(
+                        match m {
+                            MouseArg::Auto => "auto",
+                            MouseArg::Desktop => "desktop",
+                            MouseArg::Captured => "captured",
+                        }
+                        .into(),
+                    );
+                }
+            }
+            if let Some(text) = menu_shortcut {
+                let shortcut = Shortcut::parse(&text)
+                    .with_context(|| format!("cannot parse shortcut {text:?}"))?;
+                file.menu_shortcut = shortcut.to_string();
+            }
+            // With flags, changes made in the menu are not saved (they would
+            // save the flags too).
+            let save = (!flags).then(|| paths.clone());
+            let mut options = ViewerOptions::from_config(&host, file, save);
+            options.settings.display = display;
+            // An explicit list of codecs is used as given.
+            if codec.len() > 1 && !codec.iter().any(|c| matches!(c, CodecArg::Auto)) {
+                options.settings.codecs = codec.iter().map(|c| Codec::from(*c)).collect();
+            }
+            options.hardware_decode = !software_decode;
+            options.screenshot = screenshot.map(|p| (p, Duration::from_secs_f64(screenshot_after)));
             let rt = runtime()?;
             if let Some(secs) = headless {
                 return rt.block_on(oriel_client::headless::run(
                     &paths,
                     &host,
-                    settings,
+                    options.settings,
                     !software_decode,
                     Duration::from_secs(secs),
                 ));
             }
-            let mut shortcuts = file.bindings();
-            if let Some(text) = menu_shortcut {
-                let shortcut = Shortcut::parse(&text)
-                    .with_context(|| format!("cannot parse shortcut {text:?}"))?;
-                shortcuts.set(ViewerCommand::Menu, Some(shortcut));
-            }
-            let mouse_mode = match mouse {
-                Some(MouseArg::Auto) => MouseMode::Auto,
-                Some(MouseArg::Desktop) => MouseMode::Absolute,
-                Some(MouseArg::Captured) => MouseMode::Relative,
-                None => file.mouse_mode()?,
-            };
-            let target = host.clone();
             oriel_client::launcher::run(
                 rt,
                 paths,
                 None,
                 oriel_client::launcher::GuiOptions {
-                    connect: Some(target),
-                    viewer: Some(ViewerOptions {
-                        target: host.clone(),
-                        settings,
-                        hardware_decode: !software_decode,
-                        shortcuts,
-                        mouse_mode,
-                        fullscreen,
-                        show_stats: stats,
-                        codec_key,
-                        playback_device: file.playback_device.clone(),
-                        gamepads: file.gamepads,
-                        microphone: file
-                            .hosts
-                            .get(&host)
-                            .and_then(|p| p.microphone)
-                            .unwrap_or(file.microphone),
-                        microphone_device: file.microphone_device.clone(),
-                        menu_button: file.menu_button.clone(),
-                        menu_button_pos: file.menu_button_pos,
-                        screenshot: screenshot
-                            .map(|p| (p, Duration::from_secs_f64(screenshot_after))),
-                    }),
+                    connect: Some(host),
+                    viewer: Some(options),
                     quit_with_viewer: true,
                     tray: false,
                     ..Default::default()

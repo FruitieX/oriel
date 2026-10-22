@@ -26,6 +26,7 @@ use winit::{
 };
 
 use crate::{
+    config::{ClientConfig, Effective},
     connection,
     keymap::{Bindings, Command, hid_usage},
     render::{Renderer, Viewport, letterbox},
@@ -42,44 +43,47 @@ pub enum MouseMode {
 
 #[derive(Debug, Clone)]
 pub struct ViewerOptions {
+    /// The host's name in the config (its settings live there).
     pub target: String,
+    /// The settings; changes made in the menu are saved to `paths`.
+    pub config: ClientConfig,
+    pub paths: Option<oriel_net::Paths>,
+    /// What to ask the host for at the start (from `config`).
     pub settings: StreamSettings,
     pub hardware_decode: bool,
-    pub shortcuts: Bindings,
-    pub mouse_mode: MouseMode,
-    pub fullscreen: bool,
-    pub show_stats: bool,
     /// Debugging: save a screenshot after this long, then exit.
     pub screenshot: Option<(PathBuf, Duration)>,
-    /// The codec choice key the settings came from (see
-    /// [`crate::config::codec_choice`]).
-    pub codec_key: String,
-    /// Local output for the host's sound (`None`: the default device).
-    pub playback_device: Option<String>,
-    /// Forward local gamepads to the host.
-    pub gamepads: bool,
-    /// Send the microphone from the start, and which one.
-    pub microphone: bool,
-    pub microphone_device: Option<String>,
-    /// Menu button style (see [`crate::config::MENU_BUTTON_STYLES`]) and
-    /// position (fractions of the window).
-    pub menu_button: String,
-    pub menu_button_pos: Option<[f32; 2]>,
 }
 
-/// Choices made during a session, remembered for the next one.
-#[derive(Debug, Clone)]
-pub struct ViewerPrefs {
-    pub fullscreen: bool,
-    pub codec_key: String,
-    pub resolution: Option<(u32, u32)>,
-    /// The host output being heard (`None`: the host's default).
-    pub audio_device: Option<String>,
-    /// Streaming a virtual monitor in this mode.
-    pub virtual_display: Option<VirtualMode>,
-    pub microphone: bool,
-    /// Where the menu button was dragged.
-    pub menu_button_pos: Option<[f32; 2]>,
+impl ViewerOptions {
+    /// Options for `target` from the saved settings.
+    pub fn from_config(
+        target: &str,
+        config: ClientConfig,
+        paths: Option<oriel_net::Paths>,
+    ) -> Self {
+        let e = config.effective(Some(target));
+        let (codecs, auto_codec) = crate::config::codec_choice(&e.codec);
+        Self {
+            target: target.to_string(),
+            settings: StreamSettings {
+                display: None,
+                codecs,
+                bitrate_kbps: e.bitrate_kbps,
+                max_fps: e.max_fps,
+                audio: e.audio,
+                auto_codec,
+                pyrowave_kbps: e.pyrowave_kbps,
+                resolution: e.resolution,
+                audio_device: e.audio_device.clone(),
+                virtual_display: e.virtual_display,
+            },
+            config,
+            paths,
+            hardware_decode: true,
+            screenshot: None,
+        }
+    }
 }
 
 /// Why the viewer window went away.
@@ -100,13 +104,14 @@ pub fn run(
     rt: &tokio::runtime::Runtime,
     connected: connection::Connected,
     options: ViewerOptions,
-) -> Result<(ViewerExit, ViewerPrefs)> {
+) -> Result<ViewerExit> {
     use winit::platform::run_on_demand::EventLoopExtRunOnDemand;
     tracing::info!(host = %connected.host_name, "connected");
     let proxy = Mutex::new(event_loop.create_proxy());
     let sink: session::Sink = Arc::new(move |ev| {
         let _ = proxy.lock().send_event(ev);
     });
+    let e = options.config.effective(Some(&options.target));
     let session = session::start(
         rt.handle(),
         connected.conn.clone(),
@@ -114,10 +119,10 @@ pub fn run(
         session::SessionOptions {
             settings: options.settings.clone(),
             hardware_decode: options.hardware_decode,
-            playback_device: options.playback_device.clone(),
-            gamepads: options.gamepads,
-            microphone: options.microphone,
-            microphone_device: options.microphone_device.clone(),
+            playback_device: e.playback_device.clone(),
+            gamepads: e.gamepads,
+            microphone: e.microphone,
+            microphone_device: e.microphone_device.clone(),
         },
         sink.clone(),
     );
@@ -133,16 +138,8 @@ pub fn run(
         tokio::time::sleep(Duration::from_millis(150)).await;
         let _ = tokio::time::timeout(Duration::from_secs(1), connected.endpoint.wait_idle()).await;
     });
-    let prefs = ViewerPrefs {
-        fullscreen: viewer.fullscreen,
-        codec_key: viewer.codec_key.clone(),
-        resolution: viewer.resolution,
-        audio_device: viewer.audio_device.clone(),
-        virtual_display: viewer.virtual_mode,
-        microphone: viewer.microphone,
-        menu_button_pos: viewer.menu_button_pos,
-    };
-    Ok((viewer.exit.take().unwrap_or(ViewerExit::Closed), prefs))
+    viewer.save();
+    Ok(viewer.exit.take().unwrap_or(ViewerExit::Closed))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -178,9 +175,12 @@ struct Viewer {
     grabbed: bool,
 
     menu_open: bool,
-    show_stats: bool,
-    mouse_mode: MouseMode,
-    bitrate_mbps: u32,
+    /// The settings, and those currently in force (see `sync`).
+    config: ClientConfig,
+    in_force: Effective,
+    config_dirty: bool,
+    shortcuts: Bindings,
+    panel: crate::settings_ui::Panel,
     focused: bool,
     modifiers: ModifiersState,
     keys_down: HashSet<u16>,
@@ -206,13 +206,8 @@ struct Viewer {
     shortcuts_inhibited: bool,
     host_codecs: Vec<oriel_proto::Codec>,
     audio_devices: Vec<oriel_proto::AudioDevice>,
-    audio_device: Option<String>,
     /// The host can create a virtual monitor for this window.
     virtual_ok: bool,
-    virtual_mode: Option<VirtualMode>,
-    /// Sending the microphone.
-    microphone: bool,
-    menu_button_pos: Option<[f32; 2]>,
     /// Where the menu was dragged (fractions of the window), and whether it
     /// has been placed since it opened.
     menu_pos: Option<[f32; 2]>,
@@ -221,9 +216,6 @@ struct Viewer {
     menu_window: Option<PhysicalSize<u32>>,
     /// Bumped whenever the menu is placed (see `overlay`).
     menu_generation: u32,
-    codec_key: String,
-    resolution: Option<(u32, u32)>,
-    fullscreen: bool,
     sink: Option<session::Sink>,
     #[cfg(windows)]
     key_hook: Option<crate::winkeys::KeyboardHook>,
@@ -232,7 +224,7 @@ struct Viewer {
 impl Viewer {
     fn new(session: Session, host_name: String, options: ViewerOptions) -> Self {
         let egui_ctx = egui::Context::default();
-        crate::launcher::style(&egui_ctx);
+        crate::theme::style(&egui_ctx);
         Self {
             session,
             host_name,
@@ -248,9 +240,11 @@ impl Viewer {
             grabbed: false,
             // Debugging aid for screenshots.
             menu_open: std::env::var_os("ORIEL_DEBUG_MENU").is_some(),
-            show_stats: options.show_stats,
-            mouse_mode: options.mouse_mode,
-            bitrate_mbps: (options.settings.bitrate_kbps / 1000).max(1),
+            in_force: options.config.effective(Some(&options.target)),
+            shortcuts: options.config.bindings(),
+            config: options.config.clone(),
+            config_dirty: false,
+            panel: crate::settings_ui::Panel::new(true),
             focused: false,
             modifiers: ModifiersState::empty(),
             keys_down: HashSet::new(),
@@ -274,18 +268,11 @@ impl Viewer {
             shortcuts_inhibited: false,
             host_codecs: Vec::new(),
             audio_devices: Vec::new(),
-            audio_device: options.settings.audio_device.clone(),
             virtual_ok: false,
-            virtual_mode: options.settings.virtual_display,
-            microphone: options.microphone,
-            menu_button_pos: options.menu_button_pos,
             menu_pos: None,
             menu_placed: false,
             menu_window: None,
             menu_generation: 0,
-            codec_key: options.codec_key.clone(),
-            resolution: options.settings.resolution,
-            fullscreen: options.fullscreen,
             sink: None,
             #[cfg(windows)]
             key_hook: None,
@@ -309,7 +296,7 @@ impl Viewer {
     }
 
     fn relative(&self) -> bool {
-        let wanted = match self.mouse_mode {
+        let wanted = match self.in_force.mouse_mode() {
             MouseMode::Auto => self.host_cursor.is_some_and(|c| c.captured),
             MouseMode::Absolute => false,
             MouseMode::Relative => true,
@@ -469,7 +456,7 @@ impl Viewer {
 
     /// Size the window to the remote surface the first time we learn it.
     fn fit_window(&mut self) {
-        if self.sized_window || self.options.fullscreen {
+        if self.sized_window || self.in_force.fullscreen {
             return;
         }
         let (Some(window), Some(surface)) = (self.window(), self.surface.as_ref()) else {
@@ -501,7 +488,7 @@ impl Viewer {
             return;
         };
         let pressed = event.state == ElementState::Pressed;
-        if pressed && let Some(command) = self.options.shortcuts.find(self.modifiers, code) {
+        if pressed && let Some(command) = self.shortcuts.find(self.modifiers, code) {
             if !event.repeat {
                 self.run_command(command);
             }
@@ -532,7 +519,7 @@ impl Viewer {
         for (usage, down) in hook.drain() {
             if down
                 && !self.keys_down.contains(&usage)
-                && let Some(command) = self.options.shortcuts.find_hid(&self.keys_down, usage)
+                && let Some(command) = self.shortcuts.find_hid(&self.keys_down, usage)
             {
                 self.run_command(command);
                 if command == Command::Menu {
@@ -560,8 +547,14 @@ impl Viewer {
                 let open = !self.menu_open;
                 self.set_menu(open);
             }
-            Command::Fullscreen => self.apply(Action::ToggleFullscreen),
-            Command::Stats => self.apply(Action::ToggleStats),
+            Command::Fullscreen => {
+                let on = !self.in_force.fullscreen;
+                self.edit(|h| h.fullscreen = Some(on));
+            }
+            Command::Stats => {
+                let on = !self.in_force.show_stats;
+                self.edit(|h| h.show_stats = Some(on));
+            }
             Command::Disconnect => self.apply(Action::Disconnect),
             Command::NextDisplay => self.cycle_display(1),
             Command::PreviousDisplay => self.cycle_display(-1),
@@ -678,7 +671,98 @@ impl Viewer {
 
     /// The overlay shows something that changes without new frames.
     fn overlay_ticks(&self) -> bool {
-        self.show_stats || self.menu_open || !self.notices.is_empty()
+        self.in_force.show_stats || self.menu_open || !self.notices.is_empty()
+    }
+
+    /// Change this host's settings (from shortcuts) and apply them.
+    fn edit(&mut self, f: impl FnOnce(&mut crate::config::HostPrefs)) {
+        f(self.config.host_mut(&self.options.target));
+        self.config_dirty = true;
+        self.sync();
+    }
+
+    /// Save changed settings.
+    fn save(&mut self) {
+        if !std::mem::take(&mut self.config_dirty) {
+            return;
+        }
+        if let Some(paths) = &self.options.paths
+            && let Err(e) = self.config.save(paths)
+        {
+            tracing::warn!("cannot save settings: {e:#}");
+        }
+    }
+
+    /// Apply what changed in this host's settings to the running session.
+    fn sync(&mut self) {
+        let new = self.config.effective(Some(&self.options.target));
+        self.shortcuts = self.config.bindings();
+        let old = std::mem::replace(&mut self.in_force, new.clone());
+        if old == new {
+            return;
+        }
+        let s = &self.session;
+        if old.codec != new.codec {
+            let (codecs, auto_codec) = crate::config::codec_choice(&new.codec);
+            s.send(ClientMsg::SetCodecs { codecs, auto_codec });
+        }
+        if old.bitrate_kbps != new.bitrate_kbps {
+            s.send(ClientMsg::SetBitrate {
+                kbps: new.bitrate_kbps,
+            });
+        }
+        if old.pyrowave_kbps != new.pyrowave_kbps {
+            s.send(ClientMsg::SetPyroWaveBitrate {
+                kbps: new.pyrowave_kbps,
+            });
+        }
+        if old.max_fps != new.max_fps {
+            s.send(ClientMsg::SetMaxFps { fps: new.max_fps });
+        }
+        if old.resolution != new.resolution {
+            self.sized_window = false;
+            s.send(ClientMsg::SetResolution {
+                resolution: new.resolution,
+            });
+        }
+        if old.virtual_display != new.virtual_display {
+            self.sized_window = false;
+            s.send(ClientMsg::SetVirtualDisplay {
+                mode: new.virtual_display,
+            });
+        }
+        if old.audio_device != new.audio_device {
+            s.send(ClientMsg::SetAudioDevice {
+                id: new.audio_device.clone(),
+            });
+        }
+        if old.audio != new.audio {
+            s.send(ClientMsg::SetAudio { enabled: new.audio });
+        }
+        if (old.audio, &old.playback_device) != (new.audio, &new.playback_device)
+            && let Err(e) = s.set_speaker(new.audio.then(|| new.playback_device.clone()))
+        {
+            self.notices
+                .push((format!("No sound output: {e:#}"), Instant::now()));
+        }
+        if (old.microphone, &old.microphone_device) != (new.microphone, &new.microphone_device)
+            && let Err(e) = s.set_microphone(new.microphone, new.microphone_device.clone())
+        {
+            self.notices
+                .push((format!("Microphone unavailable: {e:#}"), Instant::now()));
+        }
+        if old.gamepads != new.gamepads {
+            s.set_gamepads(new.gamepads);
+        }
+        if old.fullscreen != new.fullscreen
+            && let Some(w) = self.window()
+        {
+            w.set_fullscreen(new.fullscreen.then_some(Fullscreen::Borderless(None)));
+        }
+        if old.mouse != new.mouse {
+            self.update_cursor();
+        }
+        self.request_redraw();
     }
 
     fn draw(&mut self) {
@@ -721,12 +805,20 @@ impl Viewer {
         let raw_input = gfx.egui.take_egui_input(&gfx.window);
         let ctx = self.egui_ctx.clone();
         let mut actions = Vec::new();
+        let state = OverlayState::from(&*self);
+        let live = self.live();
+        let mut settings = MenuSettings {
+            config: &mut self.config,
+            panel: &mut self.panel,
+            host: &self.options.target,
+            live: &live,
+        };
         let output = ctx.run_pass(raw_input, |ctx| {
-            actions = overlay(ctx, &OverlayState::from(&*self), viewport);
-            if self.menu_open {
-                self.menu_placed = true;
-            }
+            actions = overlay(ctx, &state, &mut settings);
         });
+        if self.menu_open {
+            self.menu_placed = true;
+        }
         let gfx = self.gfx.as_mut().unwrap();
         if let Err(e) = gfx.renderer.render(viewport, &ctx, output) {
             tracing::error!("render failed: {e:#}");
@@ -760,53 +852,24 @@ impl Viewer {
         match action {
             Action::OpenMenu => self.set_menu(true),
             Action::CloseMenu => self.set_menu(false),
-            Action::SetMouseMode(mode) => {
-                self.mouse_mode = mode;
-                self.update_cursor();
-            }
-            Action::ToggleStats => self.show_stats = !self.show_stats,
-            Action::ToggleFullscreen => {
-                self.fullscreen = !self.fullscreen;
-                if let Some(w) = self.window() {
-                    w.set_fullscreen(self.fullscreen.then_some(Fullscreen::Borderless(None)));
-                }
-            }
-            Action::SetCodec(key) => {
-                let (codecs, auto_codec) = crate::config::codec_choice(&key);
-                self.codec_key = key;
-                self.session
-                    .send(ClientMsg::SetCodecs { codecs, auto_codec });
-            }
-            Action::SetResolution(resolution) => {
-                self.resolution = resolution;
-                self.sized_window = false;
-                self.session.send(ClientMsg::SetResolution { resolution });
-            }
-            Action::SetAudioDevice(id) => {
-                self.audio_device = id.clone();
-                self.session.send(ClientMsg::SetAudioDevice { id });
-            }
-            Action::SetBitrate(mbps) => {
-                self.bitrate_mbps = mbps;
-                self.session
-                    .send(ClientMsg::SetBitrate { kbps: mbps * 1000 });
-            }
             Action::SecureAttention => self.session.input(InputEvent::SecureAttention),
-            Action::MoveMenuButton(pos) => self.menu_button_pos = Some(pos),
+            Action::MoveMenuButton(pos) => {
+                // Saved with the next settings change or when the session ends.
+                self.config.menu_button_pos = Some(pos);
+                self.config_dirty = true;
+            }
             Action::MenuMoved(pos) => self.menu_pos = Some(pos),
-            Action::SetMicrophone(on) => match self.session.set_microphone(on) {
-                Ok(()) => self.microphone = on,
-                Err(e) => self
-                    .notices
-                    .push((format!("Microphone unavailable: {e:#}"), Instant::now())),
-            },
-            Action::SetVirtualDisplay(mode) => {
-                self.virtual_mode = mode;
-                self.sized_window = false;
-                self.session.send(ClientMsg::SetVirtualDisplay { mode });
+            Action::SettingsChanged => {
+                self.config_dirty = true;
+                self.sync();
+                self.save();
             }
             Action::SelectDisplay(id) => {
-                self.virtual_mode = None;
+                // Streaming a physical display ends the extra display; the
+                // host switches straight to the chosen one.
+                self.config.host_mut(&self.options.target).virtual_display = None;
+                self.in_force.virtual_display = None;
+                self.config_dirty = true;
                 self.display = Some(id);
                 self.sized_window = false;
                 self.session.send(ClientMsg::SelectDisplay { id });
@@ -818,24 +881,55 @@ impl Viewer {
         }
         self.request_redraw();
     }
+
+    /// What the host offers, for the settings panel.
+    fn live(&self) -> crate::settings_ui::Live {
+        let display = self
+            .display
+            .or_else(|| self.displays.iter().find(|d| d.primary).map(|d| d.id));
+        crate::settings_ui::Live {
+            displays: self
+                .displays
+                .iter()
+                .map(|d| {
+                    let primary = if d.primary { ", primary" } else { "" };
+                    (
+                        d.id,
+                        format!(
+                            "{} ({}×{} @ {} Hz{primary})",
+                            d.name, d.width, d.height, d.refresh_hz
+                        ),
+                    )
+                })
+                .collect(),
+            display,
+            virtual_ok: self.virtual_ok,
+            monitor_mode: self.monitor_mode(),
+            modes: self
+                .displays
+                .iter()
+                .find(|d| Some(d.id) == display)
+                .map(|d| d.modes.clone())
+                .unwrap_or_default(),
+            host_codecs: self.host_codecs.clone(),
+            audio_devices: self
+                .audio_devices
+                .iter()
+                .map(|d| (d.id.clone(), d.name.clone()))
+                .collect(),
+        }
+    }
 }
 
 enum Action {
     OpenMenu,
     CloseMenu,
-    SetMouseMode(MouseMode),
-    ToggleStats,
-    ToggleFullscreen,
-    SetBitrate(u32),
     SecureAttention,
     SelectDisplay(u32),
-    SetCodec(String),
-    SetResolution(Option<(u32, u32)>),
-    SetAudioDevice(Option<String>),
-    SetVirtualDisplay(Option<VirtualMode>),
-    SetMicrophone(bool),
     MoveMenuButton([f32; 2]),
     MenuMoved([f32; 2]),
+    /// The settings panel changed the config.
+    SettingsChanged,
     Disconnect,
 }
 
@@ -844,27 +938,12 @@ enum Action {
 struct OverlayState {
     host_name: String,
     shortcut: String,
-    shortcuts: Bindings,
     menu_open: bool,
     show_stats: bool,
-    mouse_mode: MouseMode,
-    bitrate_mbps: u32,
     stats_line: String,
     notices: Vec<String>,
     closed: Option<String>,
     remote_cursor: Option<(egui::TextureId, egui::Vec2, egui::Pos2)>,
-    displays: Vec<(u32, String)>,
-    display: Option<u32>,
-    codec_choices: Vec<(&'static str, &'static str)>,
-    codec_key: String,
-    modes: Vec<(u32, u32)>,
-    resolution: Option<(u32, u32)>,
-    /// Host outputs to choose from (empty without sound).
-    audio_devices: Vec<(String, String)>,
-    audio_device: Option<String>,
-    virtual_ok: bool,
-    virtual_mode: Option<VirtualMode>,
-    microphone: bool,
     menu_button: String,
     menu_button_pos: Option<[f32; 2]>,
     /// Place the menu this frame: where it was dragged, else centered.
@@ -872,8 +951,6 @@ struct OverlayState {
     menu_generation: u32,
     /// Where the menu is meant to be (where it was dragged).
     menu_center: Option<egui::Pos2>,
-    /// This window's monitor, the default mode for a virtual display.
-    monitor_mode: Option<VirtualMode>,
 }
 
 impl From<&Viewer> for OverlayState {
@@ -923,12 +1000,9 @@ impl From<&Viewer> for OverlayState {
             .flatten();
         OverlayState {
             host_name: v.host_name.clone(),
-            shortcut: v.options.shortcuts.menu().to_string(),
-            shortcuts: v.options.shortcuts.clone(),
+            shortcut: v.shortcuts.menu().to_string(),
             menu_open: v.menu_open,
-            show_stats: v.show_stats,
-            mouse_mode: v.mouse_mode,
-            bitrate_mbps: v.bitrate_mbps,
+            show_stats: v.in_force.show_stats,
             stats_line,
             notices: v
                 .notices
@@ -938,63 +1012,8 @@ impl From<&Viewer> for OverlayState {
                 .collect(),
             closed: v.closed.clone(),
             remote_cursor,
-            displays: v
-                .displays
-                .iter()
-                .map(|d| {
-                    let primary = if d.primary { ", primary" } else { "" };
-                    (
-                        d.id,
-                        format!(
-                            "{} ({}×{} @ {} Hz{primary})",
-                            d.name, d.width, d.height, d.refresh_hz
-                        ),
-                    )
-                })
-                .collect(),
-            display: v
-                .display
-                .or_else(|| v.displays.iter().find(|d| d.primary).map(|d| d.id)),
-            codec_choices: crate::config::CODEC_CHOICES
-                .iter()
-                .copied()
-                .filter(|(key, _)| {
-                    use oriel_proto::Codec;
-                    let has = |c| v.host_codecs.contains(&c);
-                    match *key {
-                        "auto" | "pyrowave" => has(Codec::PyroWave),
-                        "h264" => has(Codec::H264),
-                        "av1" => has(Codec::Av1),
-                        _ => has(Codec::Hevc),
-                    }
-                })
-                .collect(),
-            codec_key: v.codec_key.clone(),
-            modes: {
-                let id = v
-                    .display
-                    .or_else(|| v.displays.iter().find(|d| d.primary).map(|d| d.id));
-                v.displays
-                    .iter()
-                    .find(|d| Some(d.id) == id)
-                    .map(|d| d.modes.clone())
-                    .unwrap_or_default()
-            },
-            resolution: v.resolution,
-            audio_devices: if v.options.settings.audio {
-                v.audio_devices
-                    .iter()
-                    .map(|d| (d.id.clone(), d.name.clone()))
-                    .collect()
-            } else {
-                Vec::new()
-            },
-            audio_device: v.audio_device.clone(),
-            virtual_ok: v.virtual_ok,
-            virtual_mode: v.virtual_mode,
-            microphone: v.microphone,
-            menu_button: v.options.menu_button.clone(),
-            menu_button_pos: v.menu_button_pos,
+            menu_button: v.in_force.menu_button.clone(),
+            menu_button_pos: v.config.menu_button_pos,
             place_menu: (!v.menu_placed).then_some(v.menu_pos),
             menu_generation: v.menu_generation,
             menu_center: v.menu_pos.and_then(|[fx, fy]| {
@@ -1004,14 +1023,21 @@ impl From<&Viewer> for OverlayState {
                     .to_logical::<f32>(v.egui_ctx.pixels_per_point() as f64);
                 Some(egui::pos2(fx * size.width, fy * size.height))
             }),
-            monitor_mode: v.monitor_mode(),
         }
     }
 }
 
-fn overlay(ctx: &egui::Context, s: &OverlayState, viewport: Option<Viewport>) -> Vec<Action> {
+/// The settings the menu edits: this host's, in `config`.
+struct MenuSettings<'a> {
+    config: &'a mut ClientConfig,
+    panel: &'a mut crate::settings_ui::Panel,
+    host: &'a str,
+    live: &'a crate::settings_ui::Live,
+}
+
+fn overlay(ctx: &egui::Context, s: &OverlayState, settings: &mut MenuSettings) -> Vec<Action> {
+    use crate::theme::{self, MUTED};
     let mut actions = Vec::new();
-    let _ = viewport;
 
     if let Some((tex, size, pos)) = s.remote_cursor {
         ctx.layer_painter(egui::LayerId::new(
@@ -1052,14 +1078,23 @@ fn overlay(ctx: &egui::Context, s: &OverlayState, viewport: Option<Viewport>) ->
             });
     }
 
+    let screen = ctx.content_rect();
     if let Some(reason) = &s.closed {
         egui::Window::new("Disconnected")
+            .title_bar(false)
+            .frame(theme::dialog_frame())
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
             .show(ctx, |ui| {
-                ui.label(format!("{}: {reason}", s.host_name));
-                if ui.button("Close").clicked() {
+                ui.set_width((screen.width() - 80.0).clamp(240.0, 420.0));
+                if theme::title_bar(ui, "Disconnected", Some(&s.host_name)) {
+                    actions.push(Action::Disconnect);
+                }
+                ui.add_space(6.0);
+                theme::note(ui, reason);
+                ui.add_space(12.0);
+                if ui.add(theme::primary_button("Close")).clicked() {
                     actions.push(Action::Disconnect);
                 }
             });
@@ -1076,14 +1111,17 @@ fn overlay(ctx: &egui::Context, s: &OverlayState, viewport: Option<Viewport>) ->
     }
 
     // Opens centered, or where it was dragged; can be dragged.
-    let screen = ctx.content_rect();
     let to_screen =
         |[fx, fy]: [f32; 2]| screen.min + egui::vec2(fx * screen.width(), fy * screen.height());
-    // A fresh window id whenever it is placed: egui's title-bar dragging
-    // would otherwise restore the stored position over `current_pos`.
+    // A fresh window id whenever it is placed: egui's window dragging would
+    // otherwise restore the stored position over `current_pos`.
     let menu_id = egui::Id::unique("oriel-menu").with(s.menu_generation);
-    let mut menu = egui::Window::new(format!("oriel — {}", s.host_name))
+    let width = (screen.width() - 60.0).clamp(300.0, 580.0);
+    let height = (screen.height() - 270.0).clamp(140.0, 340.0);
+    let mut menu = egui::Window::new("oriel")
         .id(menu_id)
+        .title_bar(false)
+        .frame(theme::dialog_frame())
         .collapsible(false)
         .resizable(false)
         .pivot(egui::Align2::CENTER_CENTER)
@@ -1092,248 +1130,61 @@ fn overlay(ctx: &egui::Context, s: &OverlayState, viewport: Option<Viewport>) ->
         menu = menu.current_pos(pos.map_or(screen.center(), to_screen));
     }
     let shown = menu.show(ctx, |ui| {
-        ui.label(egui::RichText::new(&s.stats_line).monospace().size(11.0));
-        ui.separator();
-        ui.horizontal(|ui| {
-            ui.label("Mouse:");
-            for (mode, label) in [
-                (MouseMode::Auto, "Auto"),
-                (MouseMode::Absolute, "Desktop"),
-                (MouseMode::Relative, "Captured (games)"),
-            ] {
-                if ui.selectable_label(s.mouse_mode == mode, label).clicked() {
-                    actions.push(Action::SetMouseMode(mode));
-                }
-            }
-        });
-        let hint = |command: Command| {
-            s.shortcuts
-                .get(command)
-                .map_or_else(String::new, |k| format!("Shortcut: {k}"))
-        };
-        if s.displays.len() > 1 || s.virtual_ok {
-            ui.horizontal(|ui| {
-                ui.label("Display:").on_hover_text(
-                    match (
-                        s.shortcuts.get(Command::PreviousDisplay),
-                        s.shortcuts.get(Command::NextDisplay),
-                    ) {
-                        (Some(p), Some(n)) => format!("Previous: {p}\nNext: {n}"),
-                        (None, Some(n)) => format!("Next: {n}"),
-                        (Some(p), None) => format!("Previous: {p}"),
-                        (None, None) => String::new(),
-                    },
-                );
-                for (id, name) in &s.displays {
-                    let selected = s.virtual_mode.is_none() && s.display == Some(*id);
-                    if ui.selectable_label(selected, name).clicked() {
-                        actions.push(Action::SelectDisplay(*id));
-                    }
-                }
-                if s.virtual_ok
-                    && ui
-                        .selectable_label(s.virtual_mode.is_some(), "Extra display")
-                        .on_hover_text("Extend the host's desktop with a new monitor shown here")
-                        .clicked()
-                    && s.virtual_mode.is_none()
-                {
-                    let mode = s.monitor_mode.unwrap_or(VirtualMode {
-                        width: 1920,
-                        height: 1080,
-                        refresh_hz: 60,
-                    });
-                    actions.push(Action::SetVirtualDisplay(Some(mode)));
-                }
-            });
+        ui.set_width(width);
+        if theme::title_bar(
+            ui,
+            &s.host_name,
+            Some(&format!("Connected · {} returns", s.shortcut)),
+        ) {
+            actions.push(Action::CloseMenu);
         }
-        if let Some(mode) = s.virtual_mode {
-            ui.horizontal(|ui| {
-                ui.label("Extra display:");
-                let mut sizes = vec![
-                    (1280, 720),
-                    (1600, 900),
-                    (1920, 1080),
-                    (2560, 1440),
-                    (3840, 2160),
-                ];
-                let mut rates = vec![30, 60, 75, 90, 120, 144, 165, 240];
-                if let Some(m) = s.monitor_mode {
-                    sizes.push((m.width, m.height));
-                    rates.push(m.refresh_hz);
-                }
-                sizes.push((mode.width, mode.height));
-                rates.push(mode.refresh_hz);
-                sizes.sort_by_key(|(w, h)| w * h);
-                sizes.dedup();
-                rates.sort();
-                rates.dedup();
-                let native = |w, h| {
-                    s.monitor_mode
-                        .is_some_and(|m| (m.width, m.height) == (w, h))
-                };
-                egui::ComboBox::from_id_salt("virtual-size")
-                    .selected_text(format!("{}×{}", mode.width, mode.height))
-                    .show_ui(ui, |ui| {
-                        for (w, h) in sizes {
-                            let label = if native(w, h) {
-                                format!("{w}×{h} (this screen)")
-                            } else {
-                                format!("{w}×{h}")
-                            };
-                            if ui
-                                .selectable_label((mode.width, mode.height) == (w, h), label)
-                                .clicked()
-                                && (mode.width, mode.height) != (w, h)
-                            {
-                                actions.push(Action::SetVirtualDisplay(Some(VirtualMode {
-                                    width: w,
-                                    height: h,
-                                    ..mode
-                                })));
-                            }
-                        }
-                    });
-                egui::ComboBox::from_id_salt("virtual-rate")
-                    .selected_text(format!("{} Hz", mode.refresh_hz))
-                    .show_ui(ui, |ui| {
-                        for hz in rates {
-                            if ui
-                                .selectable_label(mode.refresh_hz == hz, format!("{hz} Hz"))
-                                .clicked()
-                                && mode.refresh_hz != hz
-                            {
-                                actions.push(Action::SetVirtualDisplay(Some(VirtualMode {
-                                    refresh_hz: hz,
-                                    ..mode
-                                })));
-                            }
-                        }
-                    });
-            });
-        }
-        if s.codec_choices.len() > 1 {
-            ui.horizontal(|ui| {
-                ui.label("Codec:");
-                for (key, label) in &s.codec_choices {
-                    if ui.selectable_label(s.codec_key == *key, *label).clicked()
-                        && s.codec_key != *key
-                    {
-                        actions.push(Action::SetCodec(key.to_string()));
-                    }
-                }
-            });
-        }
-        if !s.modes.is_empty() && s.virtual_mode.is_none() {
-            ui.horizontal(|ui| {
-                ui.label("Resolution:");
-                let label = |r: Option<(u32, u32)>| match r {
-                    Some((w, h)) => format!("{w}×{h}"),
-                    None => "Host's own".to_string(),
-                };
-                egui::ComboBox::from_id_salt("resolution")
-                    .selected_text(label(s.resolution))
-                    .show_ui(ui, |ui| {
-                        for r in std::iter::once(None).chain(s.modes.iter().copied().map(Some)) {
-                            if ui.selectable_label(s.resolution == r, label(r)).clicked()
-                                && s.resolution != r
-                            {
-                                actions.push(Action::SetResolution(r));
-                            }
-                        }
-                    });
-            });
-        }
-        ui.horizontal(|ui| {
-            let mut on = s.microphone;
-            if ui
-                .checkbox(&mut on, "Send my microphone")
-                .on_hover_text("Apps on the host can record it as a microphone")
-                .changed()
-            {
-                actions.push(Action::SetMicrophone(on));
-            }
-        });
-        if !s.audio_devices.is_empty() {
-            ui.horizontal(|ui| {
-                ui.label("Sound from:");
-                let name = |id: &Option<String>| match id {
-                    None => "Host's default output".to_string(),
-                    Some(id) => s
-                        .audio_devices
-                        .iter()
-                        .find(|(i, _)| i == id)
-                        .map_or_else(|| id.clone(), |(_, n)| n.clone()),
-                };
-                egui::ComboBox::from_id_salt("audio-device")
-                    .selected_text(name(&s.audio_device))
-                    .show_ui(ui, |ui| {
-                        let choices = std::iter::once(None)
-                            .chain(s.audio_devices.iter().map(|(id, _)| Some(id.clone())));
-                        for choice in choices {
-                            if ui
-                                .selectable_label(s.audio_device == choice, name(&choice))
-                                .clicked()
-                                && s.audio_device != choice
-                            {
-                                actions.push(Action::SetAudioDevice(choice));
-                            }
-                        }
-                    });
-            });
-        }
-        ui.horizontal(|ui| {
-            ui.label("Bitrate:");
-            let mut mbps = s.bitrate_mbps;
-            let slider = ui.add(
-                egui::Slider::new(&mut mbps, 2..=500)
-                    .logarithmic(true)
-                    .suffix(" Mbit/s"),
-            );
-            if slider.drag_stopped() || (slider.changed() && !slider.dragged()) {
-                actions.push(Action::SetBitrate(mbps));
-            }
-        });
+        ui.add_space(4.0);
+        ui.label(
+            egui::RichText::new(&s.stats_line)
+                .monospace()
+                .size(10.5)
+                .color(MUTED),
+        );
+        ui.add_space(8.0);
         ui.horizontal(|ui| {
             if ui
-                .button("Fullscreen")
-                .on_hover_text(hint(Command::Fullscreen))
+                .button("Send Ctrl+Alt+Del")
+                .on_hover_text("Reach the lock screen, task manager or sign-in on the host")
                 .clicked()
             {
-                actions.push(Action::ToggleFullscreen);
-            }
-            if ui
-                .button(if s.show_stats {
-                    "Hide statistics"
-                } else {
-                    "Show statistics"
-                })
-                .on_hover_text(hint(Command::Stats))
-                .clicked()
-            {
-                actions.push(Action::ToggleStats);
-            }
-            if ui.button("Send Ctrl+Alt+Del").clicked() {
                 actions.push(Action::SecureAttention);
             }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.add(theme::danger_button("Disconnect")).clicked() {
+                    actions.push(Action::Disconnect);
+                }
+            });
         });
+        ui.add_space(6.0);
         ui.separator();
-        ui.horizontal(|ui| {
-            if ui
-                .button(format!("Back to {} ({})", s.host_name, s.shortcut))
-                .clicked()
-            {
-                actions.push(Action::CloseMenu);
+        ui.add_space(4.0);
+        let outcome = settings.panel.show(
+            ui,
+            settings.config,
+            Some(settings.host),
+            Some(settings.live),
+            egui::vec2(width, height),
+        );
+        for action in outcome.actions {
+            match action {
+                crate::settings_ui::LiveAction::SelectDisplay(id) => {
+                    actions.push(Action::SelectDisplay(id))
+                }
             }
-            if ui
-                .button("Disconnect")
-                .on_hover_text(hint(Command::Disconnect))
-                .clicked()
-            {
-                actions.push(Action::Disconnect);
-            }
-        });
+        }
+        if outcome.changed {
+            actions.push(Action::SettingsChanged);
+        }
     });
-    // Remember where it was dragged (the title bar does the dragging, so
+    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        actions.push(Action::CloseMenu);
+    }
+    // Remember where it was dragged (the frame does the dragging, so
     // compare with where it was put instead of asking for a drag).
     if let Some(shown) = shown
         && s.place_menu.is_none()
@@ -1395,7 +1246,7 @@ fn menu_button(ctx: &egui::Context, s: &OverlayState, actions: &mut Vec<Action>)
             rect.left() + pad
         };
         if logo {
-            crate::launcher::paint_logo(
+            crate::theme::paint_logo(
                 painter,
                 egui::Rect::from_min_size(
                     egui::pos2(x, rect.center().y - logo_size / 2.0),
@@ -1439,7 +1290,7 @@ impl ApplicationHandler<UiEvent> for Viewer {
                 return;
             }
         };
-        if self.options.fullscreen {
+        if self.in_force.fullscreen {
             window.set_fullscreen(Some(Fullscreen::Borderless(None)));
         }
         let renderer = match Renderer::new(window.clone()) {

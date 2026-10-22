@@ -35,8 +35,9 @@ Read [docs/architecture.md](docs/architecture.md) first.
 - The window can be tested under a headless Weston
   (`weston --backend=headless --renderer=gl --socket=...`) with
   `--screenshot path.png`; `ORIEL_DEBUG_MENU=1` opens the menu at start;
-  `ORIEL_DEBUG_DIALOG=settings[-input|-sound|-window]` opens the settings
-  and `ORIEL_DEBUG_LAUNCHER_SIZE=420x400` sizes the start window.
+  `ORIEL_DEBUG_DIALOG=settings[-<tab>]` or `host-settings[-<tab>]` (the
+  first paired host) opens the settings on a tab, and
+  `ORIEL_DEBUG_LAUNCHER_SIZE=420x400` sizes the start window.
 - Machines without a sound card: point `HOME` at a directory whose
   `.asoundrc` sets `pcm.!default { type null }`.
 - Headless GNOME host: run `gnome-shell --headless --wayland
@@ -58,6 +59,12 @@ Read [docs/architecture.md](docs/architecture.md) first.
   encoder but the GPU context is reset.
 
 ## Conventions
+
+- UI: dialogs and the session menu use `theme.rs` (palette, frame,
+  title bar with ✕, tab pills); settings are rows in `settings_ui.rs`, one
+  panel for the defaults, a host's overrides and the live session. Add a
+  setting there (and to `ClientConfig`, `HostPrefs`, `Effective`, and the
+  viewer's `sync` if it can change live) rather than to a dialog.
 
 - Media code calls FFmpeg through raw FFI; check field layouts against the
   FFmpeg version in the flake (8.1) when touching hwcontext structs.

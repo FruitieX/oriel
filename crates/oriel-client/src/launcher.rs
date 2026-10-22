@@ -10,7 +10,6 @@ use std::{
 
 use anyhow::Result;
 use oriel_net::{Paths, TrustStore};
-use oriel_proto::StreamSettings;
 use parking_lot::Mutex;
 use winit::{
     application::ApplicationHandler,
@@ -22,14 +21,15 @@ use winit::{
 
 use crate::{
     ViewerOptions,
-    app::{self, ViewerExit, ViewerPrefs},
-    config::{
-        CODEC_CHOICES, ClientConfig, HostPrefs, codec_choice, format_resolution, parse_resolution,
-    },
+    app::{self, ViewerExit},
+    config::ClientConfig,
     connection::{self, Connected},
-    keymap::{Bindings, Command, Shortcut},
     render::Renderer,
     session::UiEvent,
+    theme::{
+        AMBER, BG, BLUE, CARD, CARD_HOVER, DEEP_BLUE, FRAME, GREEN, MUTED, dialog_frame,
+        paint_logo, primary_button, section_title, style,
+    },
 };
 
 /// A client connected to this computer's host.
@@ -68,6 +68,8 @@ pub struct GuiOptions {
     pub tray: bool,
     /// Start in the tray without opening the window.
     pub start_hidden: bool,
+    /// Open the window minimized (where there is no tray).
+    pub start_minimized: bool,
     /// Start sharing this computer right away.
     pub start_sharing: bool,
     /// Offered as "Open log" in the tray.
@@ -87,23 +89,13 @@ impl Default for GuiOptions {
             quit_with_viewer: false,
             tray: cfg!(windows),
             start_hidden: false,
+            start_minimized: false,
             start_sharing: false,
             log_path: None,
             quit_flag: None,
         }
     }
 }
-
-// Palette, matching the icon.
-const BG: egui::Color32 = egui::Color32::from_rgb(0x17, 0x1a, 0x26);
-const CARD: egui::Color32 = egui::Color32::from_rgb(0x22, 0x27, 0x38);
-const CARD_HOVER: egui::Color32 = egui::Color32::from_rgb(0x2c, 0x33, 0x4a);
-const FRAME: egui::Color32 = egui::Color32::from_rgb(0x2a, 0x2f, 0x45);
-const AMBER: egui::Color32 = egui::Color32::from_rgb(0xff, 0xc4, 0x4d);
-const BLUE: egui::Color32 = egui::Color32::from_rgb(0x6c, 0x9c, 0xf0);
-const DEEP_BLUE: egui::Color32 = egui::Color32::from_rgb(0x3d, 0x5a, 0x99);
-const MUTED: egui::Color32 = egui::Color32::from_rgb(0x9a, 0xa3, 0xb8);
-const GREEN: egui::Color32 = egui::Color32::from_rgb(0x5f, 0xd0, 0x7f);
 
 /// A small window icon: a frame with a lit pane.
 pub fn icon() -> Option<Icon> {
@@ -130,51 +122,6 @@ pub fn icon_rgba() -> (Vec<u8>, u32) {
         }
     }
     (rgba, n)
-}
-
-/// The app's look: dark, rounded, a little roomier than egui's default.
-pub(crate) fn style(ctx: &egui::Context) {
-    let mut visuals = egui::Visuals::dark();
-    visuals.panel_fill = BG;
-    visuals.window_fill = CARD;
-    visuals.extreme_bg_color = egui::Color32::from_rgb(0x12, 0x14, 0x1d);
-    visuals.selection.bg_fill = DEEP_BLUE;
-    visuals.hyperlink_color = BLUE;
-    visuals.window_corner_radius = egui::CornerRadius::same(12);
-    for w in [
-        &mut visuals.widgets.inactive,
-        &mut visuals.widgets.hovered,
-        &mut visuals.widgets.active,
-        &mut visuals.widgets.noninteractive,
-        &mut visuals.widgets.open,
-    ] {
-        w.corner_radius = egui::CornerRadius::same(8);
-    }
-    visuals.widgets.inactive.weak_bg_fill = CARD_HOVER;
-    visuals.widgets.inactive.bg_fill = CARD_HOVER;
-    visuals.widgets.hovered.weak_bg_fill = egui::Color32::from_rgb(0x38, 0x41, 0x5e);
-    visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(0x38, 0x41, 0x5e);
-    visuals.widgets.active.weak_bg_fill = DEEP_BLUE;
-    ctx.set_visuals(visuals);
-    ctx.all_styles_mut(|s| {
-        s.spacing.item_spacing = egui::vec2(10.0, 8.0);
-        s.spacing.button_padding = egui::vec2(12.0, 6.0);
-        s.spacing.interact_size.y = 28.0;
-        for (text_style, size) in [
-            (egui::TextStyle::Body, 15.0),
-            (egui::TextStyle::Button, 15.0),
-            (egui::TextStyle::Heading, 24.0),
-            (egui::TextStyle::Small, 12.0),
-        ] {
-            if let Some(f) = s.text_styles.get_mut(&text_style) {
-                f.size = size;
-            }
-        }
-    });
-}
-
-fn primary_button(text: &str) -> egui::Button<'static> {
-    egui::Button::new(egui::RichText::new(text.to_string()).color(egui::Color32::BLACK)).fill(AMBER)
 }
 
 pub fn run(
@@ -204,15 +151,11 @@ pub fn run(
         #[cfg(windows)]
         tray,
         window_wanted: !(options.start_hidden && options.connect.is_none()),
+        start_minimized: options.start_minimized,
         log_path: options.log_path.clone(),
         quit_flag: options.quit_flag.clone(),
         quit: false,
         tray_updated: Instant::now(),
-        bindings: config.bindings(),
-        recording: None,
-        shortcut_hint: String::new(),
-        playback_devices: Vec::new(),
-        microphones: Vec::new(),
         config,
         paths,
         host,
@@ -223,8 +166,7 @@ pub fn run(
         connecting: None,
         pairing: None,
         pair_dialog: None,
-        settings_open: false,
-        settings_tab: SettingsTab::Video,
+        settings: None,
         status: String::new(),
         reconnect: None,
         result: None,
@@ -235,18 +177,21 @@ pub fn run(
     // Debugging aid for screenshots.
     match std::env::var("ORIEL_DEBUG_DIALOG").as_deref() {
         Ok("pair") => launcher.pair_dialog = Some(PairDialog::default()),
-        Ok("settings") => launcher.settings_open = true,
-        Ok("settings-input") => {
-            launcher.settings_open = true;
-            launcher.settings_tab = SettingsTab::Input;
-        }
-        Ok("settings-sound") => {
-            launcher.settings_open = true;
-            launcher.settings_tab = SettingsTab::Sound;
-        }
-        Ok("settings-window") => {
-            launcher.settings_open = true;
-            launcher.settings_tab = SettingsTab::Window;
+        // "settings[-tab]" or "host-settings[-tab]" (for the first host).
+        Ok(d) if d.starts_with("settings") || d.starts_with("host-settings") => {
+            let host = d
+                .starts_with("host")
+                .then(|| launcher.hosts.first().map(|h| h.name.clone()))
+                .flatten();
+            let mut dialog = SettingsDialog::new(host);
+            if let Some((_, tab)) = d.rsplit_once('-')
+                && let Some((t, _)) = crate::settings_ui::Panel::tabs(dialog.host.is_some())
+                    .into_iter()
+                    .find(|(_, l)| l.eq_ignore_ascii_case(tab))
+            {
+                dialog.panel.tab = t;
+            }
+            launcher.settings = Some(dialog);
         }
         _ => {}
     }
@@ -271,19 +216,22 @@ pub fn run(
             continue;
         };
         launcher.window_wanted = true;
-        let explicit = options.viewer.is_some();
         let viewer_options = match &options.viewer {
             Some(v) => ViewerOptions {
                 target: target.clone(),
                 ..v.clone()
             },
-            None => launcher.viewer_options(&target)?,
+            None => ViewerOptions::from_config(
+                &target,
+                launcher.config.clone(),
+                Some(launcher.paths.clone()),
+            ),
         };
-        let (exit, prefs) = app::run(&mut event_loop, &launcher.rt, connected, viewer_options)?;
+        let exit = app::run(&mut event_loop, &launcher.rt, connected, viewer_options)?;
         tracing::info!(?exit, "viewer ended");
-        if !explicit {
-            launcher.remember(&target, prefs);
-        }
+        // The session saves the settings changed in its menu.
+        launcher.config =
+            ClientConfig::load(&launcher.paths).unwrap_or_else(|_| launcher.config.clone());
         let quit = options.quit_with_viewer && first_viewer && !launcher.has_tray;
         first_viewer = false;
         match exit {
@@ -333,20 +281,14 @@ struct PairDialog {
     name: String,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum SettingsTab {
-    Video,
-    Input,
-    Window,
-    Sound,
-}
-
 struct Launcher {
     #[cfg(windows)]
     tray: Option<crate::tray::Tray>,
     has_tray: bool,
     /// Whether the window should be open (it can be closed to the tray).
     window_wanted: bool,
+    /// Minimize the window when it is first created.
+    start_minimized: bool,
     #[cfg_attr(not(windows), allow(dead_code))]
     log_path: Option<std::path::PathBuf>,
     quit_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
@@ -363,19 +305,11 @@ struct Launcher {
     connecting: Option<(String, Pending<Connected>)>,
     pairing: Option<Pending<String>>,
     pair_dialog: Option<PairDialog>,
-    settings_open: bool,
-    settings_tab: SettingsTab,
+    /// The open settings dialog.
+    settings: Option<SettingsDialog>,
     status: String,
     reconnect: Option<Reconnect>,
     result: Option<LauncherResult>,
-    /// Shortcuts being edited in the settings dialog.
-    bindings: Bindings,
-    /// The command whose shortcut the next key press sets.
-    recording: Option<Command>,
-    shortcut_hint: String,
-    /// Local sound outputs, listed when the settings dialog opens.
-    playback_devices: Vec<oriel_audio::OutputDevice>,
-    microphones: Vec<oriel_audio::OutputDevice>,
     opened: Instant,
     screenshot_taken: bool,
 }
@@ -387,15 +321,30 @@ enum Action {
     ClosePair,
     Pair,
     OpenSettings,
+    OpenHostSettings(String),
     CloseSettings,
-    SaveSettings,
+    /// The settings dialog changed the config.
+    SettingsChanged,
     StartHosting,
     StopHosting,
     AllowPairing,
     Kick(usize),
     CancelReconnect,
-    SetHostFullscreen(String, bool),
-    SetHostCodec(String, Option<String>),
+}
+
+/// The settings dialog: the defaults, or one host's settings.
+struct SettingsDialog {
+    host: Option<String>,
+    panel: crate::settings_ui::Panel,
+}
+
+impl SettingsDialog {
+    fn new(host: Option<String>) -> Self {
+        Self {
+            panel: crate::settings_ui::Panel::new(host.is_some()),
+            host,
+        }
+    }
 }
 
 impl Launcher {
@@ -418,77 +367,10 @@ impl Launcher {
         self.connecting = Some((target, pending));
     }
 
-    fn prefs(&self, host: &str) -> HostPrefs {
-        self.config.hosts.get(host).cloned().unwrap_or_default()
-    }
-
     fn save_config(&mut self) {
         if let Err(e) = self.config.save(&self.paths) {
             self.status = format!("Cannot save settings: {e:#}");
         }
-    }
-
-    /// Remember the choices made during a session with `host`.
-    fn remember(&mut self, host: &str, prefs: ViewerPrefs) {
-        // Where the menu button was dragged applies to every host.
-        if prefs.menu_button_pos != self.config.menu_button_pos {
-            self.config.menu_button_pos = prefs.menu_button_pos;
-            self.save_config();
-        }
-        let new = HostPrefs {
-            fullscreen: Some(prefs.fullscreen),
-            codec: Some(prefs.codec_key),
-            resolution: Some(format_resolution(prefs.resolution)),
-            audio_device: prefs.audio_device,
-            virtual_display: prefs
-                .virtual_display
-                .as_ref()
-                .map(crate::config::format_virtual_mode),
-            microphone: Some(prefs.microphone),
-        };
-        let entry = self.config.hosts.entry(host.to_string()).or_default();
-        if *entry != new {
-            *entry = new;
-            self.save_config();
-        }
-    }
-
-    fn viewer_options(&self, target: &str) -> Result<ViewerOptions> {
-        let c = &self.config;
-        let prefs = self.prefs(target);
-        let codec_key = prefs.codec.clone().unwrap_or_else(|| c.codec_key());
-        let (codecs, auto_codec) = codec_choice(&codec_key);
-        Ok(ViewerOptions {
-            target: target.to_string(),
-            settings: StreamSettings {
-                display: None,
-                codecs,
-                bitrate_kbps: c.bitrate_kbps,
-                max_fps: c.max_fps,
-                audio: c.audio,
-                auto_codec,
-                pyrowave_kbps: c.pyrowave_kbps,
-                resolution: prefs.resolution.as_deref().and_then(parse_resolution),
-                audio_device: prefs.audio_device.clone(),
-                virtual_display: prefs
-                    .virtual_display
-                    .as_deref()
-                    .and_then(crate::config::parse_virtual_mode),
-            },
-            hardware_decode: true,
-            shortcuts: c.bindings(),
-            mouse_mode: c.mouse_mode()?,
-            fullscreen: prefs.fullscreen.unwrap_or(c.fullscreen),
-            show_stats: c.show_stats,
-            screenshot: None,
-            codec_key,
-            playback_device: c.playback_device.clone(),
-            gamepads: c.gamepads,
-            microphone: prefs.microphone.unwrap_or(c.microphone),
-            microphone_device: c.microphone_device.clone(),
-            menu_button: c.menu_button.clone(),
-            menu_button_pos: c.menu_button_pos,
-        })
     }
 
     fn apply(&mut self, action: Action) {
@@ -523,25 +405,20 @@ impl Launcher {
                 });
                 self.pairing = Some(pending);
             }
-            Action::OpenSettings => {
-                self.bindings = self.config.bindings();
-                self.recording = None;
-                self.shortcut_hint.clear();
-                self.playback_devices = oriel_audio::output_devices();
-                self.microphones = oriel_audio::input_devices();
-                self.settings_open = true;
-            }
-            Action::CloseSettings => {
-                // Discard unsaved edits.
-                self.config = ClientConfig::load(&self.paths).unwrap_or_default();
-                self.recording = None;
-                self.settings_open = false;
-            }
-            Action::SaveSettings => {
-                self.config.set_bindings(&self.bindings);
-                self.recording = None;
+            Action::OpenSettings => self.settings = Some(SettingsDialog::new(None)),
+            Action::OpenHostSettings(host) => self.settings = Some(SettingsDialog::new(Some(host))),
+            Action::CloseSettings => self.settings = None,
+            Action::SettingsChanged => {
+                let saved = ClientConfig::load(&self.paths).unwrap_or_default();
+                if (saved.autostart, saved.start_hidden)
+                    != (self.config.autostart, self.config.start_hidden)
+                    && let Err(e) =
+                        crate::autostart::set(self.config.autostart, self.config.start_hidden)
+                {
+                    self.status = format!("Cannot change starting at login: {e:#}");
+                    self.config.autostart = saved.autostart;
+                }
                 self.save_config();
-                self.settings_open = false;
             }
             Action::StartHosting => {
                 if let Some(host) = &mut self.host {
@@ -570,14 +447,6 @@ impl Launcher {
             Action::CancelReconnect => {
                 self.reconnect = None;
                 self.status.clear();
-            }
-            Action::SetHostFullscreen(host, value) => {
-                self.config.hosts.entry(host).or_default().fullscreen = Some(value);
-                self.save_config();
-            }
-            Action::SetHostCodec(host, value) => {
-                self.config.hosts.entry(host).or_default().codec = value;
-                self.save_config();
             }
         }
     }
@@ -618,7 +487,12 @@ impl Launcher {
             None => attrs,
         };
         let window = match event_loop.create_window(attrs) {
-            Ok(w) => Arc::new(w),
+            Ok(w) => {
+                if std::mem::take(&mut self.start_minimized) {
+                    w.set_minimized(true);
+                }
+                Arc::new(w)
+            }
             Err(e) => {
                 tracing::error!("cannot create window: {e}");
                 if !self.has_tray {
@@ -885,52 +759,39 @@ impl Launcher {
                         egui::Rect::from_center_size(screen.center(), egui::vec2(22.0, 22.0));
                     ui.put(spin, egui::Spinner::new().color(egui::Color32::WHITE));
                 }
+                // A "more" button in the corner opens the same menu as a
+                // right click.
+                let more_rect = egui::Rect::from_min_size(
+                    rect.right_top() + egui::vec2(-36.0, 8.0),
+                    egui::vec2(28.0, 28.0),
+                );
+                let more = crate::theme::more_button(
+                    ui,
+                    more_rect,
+                    egui::Id::unique("host-more").with(&h.name),
+                )
+                .on_hover_text("More");
                 let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
-                if response.clicked() && !busy {
+                if response.clicked() && !busy && !more.hovered() {
                     actions.push(Action::Connect(h.name.clone()));
                 }
-                let prefs = self.prefs(&h.name);
-                response.context_menu(|ui| {
+                let menu = |ui: &mut egui::Ui, actions: &mut Vec<Action>| {
                     if ui.button("Connect").clicked() {
                         actions.push(Action::Connect(h.name.clone()));
                         ui.close();
                     }
-                    ui.separator();
-                    let mut full = prefs.fullscreen.unwrap_or(self.config.fullscreen);
-                    if ui.checkbox(&mut full, "Open in fullscreen").changed() {
-                        actions.push(Action::SetHostFullscreen(h.name.clone(), full));
-                    }
-                    ui.menu_button("Codec", |ui| {
-                        let current = prefs.codec.clone();
-                        if ui
-                            .radio(current.is_none(), "Default (from Settings)")
-                            .clicked()
-                        {
-                            actions.push(Action::SetHostCodec(h.name.clone(), None));
-                            ui.close();
-                        }
-                        for (key, label) in CODEC_CHOICES {
-                            if ui.radio(current.as_deref() == Some(key), label).clicked() {
-                                actions
-                                    .push(Action::SetHostCodec(h.name.clone(), Some(key.into())));
-                                ui.close();
-                            }
-                        }
-                    });
-                    if let Some((w, hgt)) = prefs.resolution.as_deref().and_then(parse_resolution) {
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "Resolution {w}×{hgt} (change it while connected)"
-                            ))
-                            .color(MUTED),
-                        );
+                    if ui.button("Settings…").clicked() {
+                        actions.push(Action::OpenHostSettings(h.name.clone()));
+                        ui.close();
                     }
                     ui.separator();
                     if ui.button(format!("Forget {}", h.name)).clicked() {
                         actions.push(Action::Forget(h.name.clone()));
                         ui.close();
                     }
-                });
+                };
+                egui::Popup::menu(&more).show(|ui| menu(ui, actions));
+                response.context_menu(|ui| menu(ui, actions));
             }
         });
     }
@@ -1069,353 +930,47 @@ impl Launcher {
         }
     }
 
-    /// Take the next key press as the shortcut for `command`.
-    fn record_shortcut(&mut self, ui: &mut egui::Ui, command: Command) {
-        let events = ui.input(|i| i.events.clone());
-        for event in events {
-            let egui::Event::Key {
-                key,
-                physical_key,
-                pressed: true,
-                modifiers: m,
-                ..
-            } = event
-            else {
-                continue;
-            };
-            if key == egui::Key::Escape && m.is_none() {
-                // Cancel recording without closing the dialog.
-                ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
-                self.recording = None;
-                return;
-            }
-            let logo = cfg!(target_os = "macos") && m.mac_cmd;
-            if !(m.ctrl || m.alt || m.shift || logo) {
-                self.shortcut_hint =
-                    "Include Ctrl, Alt or Shift, so the key still reaches the host.".into();
-                continue;
-            }
-            // Shortcuts name physical keys, like everything sent to the host.
-            let key = physical_key.unwrap_or(key);
-            let text = format!(
-                "{}{}{}{}{}",
-                if m.ctrl { "Ctrl+" } else { "" },
-                if m.alt { "Alt+" } else { "" },
-                if m.shift { "Shift+" } else { "" },
-                if logo { "Cmd+" } else { "" },
-                key.name()
-            );
-            let Some(shortcut) = Shortcut::parse(&text) else {
-                self.shortcut_hint = format!("{} cannot be used in a shortcut.", key.name());
-                continue;
-            };
-            // One shortcut, one command.
-            for other in Command::ALL {
-                if other != command && self.bindings.get(other) == Some(shortcut) {
-                    if other == Command::Menu {
-                        self.shortcut_hint = format!("{shortcut} already opens the menu.");
-                        return;
-                    }
-                    self.bindings.set(other, None);
-                    self.shortcut_hint = format!("Removed {shortcut} from {}.", other.label());
-                }
-            }
-            self.bindings.set(command, Some(shortcut));
-            self.recording = None;
-            return;
-        }
-    }
-
     fn settings_modal(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
-        if !self.settings_open {
+        let Some(dialog) = &mut self.settings else {
             return;
-        }
+        };
+        let screen = ctx.content_rect();
+        // One size on every tab, within the window; what does not fit
+        // scrolls.
+        let width = (screen.width() - 92.0).clamp(240.0, 560.0);
+        let height = (screen.height() - 230.0).clamp(120.0, 380.0);
+        let config = &mut self.config;
         let modal = egui::Modal::new(egui::Id::unique("settings"))
-            .frame(dialog_frame())
+            .frame(crate::theme::dialog_frame())
             .show(ctx, |ui| {
-                let screen = ui.ctx().content_rect();
-                // Dialog padding and the title, tabs and buttons around
-                // the scrolling part.
-                let width = (screen.width() - 92.0).clamp(220.0, 500.0);
-                let height = (screen.height() - 230.0).clamp(120.0, 350.0);
-                let field = (width - 170.0).clamp(150.0, 280.0);
                 ui.set_width(width);
-                if let Some(command) = self.recording {
-                    self.record_shortcut(ui, command);
+                let (title, subtitle) = match &dialog.host {
+                    Some(h) => (
+                        format!("{h} settings"),
+                        "Used when connected to this computer; Reset uses the default.",
+                    ),
+                    None => (
+                        "Settings".to_string(),
+                        "Defaults for every computer; each can override them.",
+                    ),
+                };
+                if crate::theme::title_bar(ui, &title, Some(subtitle)) {
+                    actions.push(Action::CloseSettings);
                 }
-                ui.heading("Settings");
-                ui.horizontal(|ui| {
-                    for (tab, label) in [
-                        (SettingsTab::Video, "Video"),
-                        (SettingsTab::Input, "Input"),
-                        (SettingsTab::Window, "Window"),
-                        (SettingsTab::Sound, "Sound"),
-                    ] {
-                        ui.selectable_value(&mut self.settings_tab, tab, label);
-                    }
-                });
-                ui.separator();
-                // The same size on every tab, within the window; content
-                // that does not fit scrolls.
-                egui::ScrollArea::both()
-                    .id_salt("settings-scroll")
-                    .max_width(width)
-                    .max_height(height)
-                    .auto_shrink(false)
-                    .show(ui, |ui| {
-                        let c = &mut self.config;
-                        egui::Grid::new("settings-grid")
-                            .num_columns(2)
-                            .spacing([16.0, 12.0])
-                            .show(ui, |ui| match self.settings_tab {
-                                SettingsTab::Video => {
-                                    ui.label("Codec");
-                                    let current = c.codec_key();
-                                    egui::ComboBox::from_id_salt("codec")
-                                        .width(field)
-                                        .selected_text(codec_label(&current))
-                                        .show_ui(ui, |ui| {
-                                            for (key, _) in CODEC_CHOICES {
-                                                if ui
-                                                    .selectable_label(
-                                                        current == key,
-                                                        codec_label(key),
-                                                    )
-                                                    .clicked()
-                                                {
-                                                    c.codecs = codec_choice_strings(key);
-                                                }
-                                            }
-                                        });
-                                    ui.end_row();
-                                    ui.label("Bitrate (HEVC, H.264, AV1)");
-                                    let mut mbps = c.bitrate_kbps / 1000;
-                                    ui.add(
-                                        egui::Slider::new(&mut mbps, 2..=200)
-                                            .suffix(" Mbit/s")
-                                            .logarithmic(true),
-                                    );
-                                    c.bitrate_kbps = mbps * 1000;
-                                    ui.end_row();
-                                    ui.label("Bitrate (PyroWave)");
-                                    let mut mbps = c.pyrowave_kbps / 1000;
-                                    ui.add(
-                                        egui::Slider::new(&mut mbps, 50..=1500)
-                                            .suffix(" Mbit/s")
-                                            .logarithmic(true),
-                                    );
-                                    c.pyrowave_kbps = mbps * 1000;
-                                    ui.end_row();
-                                    ui.label("Frame rate");
-                                    egui::ComboBox::from_id_salt("fps")
-                                        .width(field)
-                                        .selected_text(format!("{} fps", c.max_fps))
-                                        .show_ui(ui, |ui| {
-                                            for fps in [30, 60, 90, 120, 144, 165, 240] {
-                                                ui.selectable_value(
-                                                    &mut c.max_fps,
-                                                    fps,
-                                                    format!("{fps} fps"),
-                                                );
-                                            }
-                                        });
-                                    ui.end_row();
-                                }
-                                SettingsTab::Input => {
-                                    ui.label("Mouse");
-                                    egui::ComboBox::from_id_salt("mouse")
-                                        .width(field)
-                                        .selected_text(match c.mouse.as_str() {
-                                            "desktop" => "Desktop",
-                                            "captured" => "Captured (games)",
-                                            _ => "Automatic",
-                                        })
-                                        .show_ui(ui, |ui| {
-                                            for (v, l) in [
-                                                ("auto", "Automatic"),
-                                                ("desktop", "Desktop"),
-                                                ("captured", "Captured (games)"),
-                                            ] {
-                                                if ui.selectable_label(c.mouse == v, l).clicked() {
-                                                    c.mouse = v.into();
-                                                }
-                                            }
-                                        });
-                                    ui.end_row();
-                                    ui.label("Gamepads");
-                                    ui.checkbox(&mut c.gamepads, "Forward controllers");
-                                    ui.end_row();
-                                    for command in Command::ALL {
-                                        ui.label(command.label());
-                                        ui.horizontal(|ui| {
-                                            let recording = self.recording == Some(command);
-                                            let current = self.bindings.get(command);
-                                            let text = if recording {
-                                                "Press the new shortcut...".to_string()
-                                            } else {
-                                                current.map_or_else(
-                                                    || "None".into(),
-                                                    |s| s.to_string(),
-                                                )
-                                            };
-                                            let button = egui::Button::new(text)
-                                                .min_size(egui::vec2(field.min(210.0), 0.0))
-                                                .selected(recording);
-                                            let response = ui.add(button).on_hover_text(
-                                                "Click, then press the keys (Esc cancels)",
-                                            );
-                                            if response.clicked() {
-                                                // Keep Space/Enter from clicking it again.
-                                                response.surrender_focus();
-                                                self.recording = (!recording).then_some(command);
-                                                self.shortcut_hint.clear();
-                                            }
-                                            if command != Command::Menu
-                                                && current.is_some()
-                                                && ui.small_button("Clear").clicked()
-                                            {
-                                                self.bindings.set(command, None);
-                                            }
-                                            let default =
-                                                Shortcut::parse(command.default_shortcut());
-                                            if current != default
-                                                && ui.small_button("Reset").clicked()
-                                            {
-                                                self.bindings.set(command, default);
-                                            }
-                                        });
-                                        ui.end_row();
-                                    }
-                                    if !self.shortcut_hint.is_empty() {
-                                        ui.label("");
-                                        ui.colored_label(AMBER, &self.shortcut_hint);
-                                        ui.end_row();
-                                    }
-                                }
-                                SettingsTab::Window => {
-                                    ui.label("Fullscreen");
-                                    ui.checkbox(&mut c.fullscreen, "Start in fullscreen");
-                                    ui.end_row();
-                                    ui.label("Statistics");
-                                    ui.checkbox(&mut c.show_stats, "Show statistics");
-                                    ui.end_row();
-                                    ui.label("Menu button");
-                                    let label = |key: &str| {
-                                        crate::config::MENU_BUTTON_STYLES
-                                            .iter()
-                                            .find(|(k, _)| *k == key)
-                                            .map_or("Logo and shortcut", |(_, l)| *l)
-                                    };
-                                    egui::ComboBox::from_id_salt("menu-button")
-                                        .width(field)
-                                        .selected_text(label(&c.menu_button))
-                                        .show_ui(ui, |ui| {
-                                            for (key, l) in crate::config::MENU_BUTTON_STYLES {
-                                                if ui
-                                                    .selectable_label(c.menu_button == key, l)
-                                                    .clicked()
-                                                {
-                                                    c.menu_button = key.into();
-                                                }
-                                            }
-                                        });
-                                    ui.end_row();
-                                    ui.label("");
-                                    ui.add_enabled_ui(c.menu_button_pos.is_some(), |ui| {
-                                        if ui
-                                            .button("Reset position")
-                                            .on_hover_text(
-                                                "Drag the button to move it while connected",
-                                            )
-                                            .clicked()
-                                        {
-                                            c.menu_button_pos = None;
-                                        }
-                                    });
-                                    ui.end_row();
-                                }
-                                SettingsTab::Sound => {
-                                    ui.label("Sound");
-                                    ui.checkbox(&mut c.audio, "Play remote sound");
-                                    ui.end_row();
-                                    ui.label("Play on");
-                                    let devices = &self.playback_devices;
-                                    let name = |id: &Option<String>| match id {
-                                        None => "Default output".to_string(),
-                                        Some(id) => {
-                                            devices.iter().find(|d| &d.id == id).map_or_else(
-                                                || format!("{id} (not found)"),
-                                                |d| d.name.clone(),
-                                            )
-                                        }
-                                    };
-                                    egui::ComboBox::from_id_salt("playback-device")
-                                        .selected_text(name(&c.playback_device))
-                                        .width(field)
-                                        .show_ui(ui, |ui| {
-                                            let choices = std::iter::once(None)
-                                                .chain(devices.iter().map(|d| Some(d.id.clone())));
-                                            for choice in choices {
-                                                let label = name(&choice);
-                                                ui.selectable_value(
-                                                    &mut c.playback_device,
-                                                    choice,
-                                                    label,
-                                                );
-                                            }
-                                        });
-                                    ui.end_row();
-                                    ui.label("Microphone");
-                                    ui.checkbox(&mut c.microphone, "Send my microphone");
-                                    ui.end_row();
-                                    ui.label("");
-                                    let mics = &self.microphones;
-                                    let mic_name = |id: &Option<String>| match id {
-                                        None => "Default microphone".to_string(),
-                                        Some(id) => mics.iter().find(|d| &d.id == id).map_or_else(
-                                            || format!("{id} (not found)"),
-                                            |d| d.name.clone(),
-                                        ),
-                                    };
-                                    egui::ComboBox::from_id_salt("microphone-device")
-                                        .selected_text(mic_name(&c.microphone_device))
-                                        .width(field)
-                                        .show_ui(ui, |ui| {
-                                            let choices = std::iter::once(None)
-                                                .chain(mics.iter().map(|d| Some(d.id.clone())));
-                                            for choice in choices {
-                                                let label = mic_name(&choice);
-                                                ui.selectable_value(
-                                                    &mut c.microphone_device,
-                                                    choice,
-                                                    label,
-                                                );
-                                            }
-                                        });
-                                    ui.end_row();
-                                }
-                            });
-                        if self.settings_tab == SettingsTab::Sound {
-                            ui.add_space(12.0);
-                            ui.add(
-                                egui::Label::new(
-                                    egui::RichText::new(
-                                        "Which of the remote computer's outputs you hear, and the \
-                                 microphone, can also be changed in the menu while connected.",
-                                    )
-                                    .color(MUTED)
-                                    .size(12.0),
-                                )
-                                .wrap(),
-                            );
-                        }
-                    });
                 ui.add_space(10.0);
-                ui.horizontal(|ui| {
-                    if ui.add(primary_button("Save")).clicked() {
-                        actions.push(Action::SaveSettings);
-                    }
-                    if ui.button("Cancel").clicked() {
+                let outcome = dialog.panel.show(
+                    ui,
+                    config,
+                    dialog.host.as_deref(),
+                    None,
+                    egui::vec2(width, height),
+                );
+                if outcome.changed {
+                    actions.push(Action::SettingsChanged);
+                }
+                ui.add_space(12.0);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.add(primary_button("Done")).clicked() {
                         actions.push(Action::CloseSettings);
                     }
                 });
@@ -1423,64 +978,6 @@ impl Launcher {
         if modal.should_close() {
             actions.push(Action::CloseSettings);
         }
-    }
-}
-
-fn dialog_frame() -> egui::Frame {
-    egui::Frame::new()
-        .fill(CARD)
-        .corner_radius(14)
-        .inner_margin(22)
-        .stroke(egui::Stroke::new(1.0, CARD_HOVER))
-}
-
-fn section_title(ui: &mut egui::Ui, text: &str) {
-    ui.label(
-        egui::RichText::new(text.to_uppercase())
-            .size(12.0)
-            .strong()
-            .color(MUTED),
-    );
-    ui.add_space(4.0);
-}
-
-pub(crate) fn paint_logo(painter: &egui::Painter, rect: egui::Rect) {
-    painter.rect_filled(rect, 6, FRAME);
-    let inner = rect.shrink(3.0);
-    let half = inner.width() / 2.0 - 1.0;
-    let panes = [
-        (inner.left_top(), AMBER),
-        (inner.left_top() + egui::vec2(half + 2.0, 0.0), BLUE),
-        (inner.left_top() + egui::vec2(0.0, half + 2.0), BLUE),
-        (inner.left_top() + egui::vec2(half + 2.0, half + 2.0), BLUE),
-    ];
-    for (pos, color) in panes {
-        painter.rect_filled(
-            egui::Rect::from_min_size(pos, egui::vec2(half, half)),
-            2,
-            color,
-        );
-    }
-}
-
-fn codec_label(value: &str) -> &'static str {
-    match value {
-        "auto" => "Automatic (PyroWave on fast links, else HEVC)",
-        "h264" => "H.264",
-        "av1" => "AV1",
-        "pyrowave" => "PyroWave",
-        _ => "HEVC",
-    }
-}
-
-/// The `codecs` list stored in client.toml for a choice key.
-fn codec_choice_strings(key: &str) -> Vec<String> {
-    match key {
-        "auto" => vec!["auto".into()],
-        "h264" => vec!["h264".into()],
-        "av1" => vec!["av1".into(), "hevc".into(), "h264".into()],
-        "pyrowave" => vec!["pyrowave".into(), "hevc".into(), "h264".into()],
-        _ => vec!["hevc".into(), "h264".into()],
     }
 }
 

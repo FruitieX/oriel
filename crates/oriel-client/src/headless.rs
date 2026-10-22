@@ -151,8 +151,7 @@ pub async fn run(
                 s.rtt().as_secs_f32() * 1000.0,
                 latency_ms
             );
-            if let Some(a) = &s.audio {
-                let a = *a.lock();
+            if let Some(a) = s.audio_stats() {
                 println!(
                     "audio: buffered {:.1} ms, lost {}, underruns {}",
                     a.buffered_ms, a.lost, a.underruns

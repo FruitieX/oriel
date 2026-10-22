@@ -67,8 +67,13 @@ Without `--pair`, the host only accepts already paired clients. `oriel hosts`,
 `oriel clients`, `oriel forget`, `oriel unpair` manage pairings; `oriel info`
 shows the identity, encoders and displays.
 
-Client defaults can go in `client.toml` in the config directory
-(`oriel info` prints it):
+Settings are one set of defaults plus per-computer overrides, edited in
+the same panel everywhere: Settings in the start window (the defaults),
+a computer tile's ⋯ menu → Settings (that computer), and the menu while
+connected (that computer, applied immediately). Settings → App can start
+oriel at login (in the tray on Windows, minimized elsewhere). They are
+stored in `client.toml` in the config directory (`oriel info` prints it),
+overrides under `[hosts.<name>]`:
 
 ```toml
 menu_shortcut = "Ctrl+Alt+Shift+M"
@@ -77,6 +82,10 @@ max_fps = 120
 codecs = ["hevc", "h264"]
 mouse = "auto"      # or "desktop", "captured"
 audio = true
+
+[hosts.watermelon]  # overrides for one computer
+max_fps = 144
+resolution = "2560x1440"
 
 [shortcuts]         # defaults shown; "" disables one
 fullscreen = "Ctrl+Alt+Shift+F"

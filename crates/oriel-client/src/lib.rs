@@ -2,6 +2,7 @@
 //! and forwards input.
 
 pub mod app;
+pub mod autostart;
 pub mod config;
 pub mod connection;
 mod decode;
@@ -26,7 +27,9 @@ pub mod keymap;
 pub mod launcher;
 mod render;
 pub mod session;
+pub mod settings_ui;
 mod stats;
+pub mod theme;
 #[cfg(windows)]
 mod tray;
 #[cfg(windows)]

@@ -112,6 +112,8 @@ pub async fn run(
     // Continues across device switches, so the client's jitter buffer
     // does not mistake the new packets for stale ones.
     let audio_seq = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let mut audio_enabled = settings.audio;
+    let mut audio_device = settings.audio_device.clone();
     let mut audio = if settings.audio {
         start_audio(
             &conn,
@@ -351,12 +353,22 @@ pub async fn run(
                         let _ = pad_tx.send(crate::gamepad::Cmd::Remove { pad });
                     }
                     Some(ClientMsg::SetAudioDevice { id }) => {
-                        if settings.audio {
+                        audio_device = id;
+                        if audio_enabled {
                             // Stop the old capture before opening the new one.
                             drop(audio.take());
-                            audio = start_audio(&conn, options.source, id, audio_seq.clone(), &ev_tx_audio);
+                            audio = start_audio(&conn, options.source, audio_device.clone(), audio_seq.clone(), &ev_tx_audio);
                         }
                     }
+                    Some(ClientMsg::SetAudio { enabled }) => {
+                        audio_enabled = enabled;
+                        drop(audio.take());
+                        if enabled {
+                            audio = start_audio(&conn, options.source, audio_device.clone(), audio_seq.clone(), &ev_tx_audio);
+                        }
+                    }
+                    Some(ClientMsg::SetMaxFps { fps }) => { let _ = cmd_tx.send(Cmd::MaxFps(fps)); }
+                    Some(ClientMsg::SetPyroWaveBitrate { kbps }) => { let _ = cmd_tx.send(Cmd::PyroWaveBitrate(kbps)); }
                     Some(ClientMsg::Ping { id }) => {
                         write_msg(&mut ctl_send, &HostMsg::Pong { id, host_us: crate::host_us() }).await?
                     }

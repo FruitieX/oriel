@@ -42,13 +42,14 @@ pub struct Session {
     input: mpsc::UnboundedSender<InputEvent>,
     pub frames: decode::FrameSlot,
     pub stats: Arc<Mutex<Stats>>,
-    pub audio: Option<Arc<Mutex<oriel_audio::PlayerStats>>>,
     pub clock: Arc<Mutex<crate::stats::ClockSync>>,
     /// The renderer offers zero-copy decoding here once it exists.
     pub interop: decode::InteropSlot,
     /// Gamepads are forwarded only while the viewer window has focus.
     pub focused: Arc<std::sync::atomic::AtomicBool>,
     mic: Arc<Mutex<Microphone>>,
+    speaker: Arc<Mutex<Speaker>>,
+    gamepads: Arc<Mutex<Gamepads>>,
     rt: tokio::runtime::Handle,
 }
 
@@ -61,9 +62,28 @@ impl Session {
         let _ = self.input.send(event);
     }
 
-    /// Start or stop sending the microphone.
-    pub fn set_microphone(&self, on: bool) -> Result<()> {
-        self.mic.lock().set(on)
+    /// Start or stop sending the microphone, from `device`.
+    pub fn set_microphone(&self, on: bool, device: Option<String>) -> Result<()> {
+        let mut mic = self.mic.lock();
+        if mic.device != device {
+            mic.device = device;
+            mic.capture = None;
+        }
+        mic.set(on)
+    }
+
+    /// Play the host's sound on `device`, or (`None`) stop it.
+    pub fn set_speaker(&self, device: Option<Option<String>>) -> Result<()> {
+        self.speaker.lock().set(device)
+    }
+
+    pub fn audio_stats(&self) -> Option<oriel_audio::PlayerStats> {
+        Some(*self.speaker.lock().player.as_ref()?.0.stats.lock())
+    }
+
+    /// Forward gamepads (while the window has focus) or not.
+    pub fn set_gamepads(&self, on: bool) {
+        self.gamepads.lock().set(on);
     }
 
     pub fn rtt(&self) -> Duration {
@@ -92,6 +112,51 @@ pub struct SessionOptions {
     pub microphone: bool,
     /// Which input (`None`: the default one).
     pub microphone_device: Option<String>,
+}
+
+/// Where the host's sound plays.
+struct Speaker {
+    player: Option<(oriel_audio::Player, Option<String>)>,
+}
+
+impl Speaker {
+    fn set(&mut self, device: Option<Option<String>>) -> Result<()> {
+        let Some(device) = device else {
+            self.player = None;
+            return Ok(());
+        };
+        if self.player.as_ref().is_some_and(|(_, d)| *d == device) {
+            return Ok(());
+        }
+        // Close the old output before opening the new one.
+        self.player = None;
+        let player = oriel_audio::Player::start(oriel_audio::Output::Device(device.clone()))?;
+        self.player = Some((player, device));
+        Ok(())
+    }
+}
+
+/// Gamepad forwarding, started on first use.
+struct Gamepads {
+    conn: quinn::Connection,
+    ctl: mpsc::UnboundedSender<ClientMsg>,
+    focused: Arc<std::sync::atomic::AtomicBool>,
+    enabled: Arc<std::sync::atomic::AtomicBool>,
+    rumble: Option<crate::gamepad::RumbleSender>,
+}
+
+impl Gamepads {
+    fn set(&mut self, on: bool) {
+        self.enabled.store(on, std::sync::atomic::Ordering::Relaxed);
+        if on && self.rumble.is_none() {
+            self.rumble = Some(crate::gamepad::spawn(
+                self.conn.clone(),
+                self.ctl.clone(),
+                self.focused.clone(),
+                self.enabled.clone(),
+            ));
+        }
+    }
 }
 
 /// The local microphone, sent to the host while on.
@@ -167,18 +232,12 @@ pub fn start(
         sink.clone(),
     );
 
-    let player = if settings.audio {
-        match oriel_audio::Player::start(oriel_audio::Output::Device(playback_device)) {
-            Ok(p) => Some(p),
-            Err(e) => {
-                tracing::warn!("no audio output: {e:#}");
-                None
-            }
-        }
-    } else {
-        None
-    };
-    let audio_stats = player.as_ref().map(|p| p.stats.clone());
+    let speaker = Arc::new(Mutex::new(Speaker { player: None }));
+    if settings.audio
+        && let Err(e) = speaker.lock().set(Some(playback_device))
+    {
+        tracing::warn!("no audio output: {e:#}");
+    }
 
     let ControlStream { mut send, mut recv } = ctl;
     let _ = ctl_tx.send(ClientMsg::StartStream(settings));
@@ -207,8 +266,15 @@ pub fn start(
     });
 
     let focused = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let rumble =
-        gamepads.then(|| crate::gamepad::spawn(conn.clone(), ctl_tx.clone(), focused.clone()));
+    let pads = Arc::new(Mutex::new(Gamepads {
+        conn: conn.clone(),
+        ctl: ctl_tx.clone(),
+        focused: focused.clone(),
+        enabled: Default::default(),
+        rumble: None,
+    }));
+    pads.lock().set(gamepads);
+    let rumble_pads = pads.clone();
 
     // Images on the clipboard (text goes through the window system).
     let image_tx = ctl_tx.clone();
@@ -241,7 +307,7 @@ pub fn start(
                 continue;
             }
             if let HostMsg::Rumble { pad, strong, weak } = msg {
-                if let Some(r) = &rumble {
+                if let Some(r) = &rumble_pads.lock().rumble {
                     let _ = r.send((pad, strong, weak));
                 }
                 continue;
@@ -299,6 +365,7 @@ pub fn start(
     });
 
     let dg_conn = conn.clone();
+    let dg_speaker = speaker.clone();
     let dg_sink = sink.clone();
     tokio::spawn(async move {
         while let Ok(bytes) = dg_conn.read_datagram().await {
@@ -307,7 +374,7 @@ pub fn start(
                     dg_sink(UiEvent::CursorPosition { x, y })
                 }
                 Ok(Datagram::Audio { seq, data }) => {
-                    if let Some(p) = &player {
+                    if let Some((p, _)) = &dg_speaker.lock().player {
                         p.push(seq, data);
                     }
                 }
@@ -336,10 +403,11 @@ pub fn start(
         input: input_tx,
         frames,
         stats,
-        audio: audio_stats,
         clock,
         interop,
         focused,
+        speaker,
+        gamepads: pads,
         mic: Arc::new(Mutex::new(mic)),
         rt: rt.clone(),
     }

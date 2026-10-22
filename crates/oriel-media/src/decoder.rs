@@ -694,7 +694,7 @@ mod refine_tests {
                 x ^= x << 13;
                 x ^= x >> 17;
                 x ^= x << 5;
-                *b = (x % 3 == 0) as u8;
+                *b = x.is_multiple_of(3) as u8;
             }
         }
         let mut bgra = vec![255u8; w * h * 4];

@@ -30,6 +30,11 @@ pub struct ClientConfig {
     pub show_stats: bool,
     /// Share this computer when oriel starts.
     pub share: bool,
+    /// Start oriel when the user logs in (mirrors the OS's autostart
+    /// entry, see `crate::autostart`).
+    pub autostart: bool,
+    /// When started at login, stay in the tray (Windows) or minimized.
+    pub start_hidden: bool,
     /// Local output for remote sound (an `oriel_audio::OutputDevice` id);
     /// unset plays on the default device.
     pub playback_device: Option<String>,
@@ -53,21 +58,92 @@ pub struct ClientConfig {
     pub hosts: std::collections::BTreeMap<String, HostPrefs>,
 }
 
-/// Choices remembered for one host; unset fields use the global settings.
+/// Settings for one host that differ from the defaults; unset fields use
+/// the defaults (see [`ClientConfig::effective`]).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HostPrefs {
     pub fullscreen: Option<bool>,
     /// A codec choice key (see [`codec_choice`]).
     pub codec: Option<String>,
+    pub bitrate_kbps: Option<u32>,
+    pub pyrowave_kbps: Option<u32>,
+    pub max_fps: Option<u32>,
+    pub mouse: Option<String>,
+    pub gamepads: Option<bool>,
+    pub audio: Option<bool>,
+    /// Local output ("" for the default device).
+    pub playback_device: Option<String>,
+    pub microphone: Option<bool>,
+    /// Input device ("" for the default one).
+    pub microphone_device: Option<String>,
+    pub show_stats: Option<bool>,
+    pub menu_button: Option<String>,
+    // Only meaningful per host:
     /// "native" or "WIDTHxHEIGHT".
     pub resolution: Option<String>,
     /// The host output to hear; unset follows the host's default.
     pub audio_device: Option<String>,
     /// Use this window as an extra display of the host, "WIDTHxHEIGHT@HZ".
     pub virtual_display: Option<String>,
-    /// Send the microphone (unset: the global setting).
-    pub microphone: Option<bool>,
+}
+
+/// The settings in force for one host: its overrides over the defaults.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Effective {
+    pub fullscreen: bool,
+    pub codec: String,
+    pub bitrate_kbps: u32,
+    pub pyrowave_kbps: u32,
+    pub max_fps: u32,
+    pub mouse: String,
+    pub gamepads: bool,
+    pub audio: bool,
+    pub playback_device: Option<String>,
+    pub microphone: bool,
+    pub microphone_device: Option<String>,
+    pub show_stats: bool,
+    pub menu_button: String,
+    pub resolution: Option<(u32, u32)>,
+    pub audio_device: Option<String>,
+    pub virtual_display: Option<oriel_proto::VirtualMode>,
+}
+
+impl Effective {
+    pub fn mouse_mode(&self) -> MouseMode {
+        match self.mouse.as_str() {
+            "desktop" => MouseMode::Absolute,
+            "captured" => MouseMode::Relative,
+            _ => MouseMode::Auto,
+        }
+    }
+}
+
+/// A device choice where "" means the default device.
+fn device(choice: Option<&String>, default: &Option<String>) -> Option<String> {
+    match choice {
+        Some(d) if d.is_empty() => None,
+        Some(d) => Some(d.clone()),
+        None => default.clone(),
+    }
+}
+
+/// Mouse modes offered in the UI, as (key, label).
+pub const MOUSE_MODES: [(&str, &str); 3] = [
+    ("auto", "Automatic"),
+    ("desktop", "Desktop"),
+    ("captured", "Captured (games)"),
+];
+
+/// The `codecs` list stored in client.toml for a choice key.
+pub fn codec_choice_strings(key: &str) -> Vec<String> {
+    match key {
+        "auto" => vec!["auto".into()],
+        "h264" => vec!["h264".into()],
+        "av1" => vec!["av1".into(), "hevc".into(), "h264".into()],
+        "pyrowave" => vec!["pyrowave".into(), "hevc".into(), "h264".into()],
+        _ => vec!["hevc".into(), "h264".into()],
+    }
 }
 
 pub fn parse_virtual_mode(s: &str) -> Option<oriel_proto::VirtualMode> {
@@ -138,6 +214,8 @@ impl Default for ClientConfig {
             fullscreen: false,
             show_stats: false,
             share: false,
+            autostart: false,
+            start_hidden: true,
             playback_device: None,
             gamepads: true,
             menu_button: "full".into(),
@@ -151,6 +229,38 @@ impl Default for ClientConfig {
 }
 
 impl ClientConfig {
+    /// The settings in force for `host` (just the defaults without one).
+    pub fn effective(&self, host: Option<&str>) -> Effective {
+        let empty = HostPrefs::default();
+        let h = host.and_then(|h| self.hosts.get(h)).unwrap_or(&empty);
+        Effective {
+            fullscreen: h.fullscreen.unwrap_or(self.fullscreen),
+            codec: h.codec.clone().unwrap_or_else(|| self.codec_key()),
+            bitrate_kbps: h.bitrate_kbps.unwrap_or(self.bitrate_kbps),
+            pyrowave_kbps: h.pyrowave_kbps.unwrap_or(self.pyrowave_kbps),
+            max_fps: h.max_fps.unwrap_or(self.max_fps),
+            mouse: h.mouse.clone().unwrap_or_else(|| self.mouse.clone()),
+            gamepads: h.gamepads.unwrap_or(self.gamepads),
+            audio: h.audio.unwrap_or(self.audio),
+            playback_device: device(h.playback_device.as_ref(), &self.playback_device),
+            microphone: h.microphone.unwrap_or(self.microphone),
+            microphone_device: device(h.microphone_device.as_ref(), &self.microphone_device),
+            show_stats: h.show_stats.unwrap_or(self.show_stats),
+            menu_button: h
+                .menu_button
+                .clone()
+                .unwrap_or_else(|| self.menu_button.clone()),
+            resolution: h.resolution.as_deref().and_then(parse_resolution),
+            audio_device: h.audio_device.clone().filter(|d| !d.is_empty()),
+            virtual_display: h.virtual_display.as_deref().and_then(parse_virtual_mode),
+        }
+    }
+
+    /// The overrides for `host`, created if needed.
+    pub fn host_mut(&mut self, host: &str) -> &mut HostPrefs {
+        self.hosts.entry(host.to_string()).or_default()
+    }
+
     /// The configured shortcuts; unparsable entries fall back to defaults.
     pub fn bindings(&self) -> Bindings {
         let mut bindings = Bindings::default();
@@ -256,6 +366,33 @@ impl ClientConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn host_overrides() {
+        let mut c = ClientConfig {
+            max_fps: 60,
+            playback_device: Some("speakers".into()),
+            ..Default::default()
+        };
+        assert_eq!(c.effective(Some("pc")).max_fps, 60);
+        let h = c.host_mut("pc");
+        h.max_fps = Some(144);
+        // "" overrides a default device with the system default.
+        h.playback_device = Some(String::new());
+        h.resolution = Some("2560x1440".into());
+        let e = c.effective(Some("pc"));
+        assert_eq!(e.max_fps, 144);
+        assert_eq!(e.playback_device, None);
+        assert_eq!(e.resolution, Some((2560, 1440)));
+        // Other hosts and the defaults are unaffected.
+        assert_eq!(c.effective(Some("other")).max_fps, 60);
+        assert_eq!(
+            c.effective(None).playback_device.as_deref(),
+            Some("speakers")
+        );
+        let c: ClientConfig = toml::from_str(&toml::to_string(&c).unwrap()).unwrap();
+        assert_eq!(c.effective(Some("pc")).max_fps, 144);
+    }
 
     #[test]
     fn bindings_roundtrip() {

@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 pub mod keys;
 
 pub const ALPN: &[u8] = b"oriel/1";
-pub const PROTOCOL_VERSION: u32 = 7;
+pub const PROTOCOL_VERSION: u32 = 8;
 pub const DEFAULT_PORT: u16 = 48600;
 /// Upper bound for a single control/input message.
 pub const MAX_MESSAGE_LEN: usize = 32 * 1024 * 1024;
@@ -168,6 +168,18 @@ pub enum ClientMsg {
     /// The client's clipboard now holds this image (PNG).
     ClipboardImage {
         png: Vec<u8>,
+    },
+    /// Change the frame rate limit.
+    SetMaxFps {
+        fps: u32,
+    },
+    /// Change PyroWave's bitrate.
+    SetPyroWaveBitrate {
+        kbps: u32,
+    },
+    /// Start or stop streaming sound.
+    SetAudio {
+        enabled: bool,
     },
 }
 
@@ -404,6 +416,8 @@ mod tests {
             auto_codec: false,
             pyrowave_kbps: 400_000,
             resolution: None,
+            audio_device: None,
+            virtual_display: None,
         });
         let bytes = encode_framed(&msg).unwrap();
         let len = u32::from_le_bytes(bytes[..4].try_into().unwrap()) as usize;

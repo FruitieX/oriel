@@ -37,6 +37,8 @@ pub enum Cmd {
     Target(capture::Target),
     Codecs(Vec<Codec>, bool),
     Bitrate(u32),
+    MaxFps(u32),
+    PyroWaveBitrate(u32),
     Stop,
 }
 
@@ -354,6 +356,17 @@ impl Pipeline {
                         force_key = true;
                     }
                     Cmd::Bitrate(_) => {}
+                    Cmd::MaxFps(fps) if fps != self.config.max_fps => {
+                        self.config.max_fps = fps.clamp(1, 240);
+                        return Ok(Flow::Reencode);
+                    }
+                    Cmd::PyroWaveBitrate(kbps) if kbps != self.config.pyrowave_kbps => {
+                        self.config.pyrowave_kbps = kbps.max(10_000);
+                        if codec == Codec::PyroWave {
+                            return Ok(Flow::Reencode);
+                        }
+                    }
+                    Cmd::MaxFps(_) | Cmd::PyroWaveBitrate(_) => {}
                     Cmd::Codecs(codecs, auto) => {
                         if !codecs.is_empty() {
                             self.config.codecs = codecs;

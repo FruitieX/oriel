@@ -32,10 +32,12 @@ struct Pad {
 }
 
 /// Start forwarding gamepads. Stops when the connection closes.
+/// Pads are forwarded while `focused` and `enabled` are both set.
 pub fn spawn(
     conn: quinn::Connection,
     ctl: mpsc::UnboundedSender<ClientMsg>,
     focused: Arc<AtomicBool>,
+    enabled: Arc<AtomicBool>,
 ) -> RumbleSender {
     let (rumble_tx, rumble_rx) = crossbeam_channel::unbounded::<(u8, u16, u16)>();
     std::thread::Builder::new()
@@ -70,7 +72,7 @@ pub fn spawn(
                 // Drain the rest without blocking.
                 while gilrs.next_event().is_some() {}
 
-                let focused = focused.load(Ordering::Relaxed);
+                let focused = focused.load(Ordering::Relaxed) && enabled.load(Ordering::Relaxed);
                 let resend = last_resend.elapsed() >= RESEND;
                 if resend {
                     last_resend = Instant::now();
