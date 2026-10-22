@@ -595,7 +595,7 @@ impl Launcher {
     }
 
     fn create_window(&mut self, event_loop: &ActiveEventLoop) {
-        let attrs = Window::default_attributes()
+        let attrs = crate::app_window(Window::default_attributes())
             .with_title("oriel")
             .with_window_icon(icon())
             .with_inner_size(winit::dpi::LogicalSize::new(760.0, 600.0))

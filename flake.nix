@@ -83,6 +83,7 @@
                 comment = "Connect to other computers or share this one";
                 exec = "oriel";
                 icon = "oriel";
+                startupWMClass = "oriel";
                 categories = [
                   "Network"
                   "RemoteAccess"

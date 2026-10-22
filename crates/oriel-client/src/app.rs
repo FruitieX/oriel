@@ -1284,7 +1284,7 @@ impl ApplicationHandler<UiEvent> for Viewer {
         if self.gfx.is_some() {
             return;
         }
-        let attrs = Window::default_attributes()
+        let attrs = crate::app_window(Window::default_attributes())
             .with_title(format!("{} — oriel", self.host_name))
             .with_window_icon(crate::launcher::icon())
             .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 720.0));
