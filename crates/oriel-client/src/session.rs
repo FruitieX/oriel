@@ -8,7 +8,7 @@ use std::{
 };
 
 use anyhow::Result;
-use oriel_net::{ControlStream, read_msg, write_msg};
+use oriel_net::{ControlStream, read_known, read_msg, write_msg};
 use oriel_proto::{ClientMsg, Datagram, FrameHeader, HostMsg, InputEvent, StreamSettings};
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
@@ -297,7 +297,7 @@ pub fn start(
     let last_pong = Arc::new(Mutex::new(Instant::now()));
     let reader_pong = last_pong.clone();
     tokio::spawn(async move {
-        while let Ok(Some(msg)) = read_msg::<HostMsg>(&mut recv).await {
+        while let Ok(Some(msg)) = read_known::<HostMsg>(&mut recv).await {
             if let HostMsg::Pong { id, host_us } = msg {
                 *reader_pong.lock() = Instant::now();
                 if let Some(sent) = pings.lock().remove(&id) {
@@ -343,6 +343,8 @@ pub fn start(
     });
 
     let frame_conn = conn.clone();
+    let frame_stats = stats.clone();
+    let frame_clock = clock.clone();
     // Debugging aid: emulate a link of this many kbit/s.
     let limit_kbps: Option<u64> = std::env::var("ORIEL_DEBUG_LIMIT_KBPS")
         .ok()
@@ -351,9 +353,13 @@ pub fn start(
         let result: Result<()> = async {
             loop {
                 let mut stream = frame_conn.accept_uni().await?;
-                let Some(header) = read_msg::<FrameHeader>(&mut stream).await? else {
+                // A frame from a host with another protocol version may
+                // not decode; drop just that frame.
+                let Ok(Some(header)) = read_msg::<FrameHeader>(&mut stream).await else {
                     continue;
                 };
+                let local_us = frame_clock.lock().local_us(Instant::now());
+                frame_stats.lock().arrived(header.capture_us, local_us);
                 let data = stream.read_to_end(256 * 1024 * 1024).await?;
                 if let Some(kbps) = limit_kbps {
                     let secs = data.len() as f64 * 8.0 / (kbps as f64 * 1000.0);

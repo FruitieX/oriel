@@ -234,15 +234,10 @@ impl Host {
         else {
             anyhow::bail!("expected Hello");
         };
+        // Another version may still work for what both understand; the
+        // client warns, and the session refuses settings it cannot read.
         if protocol != PROTOCOL_VERSION {
-            return reject(
-                &conn,
-                &mut ctl,
-                format!(
-                    "protocol version {protocol} is not supported (host speaks {PROTOCOL_VERSION})"
-                ),
-            )
-            .await;
+            tracing::warn!(%remote, client = protocol, host = PROTOCOL_VERSION, "client speaks another protocol version");
         }
         tracing::info!(%remote, client = %name, fingerprint = %client_fp.short(), pair, "client connected");
 
@@ -293,6 +288,7 @@ impl Host {
         let result = crate::session::run(
             conn.clone(),
             ctl,
+            protocol,
             self.options.clone(),
             self.test.clone(),
             self.status.clone(),

@@ -10,6 +10,27 @@ pub async fn write_msg<T: Serialize>(stream: &mut quinn::SendStream, msg: &T) ->
 
 /// Read one length-prefixed message; `None` on a clean end of stream.
 pub async fn read_msg<T: DeserializeOwned>(stream: &mut quinn::RecvStream) -> Result<Option<T>> {
+    match read_frame(stream).await? {
+        Some(buf) => Ok(Some(oriel_proto::decode(&buf)?)),
+        None => Ok(None),
+    }
+}
+
+/// Like [`read_msg`], but skips messages this version cannot decode (a
+/// peer with another protocol version), so the stream stays usable.
+pub async fn read_known<T: DeserializeOwned>(stream: &mut quinn::RecvStream) -> Result<Option<T>> {
+    while let Some(buf) = read_frame(stream).await? {
+        match oriel_proto::decode(&buf) {
+            Ok(msg) => return Ok(Some(msg)),
+            Err(e) => tracing::debug!(len = buf.len(), "skipping a message: {e}"),
+        }
+    }
+    Ok(None)
+}
+
+/// Read one length-prefixed message's bytes; `None` on a clean end of
+/// stream.
+pub async fn read_frame(stream: &mut quinn::RecvStream) -> Result<Option<Vec<u8>>> {
     let mut len = [0u8; 4];
     match stream.read_exact(&mut len).await {
         Ok(()) => {}
@@ -25,7 +46,7 @@ pub async fn read_msg<T: DeserializeOwned>(stream: &mut quinn::RecvStream) -> Re
         .read_exact(&mut buf)
         .await
         .context("read message body")?;
-    Ok(Some(oriel_proto::decode(&buf)?))
+    Ok(Some(buf))
 }
 
 /// The bidirectional control stream.

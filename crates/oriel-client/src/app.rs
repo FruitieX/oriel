@@ -132,6 +132,8 @@ pub fn run(
     viewer.host_codecs = connected.codecs;
     viewer.audio_devices = connected.audio_devices;
     viewer.virtual_ok = connected.virtual_display;
+    viewer.other_protocol = (connected.host_protocol != oriel_proto::PROTOCOL_VERSION)
+        .then_some(connected.host_protocol);
     event_loop.run_app_on_demand(&mut viewer)?;
     session.close();
     rt.block_on(async {
@@ -196,6 +198,10 @@ struct Viewer {
     host_health: Option<(oriel_proto::HostHealth, Instant)>,
     diagnostics: crate::diagnostics::Diagnostics,
     diagnosed: Instant,
+    /// The host's protocol version when it differs from ours.
+    other_protocol: Option<u32>,
+    /// Sound underruns counted at the last check.
+    underruns: u64,
     closed: Option<String>,
     first_frame: Option<Instant>,
     frames_presented: u64,
@@ -262,6 +268,8 @@ impl Viewer {
             host_health: None,
             diagnostics: Default::default(),
             diagnosed: Instant::now(),
+            other_protocol: None,
+            underruns: 0,
             closed: None,
             first_frame: None,
             frames_presented: 0,
@@ -710,11 +718,20 @@ impl Viewer {
         if now.duration_since(self.diagnosed) < Duration::from_secs(1) || self.closed.is_some() {
             return;
         }
+        let elapsed = now.duration_since(self.diagnosed).as_secs_f32();
         self.diagnosed = now;
-        let (summary, codec, software) = {
+        let (summary, codec, software, jitter_ms) = {
             let mut s = self.session.stats.lock();
-            (s.summary(), s.codec_id, s.decoder.contains("(software)"))
+            (
+                s.summary(),
+                s.codec_id,
+                s.decoder.contains("(software)"),
+                s.jitter_ms,
+            )
         };
+        let underruns = self.session.audio_stats().map_or(0, |a| a.underruns);
+        let audio_underruns = underruns.saturating_sub(self.underruns) as f32 / elapsed.max(0.001);
+        self.underruns = underruns;
         let inputs = crate::diagnostics::Inputs {
             host: self
                 .host_health
@@ -734,6 +751,9 @@ impl Viewer {
             bitrate_mbps: self.in_force.bitrate_kbps / 1000,
             pyrowave_mbps: self.in_force.pyrowave_kbps / 1000,
             software_decode: software,
+            other_protocol: self.other_protocol,
+            jitter_ms,
+            audio_underruns,
         };
         // Debugging aid: pretend the network is slow, lossy and far away.
         let mut inputs = inputs;

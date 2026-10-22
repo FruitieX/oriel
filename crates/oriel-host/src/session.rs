@@ -5,9 +5,12 @@ use std::{
     time::Duration,
 };
 
-use anyhow::Result;
-use oriel_net::{ControlStream, read_msg, write_msg};
-use oriel_proto::{ClientMsg, Datagram, FrameHeader, HostMsg, InputEvent, VirtualMode};
+use anyhow::{Context, Result};
+use oriel_net::{ControlStream, read_frame, read_known, write_msg};
+use oriel_proto::{
+    ClientMsg, Datagram, FrameHeader, HostMsg, InputEvent, PROTOCOL_VERSION, START_STREAM_TAG,
+    VirtualMode,
+};
 use tokio::sync::mpsc as tmpsc;
 
 use crate::{
@@ -20,12 +23,36 @@ use crate::{
 pub async fn run(
     conn: quinn::Connection,
     mut ctl: ControlStream,
+    client_protocol: u32,
     options: Arc<HostOptions>,
     test: TestState,
     status: Arc<parking_lot::Mutex<crate::server::HostStatus>>,
 ) -> Result<()> {
     let settings = loop {
-        match ctl.recv().await? {
+        let bytes = read_frame(&mut ctl.recv)
+            .await?
+            .context("control stream closed by peer")?;
+        let msg = match oriel_proto::decode::<ClientMsg>(&bytes) {
+            Ok(msg) => msg,
+            // Without stream settings there is nothing to stream.
+            Err(e) if bytes.first() == Some(&START_STREAM_TAG) => {
+                tracing::warn!("cannot read the client's stream settings: {e}");
+                ctl.send(&HostMsg::Rejected {
+                    reason: format!(
+                        "the host runs another version of oriel (protocol {PROTOCOL_VERSION}, \
+                         this client {client_protocol}) and cannot read this client's \
+                         settings; update both"
+                    ),
+                })
+                .await?;
+                return Ok(());
+            }
+            Err(e) => {
+                tracing::debug!("skipping a message: {e}");
+                continue;
+            }
+        };
+        match msg {
             ClientMsg::StartStream(s) => break s,
             ClientMsg::Ping { id } => {
                 ctl.send(&HostMsg::Pong {
@@ -155,7 +182,7 @@ pub async fn run(
     let input_conn = conn.clone();
     let input_task = tokio::spawn(async move {
         let mut stream = input_conn.accept_uni().await?;
-        while let Some(event) = read_msg::<InputEvent>(&mut stream).await? {
+        while let Some(event) = read_known::<InputEvent>(&mut stream).await? {
             if input_tx.send(event).is_err() {
                 break;
             }
@@ -169,7 +196,7 @@ pub async fn run(
         recv: mut ctl_recv,
     } = ctl;
     let ctl_task = tokio::spawn(async move {
-        while let Some(msg) = read_msg::<ClientMsg>(&mut ctl_recv).await? {
+        while let Some(msg) = read_known::<ClientMsg>(&mut ctl_recv).await? {
             if ctl_tx.send(msg).is_err() {
                 break;
             }

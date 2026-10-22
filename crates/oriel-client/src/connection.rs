@@ -21,6 +21,9 @@ pub struct Connected {
     pub audio_devices: Vec<oriel_proto::AudioDevice>,
     /// The host can create virtual monitors.
     pub virtual_display: bool,
+    /// The host's protocol version (another one than ours is worth a
+    /// warning, not a refusal).
+    pub host_protocol: u32,
 }
 
 /// Resolve `host[:port]` (IPv6 addresses with a port go in brackets).
@@ -98,7 +101,17 @@ pub async fn connect(paths: &Paths, target: &str) -> Result<Connected> {
         }
         bail!("{address} is not a paired host; pair first with `oriel pair {address} --pin <PIN>`");
     };
-    match ctl.recv().await? {
+    let welcome = ctl.recv().await.map_err(|e| {
+        if e.downcast_ref::<oriel_proto::ProtoError>().is_some() {
+            anyhow::anyhow!(
+                "cannot understand the host: it runs a version of oriel too different from \
+                 this one (protocol {PROTOCOL_VERSION}); update both"
+            )
+        } else {
+            e
+        }
+    })?;
+    match welcome {
         HostMsg::Welcome {
             protocol,
             name,
@@ -108,7 +121,11 @@ pub async fn connect(paths: &Paths, target: &str) -> Result<Connected> {
             virtual_display,
         } => {
             if protocol != PROTOCOL_VERSION {
-                bail!("host speaks protocol {protocol}, this client {PROTOCOL_VERSION}");
+                tracing::warn!(
+                    host = protocol,
+                    client = PROTOCOL_VERSION,
+                    "the host speaks another protocol version"
+                );
             }
             if trusted.address.as_deref() != Some(address.as_str()) || trusted.name != name {
                 let mut updated = trusted.clone();
@@ -125,6 +142,7 @@ pub async fn connect(paths: &Paths, target: &str) -> Result<Connected> {
                 codecs,
                 audio_devices,
                 virtual_display,
+                host_protocol: protocol,
             })
         }
         HostMsg::Rejected { reason } => bail!("host refused the connection: {reason}"),

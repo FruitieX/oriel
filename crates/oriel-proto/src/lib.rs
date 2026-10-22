@@ -416,6 +416,10 @@ pub fn encode<T: Serialize>(msg: &T) -> Result<Vec<u8>, ProtoError> {
     Ok(postcard::to_stdvec(msg)?)
 }
 
+/// The first byte of an encoded [`ClientMsg::StartStream`] in every
+/// protocol version, so a host can tell when it cannot read one.
+pub const START_STREAM_TAG: u8 = 2;
+
 pub fn decode<'a, T: Deserialize<'a>>(bytes: &'a [u8]) -> Result<T, ProtoError> {
     Ok(postcard::from_bytes(bytes)?)
 }
@@ -443,5 +447,6 @@ mod tests {
         assert_eq!(len, bytes.len() - 4);
         let back: ClientMsg = decode(&bytes[4..]).unwrap();
         assert!(matches!(back, ClientMsg::StartStream(s) if s.max_fps == 120));
+        assert_eq!(encode(&msg).unwrap()[0], START_STREAM_TAG);
     }
 }

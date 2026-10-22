@@ -72,5 +72,11 @@ Read [docs/architecture.md](docs/architecture.md) first.
 
 - Media code calls FFmpeg through raw FFI; check field layouts against the
   FFmpeg version in the flake (8.1) when touching hwcontext structs.
-- Protocol changes need both ends rebuilt; there is no compatibility layer
-  beyond `PROTOCOL_VERSION`.
+- Protocol changes: bump `PROTOCOL_VERSION`. Peers with another version
+  still connect (the client warns) and skip messages they cannot decode
+  (`read_known`), so keep changes decodable where possible: add enum
+  variants at the end, and add struct fields only at the end of a message
+  (postcard ignores trailing bytes, so older peers read newer messages, not
+  the reverse). `Hello`, `Welcome`'s first fields, `FrameHeader` and
+  `ClientMsg::StartStream`'s tag (`START_STREAM_TAG`) must stay stable; a
+  host that cannot read the stream settings refuses with "update both".

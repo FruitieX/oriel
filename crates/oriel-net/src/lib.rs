@@ -16,5 +16,5 @@ pub mod pairing;
 
 pub use config::{Paths, TrustStore, TrustedPeer};
 pub use endpoint::{client_endpoint, peer_fingerprint, server_endpoint};
-pub use framing::{ControlStream, read_msg, write_msg};
+pub use framing::{ControlStream, read_frame, read_known, read_msg, write_msg};
 pub use identity::{Fingerprint, Identity};

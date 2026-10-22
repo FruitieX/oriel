@@ -40,8 +40,9 @@ display) and the client (connects to hosts).
   (`--codec pyrowave`, or `--codec auto` to switch between PyroWave and HEVC
   as the link allows).
 - Warnings that explain a slow stream while it lasts: a link that cannot
-  carry the bitrate, packet loss, high latency, a host that stops
-  answering, and slow encoding or decoding, each with what to try
+  carry the bitrate, packet loss, jitter, high latency, sound dropouts, a
+  host that stops answering, slow encoding or decoding, and a host on
+  another oriel version (which still connects), each with what to try
   (Settings → Interface: detailed, short or off).
   `ORIEL_DEBUG_BAD_NETWORK=1` fakes a bad network to see them.
 - Only paired devices can connect: pairing uses a PIN shown on the host and

@@ -9,23 +9,29 @@ use oriel_proto::{Codec, HostHealth};
 /// A kind of problem; each shows at most one warning.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Issue {
+    Version,
     Stalled,
     SlowDecode,
     SlowEncode,
     NetworkLimited,
     PacketLoss,
     Latency,
+    Jitter,
+    AudioDropouts,
     LateFrames,
 }
 
 impl Issue {
-    const ALL: [Issue; 7] = [
+    const ALL: [Issue; 10] = [
+        Issue::Version,
         Issue::Stalled,
         Issue::SlowDecode,
         Issue::SlowEncode,
         Issue::NetworkLimited,
         Issue::PacketLoss,
         Issue::Latency,
+        Issue::Jitter,
+        Issue::AudioDropouts,
         Issue::LateFrames,
     ];
 
@@ -33,10 +39,10 @@ impl Issue {
     /// pass silently.
     fn raise_after(self) -> Duration {
         Duration::from_secs(match self {
-            Issue::Stalled => 0,
+            Issue::Stalled | Issue::Version => 0,
             Issue::NetworkLimited | Issue::SlowDecode | Issue::SlowEncode => 2,
-            Issue::PacketLoss => 3,
-            Issue::Latency | Issue::LateFrames => 5,
+            Issue::PacketLoss | Issue::AudioDropouts => 3,
+            Issue::Latency | Issue::Jitter | Issue::LateFrames => 5,
         })
     }
 }
@@ -59,6 +65,12 @@ pub struct Inputs {
     pub bitrate_mbps: u32,
     pub pyrowave_mbps: u32,
     pub software_decode: bool,
+    /// The host's protocol version, when it is not ours.
+    pub other_protocol: Option<u32>,
+    /// Variation in frames' network delay.
+    pub jitter_ms: f32,
+    /// Times a second the sound ran dry.
+    pub audio_underruns: f32,
 }
 
 /// A problem seen right now.
@@ -82,6 +94,17 @@ fn found(issue: Issue, short: String, detail: String) -> Found {
 /// The problems `inputs` show right now.
 pub fn detect(i: &Inputs) -> Vec<Found> {
     let mut out = Vec::new();
+    if let Some(host) = i.other_protocol {
+        let ours = oriel_proto::PROTOCOL_VERSION;
+        out.push(found(
+            Issue::Version,
+            format!("Different oriel versions (host {host}, this device {ours})"),
+            format!(
+                "The host runs another version of oriel (protocol {host}; this device \
+                 {ours}). What both understand works; update both for the rest."
+            ),
+        ));
+    }
     if i.since_pong >= Duration::from_millis(2500) {
         let secs = i.since_pong.as_secs();
         out.push(found(
@@ -165,6 +188,28 @@ pub fn detect(i: &Inputs) -> Vec<Found> {
             format!(
                 "{pct:.1}% of packets are lost on the way, which causes stutter. Weak \
                  Wi-Fi is the usual cause: a cable or the 5 GHz band helps."
+            ),
+        ));
+    }
+    if i.jitter_ms >= 10.0 && i.fps >= 10.0 {
+        out.push(found(
+            Issue::Jitter,
+            format!("Network jitter: {:.0} ms", i.jitter_ms),
+            format!(
+                "Frames' network delay varies by about {:.0} ms (jitter), so motion is \
+                 uneven. Busy or weak Wi-Fi is the usual cause: a cable helps.",
+                i.jitter_ms
+            ),
+        ));
+    }
+    if i.audio_underruns >= 2.0 {
+        out.push(found(
+            Issue::AudioDropouts,
+            format!("Sound drops out ({:.0}× a second)", i.audio_underruns),
+            format!(
+                "The sound runs dry about {:.0} times a second because its packets \
+                 arrive late or not at all, usually from network jitter or loss.",
+                i.audio_underruns
             ),
         ));
     }
@@ -274,6 +319,9 @@ mod tests {
             bitrate_mbps: 50,
             pyrowave_mbps: 400,
             software_decode: false,
+            other_protocol: None,
+            jitter_ms: 1.0,
+            audio_underruns: 0.0,
         }
     }
 
@@ -320,6 +368,15 @@ mod tests {
         let mut i = healthy();
         i.latency_ms = 150.0;
         assert_eq!(issues(&i), [Issue::LateFrames]);
+
+        let mut i = healthy();
+        i.jitter_ms = 15.0;
+        i.audio_underruns = 4.0;
+        i.other_protocol = Some(oriel_proto::PROTOCOL_VERSION - 1);
+        assert_eq!(
+            issues(&i),
+            [Issue::Version, Issue::Jitter, Issue::AudioDropouts]
+        );
     }
 
     #[test]

@@ -12,6 +12,11 @@ pub struct Stats {
     pub codec_id: Option<oriel_proto::Codec>,
     pub resolution: (u32, u32),
     pub keyframes: u64,
+    /// How much frames' network delay varies (RFC 3550's interarrival
+    /// jitter), in ms.
+    pub jitter_ms: f32,
+    /// The last frame's arrival minus its capture time (clocks unsynced).
+    last_transit: Option<i64>,
 }
 
 struct FrameSample {
@@ -42,6 +47,17 @@ impl Stats {
             self.keyframes += 1;
         }
         self.trim(now);
+    }
+
+    /// A frame captured at `capture_us` on the host started arriving at
+    /// `local_us` here.
+    pub fn arrived(&mut self, capture_us: u64, local_us: u64) {
+        let transit = local_us as i64 - capture_us as i64;
+        if let Some(last) = self.last_transit {
+            let d = (transit - last).unsigned_abs() as f32 / 1000.0;
+            self.jitter_ms += (d - self.jitter_ms) / 16.0;
+        }
+        self.last_transit = Some(transit);
     }
 
     fn trim(&mut self, now: Instant) {
@@ -124,5 +140,23 @@ impl ClockSync {
         let capture_local = capture_us as i64 - offset;
         let elapsed = self.local_us(at) as i64 - capture_local;
         (elapsed >= 0).then(|| Duration::from_micros(elapsed as u64))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn jitter() {
+        let mut s = super::Stats::default();
+        // Steady delay: no jitter, whatever the clock offset.
+        for n in 0..100u64 {
+            s.arrived(1_000_000 + n * 16_000, 5_000_000 + n * 16_000);
+        }
+        assert!(s.jitter_ms < 0.01);
+        // Delay alternating by 12 ms.
+        for n in 0..200u64 {
+            s.arrived(n * 16_000, n * 16_000 + (n % 2) * 12_000);
+        }
+        assert!((s.jitter_ms - 12.0).abs() < 1.0, "{}", s.jitter_ms);
     }
 }
