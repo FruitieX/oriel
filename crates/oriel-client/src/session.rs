@@ -22,6 +22,8 @@ pub enum UiEvent {
         y: i32,
     },
     FrameReady,
+    /// Keys were taken by the Windows keyboard hook.
+    HookKeys,
     /// The connection ended. `retry` when it was lost (timeout, network)
     /// rather than closed on purpose.
     Closed {

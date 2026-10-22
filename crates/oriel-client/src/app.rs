@@ -84,9 +84,10 @@ pub fn run(
         connected.ctl,
         options.settings.clone(),
         options.hardware_decode,
-        sink,
+        sink.clone(),
     );
     let mut viewer = Viewer::new(session.clone(), connected.host_name, options);
+    viewer.sink = Some(sink.clone());
     viewer.displays = connected.displays;
     event_loop.run_app_on_demand(&mut viewer)?;
     session.close();
@@ -156,6 +157,9 @@ struct Viewer {
     display: Option<u32>,
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     shortcuts_inhibited: bool,
+    sink: Option<session::Sink>,
+    #[cfg(windows)]
+    key_hook: Option<crate::winkeys::KeyboardHook>,
 }
 
 impl Viewer {
@@ -201,6 +205,9 @@ impl Viewer {
             displays: Vec::new(),
             display: options.settings.display,
             shortcuts_inhibited: false,
+            sink: None,
+            #[cfg(windows)]
+            key_hook: None,
             options,
         }
     }
@@ -272,6 +279,10 @@ impl Viewer {
     }
 
     fn update_cursor(&mut self) {
+        #[cfg(windows)]
+        if let Some(hook) = &self.key_hook {
+            hook.set_active(self.forwarding());
+        }
         #[cfg(target_os = "linux")]
         {
             let forwarding = self.forwarding();
@@ -429,6 +440,35 @@ impl Viewer {
             usage,
             down: pressed,
         });
+    }
+
+    /// Keys taken by the Windows keyboard hook while forwarding.
+    #[cfg(windows)]
+    fn handle_hook_keys(&mut self) {
+        let Some(hook) = &self.key_hook else { return };
+        for (usage, down) in hook.drain() {
+            if down
+                && !self.keys_down.contains(&usage)
+                && self
+                    .options
+                    .menu_shortcut
+                    .matches_hid(&self.keys_down, usage)
+            {
+                self.set_menu(true);
+                break;
+            }
+            if !self.forwarding() {
+                continue;
+            }
+            if down {
+                if !self.keys_down.insert(usage) {
+                    continue; // auto-repeat; the host repeats on its own
+                }
+            } else if !self.keys_down.remove(&usage) {
+                continue;
+            }
+            self.session.input(InputEvent::Key { usage, down });
+        }
     }
 
     fn handle_pointer_moved(&mut self, position: PhysicalPosition<f64>) {
@@ -905,6 +945,20 @@ impl ApplicationHandler<UiEvent> for Viewer {
             egui,
             clipboard,
         });
+        #[cfg(windows)]
+        {
+            use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+            let window = &self.gfx.as_ref().unwrap().window;
+            if let Ok(handle) = window.window_handle()
+                && let RawWindowHandle::Win32(h) = handle.as_raw()
+                && let Some(sink) = self.sink.clone()
+            {
+                self.key_hook = crate::winkeys::KeyboardHook::install(
+                    windows::Win32::Foundation::HWND(h.hwnd.get() as *mut _),
+                    move || sink(UiEvent::HookKeys),
+                );
+            }
+        }
         self.fit_window();
         self.update_cursor();
     }
@@ -970,6 +1024,10 @@ impl ApplicationHandler<UiEvent> for Viewer {
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UiEvent) {
         match event {
             UiEvent::FrameReady => self.request_redraw(),
+            UiEvent::HookKeys => {
+                #[cfg(windows)]
+                self.handle_hook_keys();
+            }
             UiEvent::Host(msg) => self.handle_host(event_loop, msg),
             UiEvent::CursorPosition { x, y } => {
                 if let Some(c) = &mut self.host_cursor {
@@ -1054,6 +1112,10 @@ impl ApplicationHandler<UiEvent> for Viewer {
     }
 
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        #[cfg(windows)]
+        {
+            self.key_hook = None;
+        }
         // The surface must go before the display connection does.
         self.egui_cursors.clear();
         #[cfg(target_os = "linux")]

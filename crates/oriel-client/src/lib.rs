@@ -17,5 +17,7 @@ pub mod session;
 mod stats;
 #[cfg(windows)]
 mod tray;
+#[cfg(windows)]
+mod winkeys;
 
 pub use app::{MouseMode, ViewerOptions};

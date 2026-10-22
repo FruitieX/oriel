@@ -165,6 +165,18 @@ impl Shortcut {
         Some(sc)
     }
 
+    /// Match against HID usages: `usage` was just pressed while `held` are
+    /// down.
+    pub fn matches_hid(&self, held: &std::collections::HashSet<u16>, usage: u16) -> bool {
+        use oriel_proto::keys::*;
+        let any = |a, b| held.contains(&a) || held.contains(&b);
+        hid_usage(self.key) == Some(usage)
+            && any(CONTROL_LEFT, CONTROL_RIGHT) == self.ctrl
+            && any(ALT_LEFT, ALT_RIGHT) == self.alt
+            && any(SHIFT_LEFT, SHIFT_RIGHT) == self.shift
+            && any(META_LEFT, META_RIGHT) == self.logo
+    }
+
     pub fn matches(&self, mods: winit::keyboard::ModifiersState, key: KeyCode) -> bool {
         key == self.key
             && mods.control_key() == self.ctrl

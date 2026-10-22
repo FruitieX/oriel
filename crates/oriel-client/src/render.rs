@@ -122,17 +122,32 @@ pub struct Renderer {
 
 impl Renderer {
     pub fn new(window: Arc<Window>) -> Result<Self> {
-        let instance = wgpu::Instance::new(
-            wgpu::InstanceDescriptor::new_with_display_handle(Box::new(window.clone())).with_env(),
-        );
-        let surface = instance.create_surface(window.clone())?;
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            compatible_surface: Some(&surface),
-            force_fallback_adapter: false,
-            ..Default::default()
-        }))
-        .context("no compatible GPU adapter")?;
+        // Prefer Vulkan (zero-copy PyroWave needs it), then anything.
+        let mut found = None;
+        for backends in [wgpu::Backends::VULKAN, wgpu::Backends::all()] {
+            let mut desc =
+                wgpu::InstanceDescriptor::new_with_display_handle(Box::new(window.clone()))
+                    .with_env();
+            if std::env::var_os("WGPU_BACKEND").is_none() {
+                desc.backends = backends;
+            }
+            let instance = wgpu::Instance::new(desc);
+            let Ok(surface) = instance.create_surface(window.clone()) else {
+                continue;
+            };
+            if let Ok(adapter) =
+                pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                    power_preference: wgpu::PowerPreference::HighPerformance,
+                    compatible_surface: Some(&surface),
+                    force_fallback_adapter: false,
+                    ..Default::default()
+                }))
+            {
+                found = Some((instance, surface, adapter));
+                break;
+            }
+        }
+        let (_instance, surface, adapter) = found.context("no compatible GPU adapter")?;
         let info = adapter.get_info();
         let adapter_info = format!("{} ({:?})", info.name, info.backend);
         let (device, queue) =
