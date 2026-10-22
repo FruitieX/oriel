@@ -163,11 +163,10 @@
                 ++ lib.optionals isLinux ([ pipewire.dev ] ++ linuxRuntimeLibs pkgs);
 
               LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
-              ORIEL_PYROWAVE_LIB = "${pyrowave}/lib/libpyrowave-shared${
-                if pkgs.stdenv.hostPlatform.isDarwin then ".1.dylib" else ".so.1"
-              }";
             }
             // lib.optionalAttrs isLinux {
+              # PyroWave on macOS (MoltenVK) is untested; Linux only for now.
+              ORIEL_PYROWAVE_LIB = "${pyrowave}/lib/libpyrowave-shared.so.1";
               LD_LIBRARY_PATH = lib.makeLibraryPath (linuxRuntimeLibs pkgs);
             }
             // lib.optionalAttrs windowsCross {
