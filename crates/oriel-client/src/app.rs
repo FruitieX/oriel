@@ -53,14 +53,27 @@ pub struct ViewerOptions {
     pub screenshot: Option<(PathBuf, Duration)>,
 }
 
+/// Why the viewer window went away.
+#[derive(Debug)]
+pub enum ViewerExit {
+    /// The window was closed.
+    Closed,
+    /// The user disconnected from the menu.
+    Back,
+    /// The connection ended; `retry` when it was lost rather than closed by
+    /// the host.
+    Lost { reason: String, retry: bool },
+}
+
+/// Show a connected session until it ends.
 pub fn run(
-    rt: tokio::runtime::Runtime,
-    paths: oriel_net::Paths,
+    event_loop: &mut EventLoop<UiEvent>,
+    rt: &tokio::runtime::Runtime,
+    connected: connection::Connected,
     options: ViewerOptions,
-) -> Result<()> {
-    let connected = rt.block_on(connection::connect(&paths, &options.target))?;
+) -> Result<ViewerExit> {
+    use winit::platform::run_on_demand::EventLoopExtRunOnDemand;
     tracing::info!(host = %connected.host_name, "connected");
-    let event_loop = EventLoop::<UiEvent>::with_user_event().build()?;
     let proxy = Mutex::new(event_loop.create_proxy());
     let sink: session::Sink = Arc::new(move |ev| {
         let _ = proxy.lock().send_event(ev);
@@ -75,14 +88,13 @@ pub fn run(
     );
     let mut viewer = Viewer::new(session.clone(), connected.host_name, options);
     viewer.displays = connected.displays;
-    event_loop.run_app(&mut viewer)?;
+    event_loop.run_app_on_demand(&mut viewer)?;
     session.close();
     rt.block_on(async {
         tokio::time::sleep(Duration::from_millis(150)).await;
-        connected.endpoint.wait_idle().await;
+        let _ = tokio::time::timeout(Duration::from_secs(1), connected.endpoint.wait_idle()).await;
     });
-    rt.shutdown_timeout(Duration::from_millis(500));
-    Ok(())
+    Ok(viewer.exit.take().unwrap_or(ViewerExit::Closed))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -137,7 +149,7 @@ struct Viewer {
     frames_presented: u64,
     latency_ms: f32,
     screenshot_taken: bool,
-    quit: bool,
+    exit: Option<ViewerExit>,
     clipboard_last: Option<String>,
     clipboard_polled: Instant,
     displays: Vec<oriel_proto::DisplayInfo>,
@@ -183,7 +195,7 @@ impl Viewer {
             frames_presented: 0,
             latency_ms: 0.0,
             screenshot_taken: false,
-            quit: false,
+            exit: None,
             clipboard_last: None,
             clipboard_polled: Instant::now(),
             displays: Vec::new(),
@@ -576,8 +588,7 @@ impl Viewer {
             }
             Action::Disconnect => {
                 self.session.close();
-                self.closed = Some("disconnected".into());
-                self.quit = true;
+                self.exit.get_or_insert(ViewerExit::Back);
             }
         }
         self.request_redraw();
@@ -845,6 +856,7 @@ impl ApplicationHandler<UiEvent> for Viewer {
         }
         let attrs = Window::default_attributes()
             .with_title(format!("{} — oriel", self.host_name))
+            .with_window_icon(crate::launcher::icon())
             .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 720.0));
         let window = match event_loop.create_window(attrs) {
             Ok(w) => Arc::new(w),
@@ -898,6 +910,7 @@ impl ApplicationHandler<UiEvent> for Viewer {
         match event {
             WindowEvent::CloseRequested => {
                 self.session.close();
+                self.exit.get_or_insert(ViewerExit::Closed);
                 event_loop.exit();
             }
             WindowEvent::Resized(size) => {
@@ -959,20 +972,21 @@ impl ApplicationHandler<UiEvent> for Viewer {
                     }
                 }
             }
-            UiEvent::Closed(reason) => {
+            UiEvent::Closed { reason, retry } => {
                 tracing::info!("session closed: {reason}");
-                if self.closed.is_none() {
-                    self.closed = Some(reason);
-                }
                 self.release_all();
-                self.update_cursor();
-                self.request_redraw();
+                if self.exit.is_none() {
+                    // Hand back to the launcher, which reconnects or shows
+                    // the reason.
+                    self.exit = Some(ViewerExit::Lost { reason, retry });
+                }
+                event_loop.exit();
             }
         }
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        if self.quit {
+        if self.exit.is_some() {
             event_loop.exit();
             return;
         }
@@ -1003,6 +1017,7 @@ impl ApplicationHandler<UiEvent> for Viewer {
             } else if self.screenshot_taken && gfx.renderer.screenshot.is_none() {
                 tracing::info!(frames = self.frames_presented, "screenshot done, exiting");
                 self.session.close();
+                self.exit.get_or_insert(ViewerExit::Closed);
                 event_loop.exit();
                 return;
             }

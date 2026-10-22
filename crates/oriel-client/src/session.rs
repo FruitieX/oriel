@@ -17,9 +17,17 @@ use crate::{decode, stats::Stats};
 
 pub enum UiEvent {
     Host(HostMsg),
-    CursorPosition { x: i32, y: i32 },
+    CursorPosition {
+        x: i32,
+        y: i32,
+    },
     FrameReady,
-    Closed(String),
+    /// The connection ended. `retry` when it was lost (timeout, network)
+    /// rather than closed on purpose.
+    Closed {
+        reason: String,
+        retry: bool,
+    },
 }
 
 pub type Sink = Arc<dyn Fn(UiEvent) + Send + Sync>;
@@ -204,15 +212,15 @@ pub fn start(
     let closed_conn = conn.clone();
     tokio::spawn(async move {
         let reason = closed_conn.closed().await;
-        let text = match reason {
+        let (reason, retry) = match reason {
             quinn::ConnectionError::ApplicationClosed(c) => {
-                String::from_utf8_lossy(&c.reason).into_owned()
+                (String::from_utf8_lossy(&c.reason).into_owned(), false)
             }
-            quinn::ConnectionError::LocallyClosed => "disconnected".into(),
-            quinn::ConnectionError::TimedOut => "connection timed out".into(),
-            other => other.to_string(),
+            quinn::ConnectionError::LocallyClosed => ("disconnected".into(), false),
+            quinn::ConnectionError::TimedOut => ("connection timed out".into(), true),
+            other => (other.to_string(), true),
         };
-        sink(UiEvent::Closed(text));
+        sink(UiEvent::Closed { reason, retry });
     });
 
     Session {

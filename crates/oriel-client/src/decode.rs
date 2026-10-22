@@ -73,10 +73,10 @@ pub fn spawn(
                                 Some((d, header.codec, size))
                             }
                             Err(e) => {
-                                sink(UiEvent::Closed(format!(
-                                    "cannot decode {}: {e:#}",
-                                    header.codec.name()
-                                )));
+                                sink(UiEvent::Closed {
+                                    reason: format!("cannot decode {}: {e:#}", header.codec.name()),
+                                    retry: false,
+                                });
                                 return;
                             }
                         };

@@ -1,14 +1,15 @@
 //! Optional client settings in `client.toml` next to the identity.
 
 use anyhow::{Context, Result, bail};
-use oriel_client::MouseMode;
 use oriel_net::Paths;
 use oriel_proto::Codec;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+
+use crate::MouseMode;
 
 pub const AUTO_CODECS: [Codec; 3] = [Codec::PyroWave, Codec::Hevc, Codec::H264];
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ClientConfig {
     /// Opens the menu and releases keyboard and mouse.
@@ -22,6 +23,8 @@ pub struct ClientConfig {
     /// "auto", "desktop" or "captured".
     pub mouse: String,
     pub audio: bool,
+    pub fullscreen: bool,
+    pub show_stats: bool,
 }
 
 impl Default for ClientConfig {
@@ -34,13 +37,25 @@ impl Default for ClientConfig {
             pyrowave_kbps: 400_000,
             mouse: "auto".into(),
             audio: true,
+            fullscreen: false,
+            show_stats: false,
         }
     }
 }
 
 impl ClientConfig {
+    pub fn path(paths: &Paths) -> std::path::PathBuf {
+        paths.config_dir.join("client.toml")
+    }
+
+    pub fn save(&self, paths: &Paths) -> Result<()> {
+        std::fs::create_dir_all(&paths.config_dir)?;
+        std::fs::write(Self::path(paths), toml::to_string_pretty(self)?)?;
+        Ok(())
+    }
+
     pub fn load(paths: &Paths) -> Result<Self> {
-        let path = paths.config_dir.join("client.toml");
+        let path = Self::path(paths);
         match std::fs::read_to_string(&path) {
             Ok(s) => toml::from_str(&s).with_context(|| format!("parse {}", path.display())),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),

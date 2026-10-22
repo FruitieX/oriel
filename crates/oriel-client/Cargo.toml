@@ -24,6 +24,7 @@ crossbeam-channel.workspace = true
 parking_lot.workspace = true
 serde.workspace = true
 png = "0.18"
+toml.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 wayland-client = { version = "0.31", features = ["system", "dlopen"] }

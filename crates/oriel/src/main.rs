@@ -1,7 +1,5 @@
 //! `oriel`: one binary that hosts a desktop and connects to other hosts.
 
-mod config;
-
 use std::{net::SocketAddr, path::PathBuf, time::Duration};
 
 use anyhow::{Context, Result, bail};
@@ -13,8 +11,9 @@ use oriel_proto::{Codec, DEFAULT_PORT, StreamSettings};
 #[derive(Parser)]
 #[command(version, about = "Low-latency remote desktop: host and client in one")]
 struct Cli {
+    /// Without a command, opens the launcher window.
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
     /// Also write logs to this file.
     #[arg(long, global = true)]
     log_file: Option<PathBuf>,
@@ -172,7 +171,10 @@ enum ServiceCommand {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     #[cfg(windows)]
-    if matches!(cli.command, Command::Service(ServiceCommand::Run { .. })) {
+    if matches!(
+        cli.command,
+        Some(Command::Service(ServiceCommand::Run { .. }))
+    ) {
         // The service and the host it starts share the service's data
         // directory, not SYSTEM's profile.
         // SAFETY: still single-threaded.
@@ -180,8 +182,10 @@ fn main() -> Result<()> {
     }
     let paths = Paths::discover()?;
     let default_log = match cli.command {
-        Command::Host { .. } if cfg!(windows) => Some(paths.config_dir.join("oriel-host.log")),
-        Command::Service(ServiceCommand::Run { .. }) => {
+        Some(Command::Host { .. }) if cfg!(windows) => {
+            Some(paths.config_dir.join("oriel-host.log"))
+        }
+        Some(Command::Service(ServiceCommand::Run { .. })) => {
             Some(paths.config_dir.join("oriel-service.log"))
         }
         _ => None,
@@ -189,7 +193,19 @@ fn main() -> Result<()> {
     init_logging(cli.log_file.clone().or(default_log))?;
     oriel_media::init_logging();
 
-    match cli.command {
+    let Some(command) = cli.command else {
+        return oriel_client::launcher::run(
+            runtime()?,
+            paths.clone(),
+            Some(Box::new(LocalHost::new(paths)?)),
+            oriel_client::launcher::GuiOptions {
+                connect: None,
+                viewer: None,
+                quit_with_viewer: false,
+            },
+        );
+    };
+    match command {
         Command::Host {
             listen,
             name,
@@ -247,11 +263,11 @@ fn main() -> Result<()> {
             screenshot,
             screenshot_after,
         } => {
-            let file = config::ClientConfig::load(&paths)?;
+            let file = oriel_client::config::ClientConfig::load(&paths)?;
             let (codecs, auto_codec) = if codec.is_empty() {
                 file.codecs()?
             } else if codec.iter().any(|c| matches!(c, CodecArg::Auto)) {
-                (config::AUTO_CODECS.to_vec(), true)
+                (oriel_client::config::AUTO_CODECS.to_vec(), true)
             } else {
                 (codec.into_iter().map(Into::into).collect(), false)
             };
@@ -283,18 +299,25 @@ fn main() -> Result<()> {
                 Some(MouseArg::Captured) => MouseMode::Relative,
                 None => file.mouse_mode()?,
             };
-            oriel_client::app::run(
+            let target = host.clone();
+            oriel_client::launcher::run(
                 rt,
                 paths,
-                ViewerOptions {
-                    target: host,
-                    settings,
-                    hardware_decode: !software_decode,
-                    menu_shortcut,
-                    mouse_mode,
-                    fullscreen,
-                    show_stats: stats,
-                    screenshot: screenshot.map(|p| (p, Duration::from_secs_f64(screenshot_after))),
+                None,
+                oriel_client::launcher::GuiOptions {
+                    connect: Some(target),
+                    viewer: Some(ViewerOptions {
+                        target: host,
+                        settings,
+                        hardware_decode: !software_decode,
+                        menu_shortcut,
+                        mouse_mode,
+                        fullscreen,
+                        show_stats: stats,
+                        screenshot: screenshot
+                            .map(|p| (p, Duration::from_secs_f64(screenshot_after))),
+                    }),
+                    quit_with_viewer: true,
                 },
             )
         }
@@ -423,4 +446,74 @@ fn service(cmd: ServiceCommand) -> Result<()> {
 #[cfg(not(windows))]
 fn service(_cmd: ServiceCommand) -> Result<()> {
     bail!("the host service is only available on Windows; run `oriel host` instead")
+}
+
+/// "Share this computer" in the launcher: runs the host inside this process.
+struct LocalHost {
+    paths: Paths,
+    rt: tokio::runtime::Runtime,
+    task: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl LocalHost {
+    fn new(paths: Paths) -> Result<Self> {
+        Ok(Self {
+            paths,
+            rt: runtime()?,
+            task: None,
+        })
+    }
+
+    fn source() -> oriel_host::SourceKind {
+        if cfg!(windows) {
+            oriel_host::SourceKind::Auto
+        } else {
+            oriel_host::SourceKind::TestPattern
+        }
+    }
+}
+
+impl oriel_client::launcher::HostControl for LocalHost {
+    fn start(&mut self) -> Result<String> {
+        let pin = oriel_net::pairing::generate_pin();
+        let options = oriel_host::HostOptions {
+            listen: SocketAddr::from(([0, 0, 0, 0], DEFAULT_PORT)),
+            name: oriel_client::connection::device_name(),
+            source: Self::source(),
+            pair_pin: Some(pin.clone()),
+            encoder: None,
+            codec: None,
+            default_bitrate_kbps: 30_000,
+        };
+        let paths = self.paths.clone();
+        self.task = Some(self.rt.spawn(async move {
+            if let Err(e) = oriel_host::run(paths, options).await {
+                tracing::error!("host stopped: {e:#}");
+            }
+        }));
+        Ok(pin)
+    }
+
+    fn stop(&mut self) {
+        if let Some(task) = self.task.take() {
+            task.abort();
+        }
+    }
+
+    fn is_running(&self) -> bool {
+        self.task.as_ref().is_some_and(|t| !t.is_finished())
+    }
+
+    fn description(&self) -> String {
+        let displays = oriel_host::capture::list_displays(Self::source());
+        let list: Vec<String> = displays
+            .iter()
+            .map(|d| format!("{} ({}×{})", d.name, d.width, d.height))
+            .collect();
+        if cfg!(windows) {
+            format!("Lets paired devices see and control: {}", list.join(", "))
+        } else {
+            "Linux hosting streams a test pattern for now.".into()
+        }
+    }
 }

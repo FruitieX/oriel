@@ -65,7 +65,7 @@ pub async fn run(
             }
             Some(UiEvent::Host(HostMsg::SurfaceStarted(info))) => println!("surface: {info:?}"),
             Some(UiEvent::Host(HostMsg::Notice { text })) => println!("host: {text}"),
-            Some(UiEvent::Closed(reason)) => bail!("session closed: {reason}"),
+            Some(UiEvent::Closed { reason, .. }) => bail!("session closed: {reason}"),
             _ => {}
         }
         // Exercise the input path: the test pattern draws the pointer.

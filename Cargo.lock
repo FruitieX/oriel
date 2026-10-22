@@ -2515,7 +2515,6 @@ dependencies = [
  "oriel-proto",
  "serde",
  "tokio",
- "toml",
  "tracing",
  "tracing-subscriber",
 ]
@@ -2552,6 +2551,7 @@ dependencies = [
  "quinn",
  "serde",
  "tokio",
+ "toml",
  "tracing",
  "wayland-backend",
  "wayland-client",
