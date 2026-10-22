@@ -40,7 +40,10 @@ pub enum Event {
     Frame(FrameHeader, Vec<u8>),
     CursorShape(CursorShape),
     CursorState(CursorState),
-    CursorPos { x: i32, y: i32 },
+    CursorPos {
+        x: i32,
+        y: i32,
+    },
     Notice(String),
     /// The pipeline gave up; the session should end.
     Failed(String),
@@ -305,7 +308,9 @@ impl Pipeline {
             last_encode = Instant::now();
             let result = if enc.wants_cpu_input() {
                 match cap.cpu_frame() {
-                    Ok((data, stride)) => enc.encode(EncoderInput::Bgra { data, stride }, force_key),
+                    Ok((data, stride)) => {
+                        enc.encode(EncoderInput::Bgra { data, stride }, force_key)
+                    }
                     Err(e) => {
                         tracing::info!("capture readback failed: {e:#}");
                         return Ok(Flow::Continue);

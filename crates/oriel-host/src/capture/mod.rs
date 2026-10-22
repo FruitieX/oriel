@@ -32,7 +32,7 @@ pub struct Geometry {
     pub height: u32,
 }
 
-pub trait Capturer: Send {
+pub trait Capturer {
     fn size(&self) -> (u32, u32);
 
     fn geometry(&self) -> Geometry;
@@ -77,7 +77,11 @@ pub fn list_displays(source: SourceKind) -> Vec<DisplayInfo> {
     }
 }
 
-pub fn open(source: SourceKind, display: Option<u32>, test: &TestState) -> Result<Box<dyn Capturer>> {
+pub fn open(
+    source: SourceKind,
+    display: Option<u32>,
+    test: &TestState,
+) -> Result<Box<dyn Capturer>> {
     match source {
         #[cfg(windows)]
         SourceKind::Auto => Ok(Box::new(dxgi::DxgiCapturer::open(display)?)),

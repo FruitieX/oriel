@@ -54,7 +54,9 @@ pub async fn run(paths: Paths, options: HostOptions) -> Result<()> {
         "host ready"
     );
     if let Some(pin) = &options.pair_pin {
-        println!("Pairing enabled. On the client run:\n  oriel pair <this-host-address> --pin {pin}");
+        println!(
+            "Pairing enabled. On the client run:\n  oriel pair <this-host-address> --pin {pin}"
+        );
     }
     let host = Arc::new(Host {
         pairing: Mutex::new(PairingState {
@@ -105,7 +107,9 @@ impl Host {
             return reject(
                 &conn,
                 &mut ctl,
-                format!("protocol version {protocol} is not supported (host speaks {PROTOCOL_VERSION})"),
+                format!(
+                    "protocol version {protocol} is not supported (host speaks {PROTOCOL_VERSION})"
+                ),
             )
             .await;
         }
@@ -117,7 +121,12 @@ impl Host {
 
         let trusted = TrustStore::load(&self.paths.trusted_clients())?;
         if trusted.by_fingerprint(&client_fp).is_none() {
-            return reject(&conn, &mut ctl, "this client is not paired with the host".into()).await;
+            return reject(
+                &conn,
+                &mut ctl,
+                "this client is not paired with the host".into(),
+            )
+            .await;
         }
         ctl.send(&HostMsg::Welcome {
             protocol: PROTOCOL_VERSION,
@@ -133,7 +142,10 @@ impl Host {
         let result =
             crate::session::run(conn.clone(), ctl, self.options.clone(), self.test.clone()).await;
         let mut active = self.active.lock();
-        if active.as_ref().is_some_and(|c| c.stable_id() == conn.stable_id()) {
+        if active
+            .as_ref()
+            .is_some_and(|c| c.stable_id() == conn.stable_id())
+        {
             *active = None;
         }
         conn.close(0u32.into(), b"bye");
@@ -172,7 +184,9 @@ impl Host {
                 tracing::warn!(client = %name, failures = state.failures, "pairing attempt with wrong PIN");
                 if state.failures >= MAX_PAIR_FAILURES {
                     state.pin = None;
-                    tracing::warn!("too many failed pairing attempts; pairing disabled until restart");
+                    tracing::warn!(
+                        "too many failed pairing attempts; pairing disabled until restart"
+                    );
                 }
             }
             finish(&conn, &mut ctl).await;

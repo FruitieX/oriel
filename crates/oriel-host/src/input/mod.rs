@@ -8,7 +8,7 @@ use crate::capture::{Geometry, SourceKind, TestState};
 #[cfg(windows)]
 mod windows;
 
-pub trait Injector: Send {
+pub trait Injector {
     fn inject(&mut self, event: InputEvent, geometry: Geometry) -> Result<()>;
 }
 

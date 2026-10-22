@@ -44,3 +44,5 @@ crossbeam-channel = "0.5"
 parking_lot = "0.12"
 hex = "0.4"
 windows = "0.62"
+[profile.release]
+strip = "debuginfo"

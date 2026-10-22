@@ -32,7 +32,10 @@ impl State {
         match event {
             MouseMove { x, y, .. } => self.mouse = (clamp(x, WIDTH), clamp(y, HEIGHT)),
             MouseMotion { dx, dy } => {
-                self.mouse = (clamp(self.mouse.0 + dx, WIDTH), clamp(self.mouse.1 + dy, HEIGHT))
+                self.mouse = (
+                    clamp(self.mouse.0 + dx, WIDTH),
+                    clamp(self.mouse.1 + dy, HEIGHT),
+                )
             }
             MouseButton { button, down } => {
                 let bit = 1 << button as u8;
@@ -103,20 +106,35 @@ impl TestPattern {
             let g = (y * 255 / h) as u32;
             for (x, px) in row.iter_mut().enumerate() {
                 let r = (((x + shift) % w) * 255 / w) as u32;
-                let grid = if x % 120 == 0 || y % 120 == 0 { 0x40 } else { 0 };
+                let grid = if x % 120 == 0 || y % 120 == 0 {
+                    0x40
+                } else {
+                    0
+                };
                 *px = 0xFF00_0000 | ((r + grid).min(255) << 16) | ((g + grid).min(255) << 8) | 0x60;
             }
         }
         // A bar sweeping once per second makes dropped frames visible.
         let bar_x = ((t.fract()) * w as f32) as usize;
-        fill(&mut self.pixels, bar_x.saturating_sub(8), 0, 16, h, 0xFFFF_FFFF);
+        fill(
+            &mut self.pixels,
+            bar_x.saturating_sub(8),
+            0,
+            16,
+            h,
+            0xFFFF_FFFF,
+        );
         // Pressed keys light up a row of squares.
         for (i, _) in s.keys_down.iter().enumerate() {
             fill(&mut self.pixels, 40 + i * 50, 40, 40, 40, 0xFFFF_D000);
         }
         // Buttons: left/right/middle squares.
         for b in 0..3 {
-            let color = if s.buttons & (1 << b) != 0 { 0xFF00_FF00 } else { 0xFF30_3030 };
+            let color = if s.buttons & (1 << b) != 0 {
+                0xFF00_FF00
+            } else {
+                0xFF30_3030
+            };
             fill(&mut self.pixels, 40 + b * 50, 100, 40, 40, color);
         }
         if s.captured {
@@ -124,8 +142,22 @@ impl TestPattern {
         }
         // Crosshair where the host thinks the pointer is.
         let (mx, my) = (s.mouse.0 as usize, s.mouse.1 as usize);
-        fill(&mut self.pixels, mx.saturating_sub(20), my, 41, 1, 0xFFFF_00FF);
-        fill(&mut self.pixels, mx, my.saturating_sub(20), 1, 41, 0xFFFF_00FF);
+        fill(
+            &mut self.pixels,
+            mx.saturating_sub(20),
+            my,
+            41,
+            1,
+            0xFFFF_00FF,
+        );
+        fill(
+            &mut self.pixels,
+            mx,
+            my.saturating_sub(20),
+            1,
+            41,
+            0xFFFF_00FF,
+        );
     }
 }
 

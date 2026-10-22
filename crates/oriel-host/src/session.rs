@@ -98,7 +98,10 @@ pub async fn run(
     });
 
     let (ctl_tx, mut ctl_rx) = tmpsc::unbounded_channel();
-    let ControlStream { send: mut ctl_send, recv: mut ctl_recv } = ctl;
+    let ControlStream {
+        send: mut ctl_send,
+        recv: mut ctl_recv,
+    } = ctl;
     let ctl_task = tokio::spawn(async move {
         while let Some(msg) = read_msg::<ClientMsg>(&mut ctl_recv).await? {
             if ctl_tx.send(msg).is_err() {
@@ -187,7 +190,12 @@ pub async fn run(
 
 /// Open the frame's stream now (stream IDs must follow frame order), and
 /// write it in the background.
-async fn send_frame(conn: &quinn::Connection, header: FrameHeader, data: Vec<u8>, shared: &Arc<Shared>) {
+async fn send_frame(
+    conn: &quinn::Connection,
+    header: FrameHeader,
+    data: Vec<u8>,
+    shared: &Arc<Shared>,
+) {
     let mut stream = match conn.open_uni().await {
         Ok(s) => s,
         Err(_) => {
@@ -200,7 +208,9 @@ async fn send_frame(conn: &quinn::Connection, header: FrameHeader, data: Vec<u8>
     let shared = shared.clone();
     tokio::spawn(async move {
         let result: Result<()> = async {
-            stream.write_all(&oriel_proto::encode_framed(&header)?).await?;
+            stream
+                .write_all(&oriel_proto::encode_framed(&header)?)
+                .await?;
             stream.write_all(&data).await?;
             stream.finish()?;
             stream.stopped().await?;
