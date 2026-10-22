@@ -11,9 +11,9 @@ display) and the client (connects to hosts).
   draws them, so pointing feels local even with latency. When an application
   on the host hides and confines the cursor (games), the client switches to
   relative mouse input automatically.
-- A menu button in the bottom-right corner shows the shortcut
-  (default **Ctrl+Alt+Shift+M**) that opens the menu and releases keyboard
-  and mouse.
+- A menu button shows the shortcut (default **Ctrl+Alt+Shift+M**) that
+  opens the menu and releases keyboard and mouse. Drag it anywhere; Settings
+  → Window picks its look (logo and shortcut, shortcut, logo) or hides it.
 - System audio (Opus) from the host output you pick in the menu, played on
   the local output chosen in Settings; text clipboard sync; display
   selection.

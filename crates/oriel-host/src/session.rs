@@ -106,6 +106,8 @@ pub async fn run(
         }
     }
     let mut display = settings.display;
+    // The client's resolution, applied to whichever display is streamed.
+    let mut resolution = settings.resolution;
 
     // Continues across device switches, so the client's jitter buffer
     // does not mistake the new packets for stale ones.
@@ -275,10 +277,20 @@ pub async fn run(
                     None | Some(ClientMsg::Bye) => break,
                     Some(ClientMsg::RequestKeyframe) => { let _ = cmd_tx.send(Cmd::Keyframe); }
                     Some(ClientMsg::SelectDisplay { id }) => {
-                        // A resolution change belongs to the previous display.
+                        // The previous display gets its own mode back; the
+                        // new one gets the client's resolution, before
+                        // capture starts on it.
                         mode_guard = None;
                         display = Some(id);
                         virtual_mode = None;
+                        if let Some(res) = resolution {
+                            match crate::capture::set_display_mode(options.source, display, res) {
+                                Ok(g) => mode_guard = Some(g),
+                                Err(e) => write_msg(&mut ctl_send, &HostMsg::Notice {
+                                    text: format!("Cannot change the resolution: {e:#}"),
+                                }).await?,
+                            }
+                        }
                         let _ = cmd_tx.send(Cmd::Target(Target::Display(display)));
                     }
                     Some(ClientMsg::SetVirtualDisplay { mode }) => {
@@ -288,9 +300,18 @@ pub async fn run(
                             }).await?;
                             continue;
                         }
-                        // The physical display goes back to its own mode.
+                        // The physical display goes back to its own mode,
+                        // or to the client's when it is streamed again.
                         mode_guard = None;
                         virtual_mode = mode;
+                        if let (None, Some(res)) = (mode, resolution) {
+                            match crate::capture::set_display_mode(options.source, display, res) {
+                                Ok(g) => mode_guard = Some(g),
+                                Err(e) => write_msg(&mut ctl_send, &HostMsg::Notice {
+                                    text: format!("Cannot change the resolution: {e:#}"),
+                                }).await?,
+                            }
+                        }
                         let target = match mode {
                             Some(m) => Target::Virtual(m),
                             None => Target::Display(display),
@@ -308,9 +329,10 @@ pub async fn run(
                             let _ = cmd_tx.send(Cmd::Target(Target::Virtual(mode)));
                         }
                     }
-                    Some(ClientMsg::SetResolution { resolution }) => {
+                    Some(ClientMsg::SetResolution { resolution: res }) => {
+                        resolution = res;
                         mode_guard = None;
-                        if let Some(res) = resolution {
+                        if let Some(res) = res {
                             match crate::capture::set_display_mode(options.source, display, res) {
                                 Ok(g) => mode_guard = Some(g),
                                 Err(e) => write_msg(&mut ctl_send, &HostMsg::Notice {

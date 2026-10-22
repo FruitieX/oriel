@@ -447,6 +447,8 @@ fn run() -> Result<()> {
                             .and_then(|p| p.microphone)
                             .unwrap_or(file.microphone),
                         microphone_device: file.microphone_device.clone(),
+                        menu_button: file.menu_button.clone(),
+                        menu_button_pos: file.menu_button_pos,
                         screenshot: screenshot
                             .map(|p| (p, Duration::from_secs_f64(screenshot_after))),
                     }),

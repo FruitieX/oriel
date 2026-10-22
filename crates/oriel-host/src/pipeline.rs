@@ -200,10 +200,12 @@ impl Pipeline {
 
     fn open_capturer(&mut self) -> Result<Option<Box<dyn Capturer>>> {
         let mut failures = 0u32;
+        let started = Instant::now();
+        let mut reported = false;
         loop {
             match capture::open(self.config.source, self.config.target, &self.test) {
                 Ok(c) => {
-                    if failures > 0 {
+                    if reported {
                         self.send(Event::Notice("Capture resumed".into()))?;
                     }
                     return Ok(Some(c));
@@ -212,6 +214,11 @@ impl Pipeline {
                     failures += 1;
                     if failures == 1 {
                         tracing::warn!("cannot capture: {e:#}");
+                    }
+                    // Mode changes and desktop switches refuse duplication
+                    // for a moment; only report lasting failures.
+                    if !reported && started.elapsed() >= Duration::from_millis(1500) {
+                        reported = true;
                         self.send(Event::Notice(format!("Capture unavailable: {e:#}")))?;
                     }
                     let delay = Duration::from_millis((100 * failures as u64).min(1000));

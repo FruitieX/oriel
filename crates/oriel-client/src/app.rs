@@ -61,6 +61,10 @@ pub struct ViewerOptions {
     /// Send the microphone from the start, and which one.
     pub microphone: bool,
     pub microphone_device: Option<String>,
+    /// Menu button style (see [`crate::config::MENU_BUTTON_STYLES`]) and
+    /// position (fractions of the window).
+    pub menu_button: String,
+    pub menu_button_pos: Option<[f32; 2]>,
 }
 
 /// Choices made during a session, remembered for the next one.
@@ -74,6 +78,8 @@ pub struct ViewerPrefs {
     /// Streaming a virtual monitor in this mode.
     pub virtual_display: Option<VirtualMode>,
     pub microphone: bool,
+    /// Where the menu button was dragged.
+    pub menu_button_pos: Option<[f32; 2]>,
 }
 
 /// Why the viewer window went away.
@@ -134,6 +140,7 @@ pub fn run(
         audio_device: viewer.audio_device.clone(),
         virtual_display: viewer.virtual_mode,
         microphone: viewer.microphone,
+        menu_button_pos: viewer.menu_button_pos,
     };
     Ok((viewer.exit.take().unwrap_or(ViewerExit::Closed), prefs))
 }
@@ -205,6 +212,15 @@ struct Viewer {
     virtual_mode: Option<VirtualMode>,
     /// Sending the microphone.
     microphone: bool,
+    menu_button_pos: Option<[f32; 2]>,
+    /// Where the menu was dragged (fractions of the window), and whether it
+    /// has been placed since it opened.
+    menu_pos: Option<[f32; 2]>,
+    menu_placed: bool,
+    /// The window size the menu was placed for.
+    menu_window: Option<PhysicalSize<u32>>,
+    /// Bumped whenever the menu is placed (see `overlay`).
+    menu_generation: u32,
     codec_key: String,
     resolution: Option<(u32, u32)>,
     fullscreen: bool,
@@ -262,6 +278,11 @@ impl Viewer {
             virtual_ok: false,
             virtual_mode: options.settings.virtual_display,
             microphone: options.microphone,
+            menu_button_pos: options.menu_button_pos,
+            menu_pos: None,
+            menu_placed: false,
+            menu_window: None,
+            menu_generation: 0,
             codec_key: options.codec_key.clone(),
             resolution: options.settings.resolution,
             fullscreen: options.fullscreen,
@@ -333,6 +354,7 @@ impl Viewer {
             return;
         }
         self.menu_open = open;
+        self.menu_placed = false;
         self.release_all();
         self.update_cursor();
         self.request_redraw();
@@ -684,11 +706,26 @@ impl Viewer {
         }
         let viewport = self.viewport();
         let Some(gfx) = &mut self.gfx else { return };
+        // Keep an undragged menu centered when the window size changes
+        // (Wayland applies our own resizes without a Resized event).
+        let size = gfx.window.inner_size();
+        if self.menu_window != Some(size) {
+            self.menu_window = Some(size);
+            if self.menu_pos.is_none() {
+                self.menu_placed = false;
+            }
+        }
+        if self.menu_open && !self.menu_placed {
+            self.menu_generation += 1;
+        }
         let raw_input = gfx.egui.take_egui_input(&gfx.window);
         let ctx = self.egui_ctx.clone();
         let mut actions = Vec::new();
         let output = ctx.run_pass(raw_input, |ctx| {
             actions = overlay(ctx, &OverlayState::from(&*self), viewport);
+            if self.menu_open {
+                self.menu_placed = true;
+            }
         });
         let gfx = self.gfx.as_mut().unwrap();
         if let Err(e) = gfx.renderer.render(viewport, &ctx, output) {
@@ -755,6 +792,8 @@ impl Viewer {
                     .send(ClientMsg::SetBitrate { kbps: mbps * 1000 });
             }
             Action::SecureAttention => self.session.input(InputEvent::SecureAttention),
+            Action::MoveMenuButton(pos) => self.menu_button_pos = Some(pos),
+            Action::MenuMoved(pos) => self.menu_pos = Some(pos),
             Action::SetMicrophone(on) => match self.session.set_microphone(on) {
                 Ok(()) => self.microphone = on,
                 Err(e) => self
@@ -795,6 +834,8 @@ enum Action {
     SetAudioDevice(Option<String>),
     SetVirtualDisplay(Option<VirtualMode>),
     SetMicrophone(bool),
+    MoveMenuButton([f32; 2]),
+    MenuMoved([f32; 2]),
     Disconnect,
 }
 
@@ -824,6 +865,13 @@ struct OverlayState {
     virtual_ok: bool,
     virtual_mode: Option<VirtualMode>,
     microphone: bool,
+    menu_button: String,
+    menu_button_pos: Option<[f32; 2]>,
+    /// Place the menu this frame: where it was dragged, else centered.
+    place_menu: Option<Option<[f32; 2]>>,
+    menu_generation: u32,
+    /// Where the menu is meant to be (where it was dragged).
+    menu_center: Option<egui::Pos2>,
     /// This window's monitor, the default mode for a virtual display.
     monitor_mode: Option<VirtualMode>,
 }
@@ -945,6 +993,17 @@ impl From<&Viewer> for OverlayState {
             virtual_ok: v.virtual_ok,
             virtual_mode: v.virtual_mode,
             microphone: v.microphone,
+            menu_button: v.options.menu_button.clone(),
+            menu_button_pos: v.menu_button_pos,
+            place_menu: (!v.menu_placed).then_some(v.menu_pos),
+            menu_generation: v.menu_generation,
+            menu_center: v.menu_pos.and_then(|[fx, fy]| {
+                let size = v
+                    .window()?
+                    .inner_size()
+                    .to_logical::<f32>(v.egui_ctx.pixels_per_point() as f64);
+                Some(egui::pos2(fx * size.width, fy * size.height))
+            }),
             monitor_mode: v.monitor_mode(),
         }
     }
@@ -1007,276 +1066,360 @@ fn overlay(ctx: &egui::Context, s: &OverlayState, viewport: Option<Viewport>) ->
         return actions;
     }
 
-    // The always-available way back out: a small button with the shortcut.
+    // The always-available way back out: a button with the shortcut that
+    // can be dragged anywhere (or hidden, leaving the shortcut).
     if !s.menu_open {
-        egui::Area::new(egui::Id::unique("menu-button"))
-            .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-8.0, -8.0))
-            .show(ctx, |ui| {
-                let button = egui::Button::new(
-                    egui::RichText::new(format!("Menu  ·  {}", s.shortcut))
-                        .size(13.0)
-                        .color(egui::Color32::WHITE),
-                )
-                .min_size(egui::vec2(0.0, 30.0))
-                .corner_radius(15.0)
-                .fill(egui::Color32::from_rgba_unmultiplied(42, 47, 69, 200));
-                if ui.add(button).clicked() {
-                    actions.push(Action::OpenMenu);
-                }
-            });
+        if s.menu_button != "hidden" {
+            menu_button(ctx, s, &mut actions);
+        }
         return actions;
     }
 
-    egui::Window::new(format!("oriel — {}", s.host_name))
+    // Opens centered, or where it was dragged; can be dragged.
+    let screen = ctx.content_rect();
+    let to_screen =
+        |[fx, fy]: [f32; 2]| screen.min + egui::vec2(fx * screen.width(), fy * screen.height());
+    // A fresh window id whenever it is placed: egui's title-bar dragging
+    // would otherwise restore the stored position over `current_pos`.
+    let menu_id = egui::Id::unique("oriel-menu").with(s.menu_generation);
+    let mut menu = egui::Window::new(format!("oriel — {}", s.host_name))
+        .id(menu_id)
         .collapsible(false)
         .resizable(false)
-        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-        .show(ctx, |ui| {
-            ui.label(egui::RichText::new(&s.stats_line).monospace().size(11.0));
-            ui.separator();
-            ui.horizontal(|ui| {
-                ui.label("Mouse:");
-                for (mode, label) in [
-                    (MouseMode::Auto, "Auto"),
-                    (MouseMode::Absolute, "Desktop"),
-                    (MouseMode::Relative, "Captured (games)"),
-                ] {
-                    if ui.selectable_label(s.mouse_mode == mode, label).clicked() {
-                        actions.push(Action::SetMouseMode(mode));
-                    }
+        .pivot(egui::Align2::CENTER_CENTER)
+        .default_pos(screen.center());
+    if let Some(pos) = s.place_menu {
+        menu = menu.current_pos(pos.map_or(screen.center(), to_screen));
+    }
+    let shown = menu.show(ctx, |ui| {
+        ui.label(egui::RichText::new(&s.stats_line).monospace().size(11.0));
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.label("Mouse:");
+            for (mode, label) in [
+                (MouseMode::Auto, "Auto"),
+                (MouseMode::Absolute, "Desktop"),
+                (MouseMode::Relative, "Captured (games)"),
+            ] {
+                if ui.selectable_label(s.mouse_mode == mode, label).clicked() {
+                    actions.push(Action::SetMouseMode(mode));
                 }
-            });
-            let hint = |command: Command| {
-                s.shortcuts
-                    .get(command)
-                    .map_or_else(String::new, |k| format!("Shortcut: {k}"))
-            };
-            if s.displays.len() > 1 || s.virtual_ok {
-                ui.horizontal(|ui| {
-                    ui.label("Display:").on_hover_text(
-                        match (
-                            s.shortcuts.get(Command::PreviousDisplay),
-                            s.shortcuts.get(Command::NextDisplay),
-                        ) {
-                            (Some(p), Some(n)) => format!("Previous: {p}\nNext: {n}"),
-                            (None, Some(n)) => format!("Next: {n}"),
-                            (Some(p), None) => format!("Previous: {p}"),
-                            (None, None) => String::new(),
-                        },
-                    );
-                    for (id, name) in &s.displays {
-                        let selected = s.virtual_mode.is_none() && s.display == Some(*id);
-                        if ui.selectable_label(selected, name).clicked() {
-                            actions.push(Action::SelectDisplay(*id));
-                        }
-                    }
-                    if s.virtual_ok
-                        && ui
-                            .selectable_label(s.virtual_mode.is_some(), "Extra display")
-                            .on_hover_text(
-                                "Extend the host's desktop with a new monitor shown here",
-                            )
-                            .clicked()
-                        && s.virtual_mode.is_none()
-                    {
-                        let mode = s.monitor_mode.unwrap_or(VirtualMode {
-                            width: 1920,
-                            height: 1080,
-                            refresh_hz: 60,
-                        });
-                        actions.push(Action::SetVirtualDisplay(Some(mode)));
-                    }
-                });
             }
-            if let Some(mode) = s.virtual_mode {
-                ui.horizontal(|ui| {
-                    ui.label("Extra display:");
-                    let mut sizes = vec![
-                        (1280, 720),
-                        (1600, 900),
-                        (1920, 1080),
-                        (2560, 1440),
-                        (3840, 2160),
-                    ];
-                    let mut rates = vec![30, 60, 75, 90, 120, 144, 165, 240];
-                    if let Some(m) = s.monitor_mode {
-                        sizes.push((m.width, m.height));
-                        rates.push(m.refresh_hz);
-                    }
-                    sizes.push((mode.width, mode.height));
-                    rates.push(mode.refresh_hz);
-                    sizes.sort_by_key(|(w, h)| w * h);
-                    sizes.dedup();
-                    rates.sort();
-                    rates.dedup();
-                    let native = |w, h| {
-                        s.monitor_mode
-                            .is_some_and(|m| (m.width, m.height) == (w, h))
-                    };
-                    egui::ComboBox::from_id_salt("virtual-size")
-                        .selected_text(format!("{}×{}", mode.width, mode.height))
-                        .show_ui(ui, |ui| {
-                            for (w, h) in sizes {
-                                let label = if native(w, h) {
-                                    format!("{w}×{h} (this screen)")
-                                } else {
-                                    format!("{w}×{h}")
-                                };
-                                if ui
-                                    .selectable_label((mode.width, mode.height) == (w, h), label)
-                                    .clicked()
-                                    && (mode.width, mode.height) != (w, h)
-                                {
-                                    actions.push(Action::SetVirtualDisplay(Some(VirtualMode {
-                                        width: w,
-                                        height: h,
-                                        ..mode
-                                    })));
-                                }
-                            }
-                        });
-                    egui::ComboBox::from_id_salt("virtual-rate")
-                        .selected_text(format!("{} Hz", mode.refresh_hz))
-                        .show_ui(ui, |ui| {
-                            for hz in rates {
-                                if ui
-                                    .selectable_label(mode.refresh_hz == hz, format!("{hz} Hz"))
-                                    .clicked()
-                                    && mode.refresh_hz != hz
-                                {
-                                    actions.push(Action::SetVirtualDisplay(Some(VirtualMode {
-                                        refresh_hz: hz,
-                                        ..mode
-                                    })));
-                                }
-                            }
-                        });
-                });
-            }
-            if s.codec_choices.len() > 1 {
-                ui.horizontal(|ui| {
-                    ui.label("Codec:");
-                    for (key, label) in &s.codec_choices {
-                        if ui.selectable_label(s.codec_key == *key, *label).clicked()
-                            && s.codec_key != *key
-                        {
-                            actions.push(Action::SetCodec(key.to_string()));
-                        }
-                    }
-                });
-            }
-            if !s.modes.is_empty() && s.virtual_mode.is_none() {
-                ui.horizontal(|ui| {
-                    ui.label("Resolution:");
-                    let label = |r: Option<(u32, u32)>| match r {
-                        Some((w, h)) => format!("{w}×{h}"),
-                        None => "Host's own".to_string(),
-                    };
-                    egui::ComboBox::from_id_salt("resolution")
-                        .selected_text(label(s.resolution))
-                        .show_ui(ui, |ui| {
-                            for r in std::iter::once(None).chain(s.modes.iter().copied().map(Some))
-                            {
-                                if ui.selectable_label(s.resolution == r, label(r)).clicked()
-                                    && s.resolution != r
-                                {
-                                    actions.push(Action::SetResolution(r));
-                                }
-                            }
-                        });
-                });
-            }
-            ui.horizontal(|ui| {
-                let mut on = s.microphone;
-                if ui
-                    .checkbox(&mut on, "Send my microphone")
-                    .on_hover_text("Apps on the host can record it as a microphone")
-                    .changed()
-                {
-                    actions.push(Action::SetMicrophone(on));
-                }
-            });
-            if !s.audio_devices.is_empty() {
-                ui.horizontal(|ui| {
-                    ui.label("Sound from:");
-                    let name = |id: &Option<String>| match id {
-                        None => "Host's default output".to_string(),
-                        Some(id) => s
-                            .audio_devices
-                            .iter()
-                            .find(|(i, _)| i == id)
-                            .map_or_else(|| id.clone(), |(_, n)| n.clone()),
-                    };
-                    egui::ComboBox::from_id_salt("audio-device")
-                        .selected_text(name(&s.audio_device))
-                        .show_ui(ui, |ui| {
-                            let choices = std::iter::once(None)
-                                .chain(s.audio_devices.iter().map(|(id, _)| Some(id.clone())));
-                            for choice in choices {
-                                if ui
-                                    .selectable_label(s.audio_device == choice, name(&choice))
-                                    .clicked()
-                                    && s.audio_device != choice
-                                {
-                                    actions.push(Action::SetAudioDevice(choice));
-                                }
-                            }
-                        });
-                });
-            }
-            ui.horizontal(|ui| {
-                ui.label("Bitrate:");
-                let mut mbps = s.bitrate_mbps;
-                let slider = ui.add(
-                    egui::Slider::new(&mut mbps, 2..=500)
-                        .logarithmic(true)
-                        .suffix(" Mbit/s"),
-                );
-                if slider.drag_stopped() || (slider.changed() && !slider.dragged()) {
-                    actions.push(Action::SetBitrate(mbps));
-                }
-            });
-            ui.horizontal(|ui| {
-                if ui
-                    .button("Fullscreen")
-                    .on_hover_text(hint(Command::Fullscreen))
-                    .clicked()
-                {
-                    actions.push(Action::ToggleFullscreen);
-                }
-                if ui
-                    .button(if s.show_stats {
-                        "Hide statistics"
-                    } else {
-                        "Show statistics"
-                    })
-                    .on_hover_text(hint(Command::Stats))
-                    .clicked()
-                {
-                    actions.push(Action::ToggleStats);
-                }
-                if ui.button("Send Ctrl+Alt+Del").clicked() {
-                    actions.push(Action::SecureAttention);
-                }
-            });
-            ui.separator();
-            ui.horizontal(|ui| {
-                if ui
-                    .button(format!("Back to {} ({})", s.host_name, s.shortcut))
-                    .clicked()
-                {
-                    actions.push(Action::CloseMenu);
-                }
-                if ui
-                    .button("Disconnect")
-                    .on_hover_text(hint(Command::Disconnect))
-                    .clicked()
-                {
-                    actions.push(Action::Disconnect);
-                }
-            });
         });
+        let hint = |command: Command| {
+            s.shortcuts
+                .get(command)
+                .map_or_else(String::new, |k| format!("Shortcut: {k}"))
+        };
+        if s.displays.len() > 1 || s.virtual_ok {
+            ui.horizontal(|ui| {
+                ui.label("Display:").on_hover_text(
+                    match (
+                        s.shortcuts.get(Command::PreviousDisplay),
+                        s.shortcuts.get(Command::NextDisplay),
+                    ) {
+                        (Some(p), Some(n)) => format!("Previous: {p}\nNext: {n}"),
+                        (None, Some(n)) => format!("Next: {n}"),
+                        (Some(p), None) => format!("Previous: {p}"),
+                        (None, None) => String::new(),
+                    },
+                );
+                for (id, name) in &s.displays {
+                    let selected = s.virtual_mode.is_none() && s.display == Some(*id);
+                    if ui.selectable_label(selected, name).clicked() {
+                        actions.push(Action::SelectDisplay(*id));
+                    }
+                }
+                if s.virtual_ok
+                    && ui
+                        .selectable_label(s.virtual_mode.is_some(), "Extra display")
+                        .on_hover_text("Extend the host's desktop with a new monitor shown here")
+                        .clicked()
+                    && s.virtual_mode.is_none()
+                {
+                    let mode = s.monitor_mode.unwrap_or(VirtualMode {
+                        width: 1920,
+                        height: 1080,
+                        refresh_hz: 60,
+                    });
+                    actions.push(Action::SetVirtualDisplay(Some(mode)));
+                }
+            });
+        }
+        if let Some(mode) = s.virtual_mode {
+            ui.horizontal(|ui| {
+                ui.label("Extra display:");
+                let mut sizes = vec![
+                    (1280, 720),
+                    (1600, 900),
+                    (1920, 1080),
+                    (2560, 1440),
+                    (3840, 2160),
+                ];
+                let mut rates = vec![30, 60, 75, 90, 120, 144, 165, 240];
+                if let Some(m) = s.monitor_mode {
+                    sizes.push((m.width, m.height));
+                    rates.push(m.refresh_hz);
+                }
+                sizes.push((mode.width, mode.height));
+                rates.push(mode.refresh_hz);
+                sizes.sort_by_key(|(w, h)| w * h);
+                sizes.dedup();
+                rates.sort();
+                rates.dedup();
+                let native = |w, h| {
+                    s.monitor_mode
+                        .is_some_and(|m| (m.width, m.height) == (w, h))
+                };
+                egui::ComboBox::from_id_salt("virtual-size")
+                    .selected_text(format!("{}×{}", mode.width, mode.height))
+                    .show_ui(ui, |ui| {
+                        for (w, h) in sizes {
+                            let label = if native(w, h) {
+                                format!("{w}×{h} (this screen)")
+                            } else {
+                                format!("{w}×{h}")
+                            };
+                            if ui
+                                .selectable_label((mode.width, mode.height) == (w, h), label)
+                                .clicked()
+                                && (mode.width, mode.height) != (w, h)
+                            {
+                                actions.push(Action::SetVirtualDisplay(Some(VirtualMode {
+                                    width: w,
+                                    height: h,
+                                    ..mode
+                                })));
+                            }
+                        }
+                    });
+                egui::ComboBox::from_id_salt("virtual-rate")
+                    .selected_text(format!("{} Hz", mode.refresh_hz))
+                    .show_ui(ui, |ui| {
+                        for hz in rates {
+                            if ui
+                                .selectable_label(mode.refresh_hz == hz, format!("{hz} Hz"))
+                                .clicked()
+                                && mode.refresh_hz != hz
+                            {
+                                actions.push(Action::SetVirtualDisplay(Some(VirtualMode {
+                                    refresh_hz: hz,
+                                    ..mode
+                                })));
+                            }
+                        }
+                    });
+            });
+        }
+        if s.codec_choices.len() > 1 {
+            ui.horizontal(|ui| {
+                ui.label("Codec:");
+                for (key, label) in &s.codec_choices {
+                    if ui.selectable_label(s.codec_key == *key, *label).clicked()
+                        && s.codec_key != *key
+                    {
+                        actions.push(Action::SetCodec(key.to_string()));
+                    }
+                }
+            });
+        }
+        if !s.modes.is_empty() && s.virtual_mode.is_none() {
+            ui.horizontal(|ui| {
+                ui.label("Resolution:");
+                let label = |r: Option<(u32, u32)>| match r {
+                    Some((w, h)) => format!("{w}×{h}"),
+                    None => "Host's own".to_string(),
+                };
+                egui::ComboBox::from_id_salt("resolution")
+                    .selected_text(label(s.resolution))
+                    .show_ui(ui, |ui| {
+                        for r in std::iter::once(None).chain(s.modes.iter().copied().map(Some)) {
+                            if ui.selectable_label(s.resolution == r, label(r)).clicked()
+                                && s.resolution != r
+                            {
+                                actions.push(Action::SetResolution(r));
+                            }
+                        }
+                    });
+            });
+        }
+        ui.horizontal(|ui| {
+            let mut on = s.microphone;
+            if ui
+                .checkbox(&mut on, "Send my microphone")
+                .on_hover_text("Apps on the host can record it as a microphone")
+                .changed()
+            {
+                actions.push(Action::SetMicrophone(on));
+            }
+        });
+        if !s.audio_devices.is_empty() {
+            ui.horizontal(|ui| {
+                ui.label("Sound from:");
+                let name = |id: &Option<String>| match id {
+                    None => "Host's default output".to_string(),
+                    Some(id) => s
+                        .audio_devices
+                        .iter()
+                        .find(|(i, _)| i == id)
+                        .map_or_else(|| id.clone(), |(_, n)| n.clone()),
+                };
+                egui::ComboBox::from_id_salt("audio-device")
+                    .selected_text(name(&s.audio_device))
+                    .show_ui(ui, |ui| {
+                        let choices = std::iter::once(None)
+                            .chain(s.audio_devices.iter().map(|(id, _)| Some(id.clone())));
+                        for choice in choices {
+                            if ui
+                                .selectable_label(s.audio_device == choice, name(&choice))
+                                .clicked()
+                                && s.audio_device != choice
+                            {
+                                actions.push(Action::SetAudioDevice(choice));
+                            }
+                        }
+                    });
+            });
+        }
+        ui.horizontal(|ui| {
+            ui.label("Bitrate:");
+            let mut mbps = s.bitrate_mbps;
+            let slider = ui.add(
+                egui::Slider::new(&mut mbps, 2..=500)
+                    .logarithmic(true)
+                    .suffix(" Mbit/s"),
+            );
+            if slider.drag_stopped() || (slider.changed() && !slider.dragged()) {
+                actions.push(Action::SetBitrate(mbps));
+            }
+        });
+        ui.horizontal(|ui| {
+            if ui
+                .button("Fullscreen")
+                .on_hover_text(hint(Command::Fullscreen))
+                .clicked()
+            {
+                actions.push(Action::ToggleFullscreen);
+            }
+            if ui
+                .button(if s.show_stats {
+                    "Hide statistics"
+                } else {
+                    "Show statistics"
+                })
+                .on_hover_text(hint(Command::Stats))
+                .clicked()
+            {
+                actions.push(Action::ToggleStats);
+            }
+            if ui.button("Send Ctrl+Alt+Del").clicked() {
+                actions.push(Action::SecureAttention);
+            }
+        });
+        ui.separator();
+        ui.horizontal(|ui| {
+            if ui
+                .button(format!("Back to {} ({})", s.host_name, s.shortcut))
+                .clicked()
+            {
+                actions.push(Action::CloseMenu);
+            }
+            if ui
+                .button("Disconnect")
+                .on_hover_text(hint(Command::Disconnect))
+                .clicked()
+            {
+                actions.push(Action::Disconnect);
+            }
+        });
+    });
+    // Remember where it was dragged (the title bar does the dragging, so
+    // compare with where it was put instead of asking for a drag).
+    if let Some(shown) = shown
+        && s.place_menu.is_none()
+        && (shown.response.rect.center() - s.menu_center.unwrap_or(screen.center())).length() > 2.0
+    {
+        let c = shown.response.rect.center();
+        actions.push(Action::MenuMoved([
+            (c.x - screen.min.x) / screen.width().max(1.0),
+            (c.y - screen.min.y) / screen.height().max(1.0),
+        ]));
+    }
     actions
+}
+
+fn menu_button(ctx: &egui::Context, s: &OverlayState, actions: &mut Vec<Action>) {
+    let screen = ctx.content_rect();
+    let area = egui::Area::new(egui::Id::unique("menu-button")).order(egui::Order::Foreground);
+    let area = match s.menu_button_pos {
+        Some([fx, fy]) => area
+            .pivot(egui::Align2::CENTER_CENTER)
+            .fixed_pos(screen.min + egui::vec2(fx * screen.width(), fy * screen.height())),
+        None => area.anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-8.0, -8.0)),
+    };
+    area.show(ctx, |ui| {
+        let text = match s.menu_button.as_str() {
+            "shortcut" => s.shortcut.clone(),
+            "logo" => String::new(),
+            _ => format!("Menu  ·  {}", s.shortcut),
+        };
+        let logo = matches!(s.menu_button.as_str(), "full" | "logo");
+        let galley = ui.painter().layout_no_wrap(
+            text.clone(),
+            egui::FontId::proportional(13.0),
+            egui::Color32::WHITE,
+        );
+        let (h, pad, logo_size) = (30.0, 12.0, 18.0);
+        let gap = if logo && !text.is_empty() { 8.0 } else { 0.0 };
+        let w = if text.is_empty() {
+            h
+        } else {
+            pad * 2.0 + if logo { logo_size } else { 0.0 } + gap + galley.size().x
+        };
+        let (rect, response) =
+            ui.allocate_exact_size(egui::vec2(w, h), egui::Sense::click_and_drag());
+        let alpha = if response.hovered() || response.dragged() {
+            235
+        } else {
+            190
+        };
+        let painter = ui.painter();
+        painter.rect_filled(
+            rect,
+            h / 2.0,
+            egui::Color32::from_rgba_unmultiplied(42, 47, 69, alpha),
+        );
+        let mut x = if text.is_empty() {
+            rect.center().x - logo_size / 2.0
+        } else {
+            rect.left() + pad
+        };
+        if logo {
+            crate::launcher::paint_logo(
+                painter,
+                egui::Rect::from_min_size(
+                    egui::pos2(x, rect.center().y - logo_size / 2.0),
+                    egui::vec2(logo_size, logo_size),
+                ),
+            );
+            x += logo_size + gap;
+        }
+        if !text.is_empty() {
+            let y = rect.center().y - galley.size().y / 2.0;
+            painter.galley(egui::pos2(x, y), galley, egui::Color32::WHITE);
+        }
+        let response = response.on_hover_text(format!("Menu ({}) · drag to move", s.shortcut));
+        if response.dragged() {
+            let half = egui::vec2(w / 2.0, h / 2.0);
+            let c =
+                (rect.center() + response.drag_delta()).clamp(screen.min + half, screen.max - half);
+            let fx = (c.x - screen.min.x) / screen.width().max(1.0);
+            let fy = (c.y - screen.min.y) / screen.height().max(1.0);
+            actions.push(Action::MoveMenuButton([fx, fy]));
+        } else if response.clicked() {
+            actions.push(Action::OpenMenu);
+        }
+    });
 }
 
 impl ApplicationHandler<UiEvent> for Viewer {

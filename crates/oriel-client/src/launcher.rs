@@ -430,6 +430,11 @@ impl Launcher {
 
     /// Remember the choices made during a session with `host`.
     fn remember(&mut self, host: &str, prefs: ViewerPrefs) {
+        // Where the menu button was dragged applies to every host.
+        if prefs.menu_button_pos != self.config.menu_button_pos {
+            self.config.menu_button_pos = prefs.menu_button_pos;
+            self.save_config();
+        }
         let new = HostPrefs {
             fullscreen: Some(prefs.fullscreen),
             codec: Some(prefs.codec_key),
@@ -481,6 +486,8 @@ impl Launcher {
             gamepads: c.gamepads,
             microphone: prefs.microphone.unwrap_or(c.microphone),
             microphone_device: c.microphone_device.clone(),
+            menu_button: c.menu_button.clone(),
+            menu_button_pos: c.menu_button_pos,
         })
     }
 
@@ -1292,6 +1299,40 @@ impl Launcher {
                                     ui.label("Statistics");
                                     ui.checkbox(&mut c.show_stats, "Show statistics");
                                     ui.end_row();
+                                    ui.label("Menu button");
+                                    let label = |key: &str| {
+                                        crate::config::MENU_BUTTON_STYLES
+                                            .iter()
+                                            .find(|(k, _)| *k == key)
+                                            .map_or("Logo and shortcut", |(_, l)| *l)
+                                    };
+                                    egui::ComboBox::from_id_salt("menu-button")
+                                        .width(field)
+                                        .selected_text(label(&c.menu_button))
+                                        .show_ui(ui, |ui| {
+                                            for (key, l) in crate::config::MENU_BUTTON_STYLES {
+                                                if ui
+                                                    .selectable_label(c.menu_button == key, l)
+                                                    .clicked()
+                                                {
+                                                    c.menu_button = key.into();
+                                                }
+                                            }
+                                        });
+                                    ui.end_row();
+                                    ui.label("");
+                                    ui.add_enabled_ui(c.menu_button_pos.is_some(), |ui| {
+                                        if ui
+                                            .button("Reset position")
+                                            .on_hover_text(
+                                                "Drag the button to move it while connected",
+                                            )
+                                            .clicked()
+                                        {
+                                            c.menu_button_pos = None;
+                                        }
+                                    });
+                                    ui.end_row();
                                 }
                                 SettingsTab::Sound => {
                                     ui.label("Sound");
@@ -1403,7 +1444,7 @@ fn section_title(ui: &mut egui::Ui, text: &str) {
     ui.add_space(4.0);
 }
 
-fn paint_logo(painter: &egui::Painter, rect: egui::Rect) {
+pub(crate) fn paint_logo(painter: &egui::Painter, rect: egui::Rect) {
     painter.rect_filled(rect, 6, FRAME);
     let inner = rect.shrink(3.0);
     let half = inner.width() / 2.0 - 1.0;

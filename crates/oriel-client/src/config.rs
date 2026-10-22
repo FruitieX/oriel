@@ -35,6 +35,12 @@ pub struct ClientConfig {
     pub playback_device: Option<String>,
     /// Forward gamepads to the host while the viewer has focus.
     pub gamepads: bool,
+    /// The menu button: "full" (logo and shortcut), "shortcut", "logo" or
+    /// "hidden" (the shortcut still works).
+    pub menu_button: String,
+    /// Where the menu button's center sits, as fractions of the window
+    /// (unset: bottom right).
+    pub menu_button_pos: Option<[f32; 2]>,
     /// Send the microphone to hosts by default.
     pub microphone: bool,
     /// Which input device (an `oriel_audio` device id; unset: default).
@@ -77,6 +83,14 @@ pub fn parse_virtual_mode(s: &str) -> Option<oriel_proto::VirtualMode> {
 pub fn format_virtual_mode(m: &oriel_proto::VirtualMode) -> String {
     format!("{}x{}@{}", m.width, m.height, m.refresh_hz)
 }
+
+/// Menu button styles offered in the UI, as (key, label).
+pub const MENU_BUTTON_STYLES: [(&str, &str); 4] = [
+    ("full", "Logo and shortcut"),
+    ("shortcut", "Shortcut only"),
+    ("logo", "Logo only"),
+    ("hidden", "Hidden (use the shortcut)"),
+];
 
 /// The codec choices offered in the UI, as (key, label).
 pub const CODEC_CHOICES: [(&str, &str); 5] = [
@@ -126,6 +140,8 @@ impl Default for ClientConfig {
             share: false,
             playback_device: None,
             gamepads: true,
+            menu_button: "full".into(),
+            menu_button_pos: None,
             microphone: false,
             microphone_device: None,
             shortcuts: Default::default(),
