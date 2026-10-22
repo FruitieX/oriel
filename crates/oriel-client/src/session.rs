@@ -133,6 +133,10 @@ pub fn start(
     });
 
     let frame_conn = conn.clone();
+    // Debugging aid: emulate a link of this many kbit/s.
+    let limit_kbps: Option<u64> = std::env::var("ORIEL_DEBUG_LIMIT_KBPS")
+        .ok()
+        .and_then(|v| v.parse().ok());
     tokio::spawn(async move {
         let result: Result<()> = async {
             loop {
@@ -141,6 +145,10 @@ pub fn start(
                     continue;
                 };
                 let data = stream.read_to_end(256 * 1024 * 1024).await?;
+                if let Some(kbps) = limit_kbps {
+                    let secs = data.len() as f64 * 8.0 / (kbps as f64 * 1000.0);
+                    tokio::time::sleep(Duration::from_secs_f64(secs)).await;
+                }
                 if decoder.send((header, data, Instant::now())).is_err() {
                     break;
                 }

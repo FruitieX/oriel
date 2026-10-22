@@ -6,6 +6,8 @@ use oriel_net::Paths;
 use oriel_proto::Codec;
 use serde::Deserialize;
 
+pub const AUTO_CODECS: [Codec; 3] = [Codec::PyroWave, Codec::Hevc, Codec::H264];
+
 #[derive(Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ClientConfig {
@@ -13,8 +15,10 @@ pub struct ClientConfig {
     pub menu_shortcut: String,
     pub bitrate_kbps: u32,
     pub max_fps: u32,
-    /// Most preferred first: "hevc", "h264", "av1".
+    /// Most preferred first: "hevc", "h264", "av1", "pyrowave", or just
+    /// "auto" (PyroWave when the link allows, else HEVC/H.264).
     pub codecs: Vec<String>,
+    pub pyrowave_kbps: u32,
     /// "auto", "desktop" or "captured".
     pub mouse: String,
     pub audio: bool,
@@ -27,6 +31,7 @@ impl Default for ClientConfig {
             bitrate_kbps: 50_000,
             max_fps: 120,
             codecs: vec!["hevc".into(), "h264".into()],
+            pyrowave_kbps: 400_000,
             mouse: "auto".into(),
             audio: true,
         }
@@ -43,8 +48,13 @@ impl ClientConfig {
         }
     }
 
-    pub fn codecs(&self) -> Result<Vec<Codec>> {
-        self.codecs
+    /// The codec preference list and whether automatic switching is on.
+    pub fn codecs(&self) -> Result<(Vec<Codec>, bool)> {
+        if self.codecs.iter().any(|c| c.eq_ignore_ascii_case("auto")) {
+            return Ok((AUTO_CODECS.to_vec(), true));
+        }
+        let list = self
+            .codecs
             .iter()
             .map(|c| {
                 Ok(match c.to_ascii_lowercase().as_str() {
@@ -55,7 +65,8 @@ impl ClientConfig {
                     other => bail!("unknown codec {other:?} in client.toml"),
                 })
             })
-            .collect()
+            .collect::<Result<_>>()?;
+        Ok((list, false))
     }
 
     pub fn mouse_mode(&self) -> Result<MouseMode> {

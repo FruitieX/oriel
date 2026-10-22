@@ -27,6 +27,8 @@ enum CodecArg {
     Av1,
     /// Intra-only wavelet codec for fast LANs (hundreds of Mbit/s).
     Pyrowave,
+    /// PyroWave when the link allows, otherwise HEVC, then H.264.
+    Auto,
 }
 
 impl From<CodecArg> for Codec {
@@ -36,6 +38,7 @@ impl From<CodecArg> for Codec {
             CodecArg::Hevc => Codec::Hevc,
             CodecArg::Av1 => Codec::Av1,
             CodecArg::Pyrowave => Codec::PyroWave,
+            CodecArg::Auto => unreachable!("expanded by codec_list"),
         }
     }
 }
@@ -95,9 +98,13 @@ enum Command {
         /// Bitrate in kbit/s.
         #[arg(long)]
         bitrate: Option<u32>,
-        /// Preferred codecs, most preferred first.
+        /// Preferred codecs, most preferred first; `auto` switches between
+        /// PyroWave and HEVC/H.264 depending on the link.
         #[arg(long, value_enum, value_delimiter = ',')]
         codec: Vec<CodecArg>,
+        /// PyroWave bitrate in kbit/s.
+        #[arg(long)]
+        pyrowave_bitrate: Option<u32>,
         /// Decode on the CPU.
         #[arg(long)]
         software_decode: bool,
@@ -193,6 +200,7 @@ fn main() -> Result<()> {
             fps,
             bitrate,
             codec,
+            pyrowave_bitrate,
             software_decode,
             no_audio,
             display,
@@ -205,10 +213,12 @@ fn main() -> Result<()> {
             screenshot_after,
         } => {
             let file = config::ClientConfig::load(&paths)?;
-            let codecs: Vec<Codec> = if codec.is_empty() {
+            let (codecs, auto_codec) = if codec.is_empty() {
                 file.codecs()?
+            } else if codec.iter().any(|c| matches!(c, CodecArg::Auto)) {
+                (config::AUTO_CODECS.to_vec(), true)
             } else {
-                codec.into_iter().map(Into::into).collect()
+                (codec.into_iter().map(Into::into).collect(), false)
             };
             let settings = StreamSettings {
                 display,
@@ -216,6 +226,8 @@ fn main() -> Result<()> {
                 bitrate_kbps: bitrate.unwrap_or(file.bitrate_kbps),
                 max_fps: fps.unwrap_or(file.max_fps),
                 audio: file.audio && !no_audio,
+                auto_codec,
+                pyrowave_kbps: pyrowave_bitrate.unwrap_or(file.pyrowave_kbps),
             };
             let rt = runtime()?;
             if let Some(secs) = headless {

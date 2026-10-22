@@ -21,10 +21,11 @@ fn transport_config() -> quinn::TransportConfig {
     // One stream per video frame; allow plenty in flight.
     t.max_concurrent_uni_streams(1024u32.into());
     t.max_concurrent_bidi_streams(16u32.into());
-    // Room for intra-only frames at several hundred Mbit/s.
-    t.stream_receive_window((32u32 * 1024 * 1024).into());
-    t.receive_window((256u32 * 1024 * 1024).into());
-    t.send_window(256 * 1024 * 1024);
+    // Room for intra-only frames at several hundred Mbit/s, but not for a
+    // backlog of seconds of video (frames are paced by FrameAck anyway).
+    t.stream_receive_window((16u32 * 1024 * 1024).into());
+    t.receive_window((48u32 * 1024 * 1024).into());
+    t.send_window(48 * 1024 * 1024);
     t.datagram_receive_buffer_size(Some(1024 * 1024));
     t.keep_alive_interval(Some(Duration::from_secs(2)));
     t.max_idle_timeout(Some(

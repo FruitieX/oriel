@@ -54,6 +54,8 @@ pub async fn run(
             },
             max_fps: settings.max_fps.clamp(1, 240),
             encoder: options.encoder.clone(),
+            auto_codec: settings.auto_codec,
+            pyrowave_kbps: settings.pyrowave_kbps.max(10_000),
         },
         shared.clone(),
         test.clone(),
@@ -128,7 +130,7 @@ pub async fn run(
     let datagram_task = tokio::spawn(async move {
         while let Ok(bytes) = datagram_conn.read_datagram().await {
             if let Ok(Datagram::FrameAck { seq, .. }) = oriel_proto::decode(&bytes) {
-                datagram_shared.ack(seq);
+                datagram_shared.decoded(seq);
             }
         }
     });
@@ -220,7 +222,7 @@ async fn send_frame(
     let mut stream = match conn.open_uni().await {
         Ok(s) => s,
         Err(_) => {
-            shared.ack(header.seq);
+            shared.delivered(header.seq);
             return;
         }
     };
@@ -241,7 +243,7 @@ async fn send_frame(
         if let Err(e) = result {
             tracing::debug!(seq = header.seq, "frame send failed: {e:#}");
         }
-        shared.ack(header.seq);
+        shared.delivered(header.seq);
     });
 }
 

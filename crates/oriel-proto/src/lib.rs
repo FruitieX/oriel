@@ -67,6 +67,11 @@ pub struct StreamSettings {
     pub max_fps: u32,
     /// Stream the host's sound.
     pub audio: bool,
+    /// Let the host switch between the listed codecs as the link allows:
+    /// PyroWave on fast, low-latency links, the next codec otherwise.
+    pub auto_codec: bool,
+    /// Bitrate for PyroWave in kbit/s (it needs far more than H.26x).
+    pub pyrowave_kbps: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -286,6 +291,8 @@ mod tests {
             bitrate_kbps: 50_000,
             max_fps: 120,
             audio: true,
+            auto_codec: false,
+            pyrowave_kbps: 400_000,
         });
         let bytes = encode_framed(&msg).unwrap();
         let len = u32::from_le_bytes(bytes[..4].try_into().unwrap()) as usize;

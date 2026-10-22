@@ -27,6 +27,8 @@ pub struct Config {
     pub bitrate_kbps: u32,
     pub max_fps: u32,
     pub encoder: Option<String>,
+    pub auto_codec: bool,
+    pub pyrowave_kbps: u32,
 }
 
 pub enum Cmd {
@@ -52,26 +54,63 @@ pub enum Event {
 }
 
 /// State shared with the session.
-#[derive(Default)]
 pub struct Shared {
     /// Sequence number of the next frame to send.
     pub next_seq: AtomicU64,
-    /// Every frame below this has been received (by app-level ack or QUIC
-    /// acknowledgement).
-    pub acked_below: AtomicU64,
+    /// Every frame below this has been decoded by the client (`FrameAck`).
+    decoded_below: AtomicU64,
+    /// Every frame below this has reached the client's QUIC stack.
+    delivered_below: AtomicU64,
+    /// Microseconds since `epoch` of the last `FrameAck` progress.
+    last_decoded_us: AtomicU64,
+    epoch: Instant,
     pub rtt_us: AtomicU64,
     pub geometry: Mutex<Geometry>,
 }
 
+impl Default for Shared {
+    fn default() -> Self {
+        Self {
+            next_seq: AtomicU64::new(0),
+            decoded_below: AtomicU64::new(0),
+            delivered_below: AtomicU64::new(0),
+            last_decoded_us: AtomicU64::new(0),
+            epoch: Instant::now(),
+            rtt_us: AtomicU64::new(0),
+            geometry: Mutex::new(Geometry::default()),
+        }
+    }
+}
+
 impl Shared {
-    pub fn ack(&self, seq: u64) {
-        self.acked_below.fetch_max(seq + 1, Ordering::Relaxed);
+    /// The client decoded every frame up to `seq`.
+    pub fn decoded(&self, seq: u64) {
+        if self.decoded_below.fetch_max(seq + 1, Ordering::Relaxed) <= seq {
+            self.last_decoded_us
+                .store(self.epoch.elapsed().as_micros() as u64, Ordering::Relaxed);
+        }
     }
 
+    /// QUIC delivered (or gave up on) frame `seq`.
+    pub fn delivered(&self, seq: u64) {
+        self.delivered_below.fetch_max(seq + 1, Ordering::Relaxed);
+    }
+
+    /// Frames sent but not yet decoded. Pacing on decoding (not delivery)
+    /// keeps a slow client from piling up a backlog in its receive buffers.
+    /// Delivery only counts when decode acknowledgements stall (lost
+    /// datagrams, an old client).
     fn in_flight(&self) -> u64 {
-        self.next_seq
-            .load(Ordering::Relaxed)
-            .saturating_sub(self.acked_below.load(Ordering::Relaxed))
+        let next = self.next_seq.load(Ordering::Relaxed);
+        let decoded = self.decoded_below.load(Ordering::Relaxed);
+        let since_ack = self.epoch.elapsed().as_micros() as u64
+            - self.last_decoded_us.load(Ordering::Relaxed).min(self.epoch.elapsed().as_micros() as u64);
+        let acked = if since_ack > 1_000_000 {
+            decoded.max(self.delivered_below.load(Ordering::Relaxed))
+        } else {
+            decoded
+        };
+        next.saturating_sub(acked)
     }
 }
 
@@ -88,6 +127,10 @@ pub fn spawn(
             #[cfg(windows)]
             crate::win::boost_thread_priority();
             let mut p = Pipeline {
+                auto: AutoCodec {
+                    retry_at: Instant::now(),
+                    backoff: Duration::from_secs(30),
+                },
                 config,
                 shared,
                 test,
@@ -113,11 +156,25 @@ struct Pipeline {
     cmds: Receiver<Cmd>,
     events: UnboundedSender<Event>,
     clock: Instant,
+    auto: AutoCodec,
 }
 
 enum Flow {
+    /// Reopen the capturer (and encoder).
     Continue,
+    /// Keep the capturer, reopen the encoder (codec switch).
+    Reencode,
     Stop,
+}
+
+/// RTT below which PyroWave is worth trying in automatic codec mode.
+const PYROWAVE_MAX_RTT: Duration = Duration::from_millis(3);
+
+/// Automatic codec switching state.
+struct AutoCodec {
+    /// Do not try PyroWave again before this.
+    retry_at: Instant,
+    backoff: Duration,
 }
 
 impl Pipeline {
@@ -156,16 +213,33 @@ impl Pipeline {
         }
     }
 
+    fn rtt(&self) -> Duration {
+        Duration::from_micros(self.shared.rtt_us.load(Ordering::Relaxed))
+    }
+
+    /// Whether automatic mode should use PyroWave right now.
+    fn pyrowave_allowed(&self) -> bool {
+        !self.config.auto_codec
+            || (Instant::now() >= self.auto.retry_at && self.rtt() < PYROWAVE_MAX_RTT)
+    }
+
     fn open_encoder(&self, cap: &dyn Capturer, bitrate_kbps: u32) -> Result<(Encoder, Codec)> {
         let (width, height) = cap.size();
         let mut errors = Vec::new();
         for &codec in &self.config.codecs {
+            if codec == Codec::PyroWave && !self.pyrowave_allowed() {
+                continue;
+            }
             let config = EncoderConfig {
                 codec,
                 width,
                 height,
                 fps: self.config.max_fps,
-                bitrate_kbps,
+                bitrate_kbps: if codec == Codec::PyroWave {
+                    self.config.pyrowave_kbps
+                } else {
+                    bitrate_kbps
+                },
                 device: cap.hw_device(),
                 encoder: self.config.encoder.clone(),
             };
@@ -184,17 +258,20 @@ impl Pipeline {
                 return Ok(());
             };
             *self.shared.geometry.lock() = cap.geometry();
-            let (mut enc, codec) = self.open_encoder(cap.as_ref(), bitrate)?;
-            let (width, height) = cap.size();
-            self.send(Event::Surface(SurfaceInfo {
-                id: self.config.surface,
-                width,
-                height,
-                codec,
-            }))?;
-            match self.stream(cap.as_mut(), &mut enc, codec, &mut bitrate)? {
-                Flow::Stop => return Ok(()),
-                Flow::Continue => {}
+            loop {
+                let (mut enc, codec) = self.open_encoder(cap.as_ref(), bitrate)?;
+                let (width, height) = cap.size();
+                self.send(Event::Surface(SurfaceInfo {
+                    id: self.config.surface,
+                    width,
+                    height,
+                    codec,
+                }))?;
+                match self.stream(cap.as_mut(), &mut enc, codec, &mut bitrate)? {
+                    Flow::Stop => return Ok(()),
+                    Flow::Continue => break,
+                    Flow::Reencode => {}
+                }
             }
         }
     }
@@ -219,6 +296,13 @@ impl Pipeline {
         let mut shape_id = 0u64;
         let mut encode_errors = 0u32;
         let mut blocked = false;
+        // Automatic codec mode: how long frames waited on the network.
+        let auto = self.config.auto_codec && self.config.codecs.contains(&Codec::PyroWave);
+        let mut window_start = Instant::now();
+        let mut window_captured = 0u32;
+        let mut window_encoded = 0u32;
+        let mut window_blocked = false;
+        let mut slow_windows = 0;
 
         loop {
             while let Ok(cmd) = self.cmds.try_recv() {
@@ -258,6 +342,7 @@ impl Pipeline {
                     has_frame = true;
                     dirty = true;
                     capture_time = Instant::now();
+                    window_captured += 1;
                 }
                 Ok(false) => {}
                 Err(e) => {
@@ -299,14 +384,50 @@ impl Pipeline {
                 }
             }
 
+            if auto && window_start.elapsed() >= Duration::from_secs(1) {
+                // Slow: the screen changed more often than we managed to
+                // send, because frames were waiting on the network.
+                let wanted = window_captured
+                    .min((self.config.max_fps as f64 * window_start.elapsed().as_secs_f64()) as u32);
+                let slow = window_blocked && wanted >= 10 && (window_encoded as f64) < wanted as f64 * 0.75;
+                let ratio = window_encoded as f64 / wanted.max(1) as f64;
+                window_start = Instant::now();
+                window_captured = 0;
+                window_encoded = 0;
+                window_blocked = false;
+                {
+                    if codec == Codec::PyroWave {
+                        slow_windows = if slow { slow_windows + 1 } else { 0 };
+                        if slow_windows >= 2 {
+                            self.auto.retry_at = Instant::now() + self.auto.backoff;
+                            tracing::info!(
+                                ratio,
+                                retry_in = ?self.auto.backoff,
+                                "link too slow for PyroWave, switching codec"
+                            );
+                            self.send(Event::Notice(format!(
+                                "Link too slow for PyroWave; trying again in {} s",
+                                self.auto.backoff.as_secs()
+                            )))?;
+                            self.auto.backoff = (self.auto.backoff * 2).min(Duration::from_secs(600));
+                            return Ok(Flow::Reencode);
+                        }
+                    } else if self.pyrowave_allowed() {
+                        tracing::info!("trying PyroWave again");
+                        return Ok(Flow::Reencode);
+                    }
+                }
+            }
+
             blocked = false;
             if !(has_frame && (dirty || force_key)) || Instant::now() < next_slot {
                 continue;
             }
-            let rtt = Duration::from_micros(self.shared.rtt_us.load(Ordering::Relaxed));
+            let rtt = self.rtt();
             let limit = (rtt.as_secs_f64() / interval.as_secs_f64()).ceil() as u64 + 2;
             if self.shared.in_flight() >= limit.clamp(2, 16) {
                 blocked = true;
+                window_blocked = true;
                 continue;
             }
 
@@ -352,6 +473,7 @@ impl Pipeline {
                         tracing::warn!("encoder ignored a keyframe request");
                     }
                     self.send(Event::Frame(header, out.data))?;
+                    window_encoded += 1;
                     dirty = false;
                     force_key = false;
                 }
