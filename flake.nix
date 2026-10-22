@@ -71,7 +71,25 @@
               cmake
               rustPlatform.bindgenHook
               makeWrapper
+              copyDesktopItems
             ];
+            desktopItems = [
+              (pkgs.makeDesktopItem {
+                name = "oriel";
+                desktopName = "oriel";
+                genericName = "Remote desktop";
+                comment = "Connect to other computers or share this one";
+                exec = "oriel";
+                icon = "oriel";
+                categories = [
+                  "Network"
+                  "RemoteAccess"
+                ];
+              })
+            ];
+            postInstall = ''
+              install -Dm644 assets/oriel.svg $out/share/icons/hicolor/scalable/apps/oriel.svg
+            '';
             buildInputs = [
               pkgs.ffmpeg_8.dev
               pkgs.opus
