@@ -551,11 +551,21 @@ fn video_tab(ui: &mut Ui, rows: &mut Rows, live: Option<&Live>) {
         rows.mbps(
             ui,
             "Bitrate",
-            "For HEVC, H.264 and AV1",
+            "For HEVC, H.264 and AV1; the most it uses when automatic",
             2..=500,
             |c| c.bitrate_kbps,
             |c, v| c.bitrate_kbps = v,
             |h| &mut h.bitrate_kbps,
+        );
+        rows.toggle(
+            ui,
+            "Automatic bitrate",
+            "Follow the network",
+            "Lowers the bitrate within a fraction of a second when the network \
+             cannot carry it, and raises it again once it can",
+            |c| c.auto_bitrate,
+            |c, v| c.auto_bitrate = v,
+            |h| &mut h.auto_bitrate,
         );
         rows.mbps(
             ui,

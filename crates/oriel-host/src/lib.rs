@@ -8,6 +8,7 @@ mod gamepad;
 mod gnome;
 pub mod input;
 mod pipeline;
+mod ratecontrol;
 mod server;
 #[cfg(windows)]
 pub mod service;

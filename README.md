@@ -39,6 +39,12 @@ display) and the client (connects to hosts).
   [PyroWave](https://github.com/Themaister/pyrowave) for fast LANs
   (`--codec pyrowave`, or `--codec auto` to switch between PyroWave and HEVC
   as the link allows).
+- Automatic bitrate (on by default): the host lowers the bitrate within a
+  fraction of a second when the round trip grows, frames wait on the client
+  or packets get lost, and raises it again up to the chosen bitrate once the
+  link is clean. NVENC, Quick Sync and x264 change it on the fly; other
+  encoders are reopened (a keyframe), at most every 2 s. PyroWave keeps its
+  own fallback to HEVC.
 - Warnings that explain a slow stream while it lasts: a link that cannot
   carry the bitrate, packet loss, jitter, high latency, sound dropouts, a
   host that stops answering, slow encoding or decoding, and a host on

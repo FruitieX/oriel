@@ -126,6 +126,10 @@ pub fn run(
         },
         sink.clone(),
     );
+    // Hosts before protocol 10 skip this.
+    session.send(ClientMsg::SetAutoBitrate {
+        enabled: e.auto_bitrate,
+    });
     let mut viewer = Viewer::new(session.clone(), connected.host_name, options);
     viewer.sink = Some(sink.clone());
     viewer.displays = connected.displays;
@@ -751,6 +755,7 @@ impl Viewer {
             bitrate_mbps: self.in_force.bitrate_kbps / 1000,
             pyrowave_mbps: self.in_force.pyrowave_kbps / 1000,
             software_decode: software,
+            auto_bitrate: self.in_force.auto_bitrate,
             other_protocol: self.other_protocol,
             jitter_ms,
             audio_underruns,
@@ -815,6 +820,11 @@ impl Viewer {
         if old.bitrate_kbps != new.bitrate_kbps {
             s.send(ClientMsg::SetBitrate {
                 kbps: new.bitrate_kbps,
+            });
+        }
+        if old.auto_bitrate != new.auto_bitrate {
+            s.send(ClientMsg::SetAutoBitrate {
+                enabled: new.auto_bitrate,
             });
         }
         if old.pyrowave_kbps != new.pyrowave_kbps {
@@ -1078,16 +1088,21 @@ impl From<&Viewer> for OverlayState {
         let summary = v.session.stats.lock().summary();
         let s = v.session.stats.lock();
         let stats_line = format!(
-            "{} {}×{} · {:.0} fps · {:.1} Mbit/s · encode {:.1} ms · decode {:.1} ms · capture→draw {:.1} ms · RTT {:.1} ms\n{} · {}",
+            "{} {}×{} · {:.0} fps · {:.1} Mbit/s{} · encode {:.1} ms · decode {:.1} ms · capture→draw {:.1} ms · RTT {:.1} ms · jitter {:.1} ms\n{} · {}",
             s.codec,
             s.resolution.0,
             s.resolution.1,
             summary.fps,
             summary.mbps,
+            v.host_health
+                .filter(|(h, _)| h.bitrate_kbps > 0)
+                .map(|(h, _)| format!(" (target {:.1})", h.bitrate_kbps as f32 / 1000.0))
+                .unwrap_or_default(),
             summary.encode_ms,
             summary.decode_ms,
             v.latency_ms,
             v.session.rtt().as_secs_f32() * 1000.0,
+            s.jitter_ms,
             s.decoder,
             v.gfx
                 .as_ref()

@@ -29,6 +29,8 @@ pub struct Config {
     pub encoder: Option<String>,
     pub auto_codec: bool,
     pub pyrowave_kbps: u32,
+    /// Adapt the bitrate to the network, up to `bitrate_kbps`.
+    pub auto_bitrate: bool,
 }
 
 pub enum Cmd {
@@ -37,6 +39,7 @@ pub enum Cmd {
     Target(capture::Target),
     Codecs(Vec<Codec>, bool),
     Bitrate(u32),
+    AutoBitrate(bool),
     MaxFps(u32),
     PyroWaveBitrate(u32),
     Stop,
@@ -77,6 +80,9 @@ pub struct Shared {
     last_decoded_us: AtomicU64,
     epoch: Instant,
     pub rtt_us: AtomicU64,
+    /// Packets sent and lost on the connection so far.
+    pub sent_packets: AtomicU64,
+    pub lost_packets: AtomicU64,
     pub geometry: Mutex<Geometry>,
 }
 
@@ -89,6 +95,8 @@ impl Default for Shared {
             last_decoded_us: AtomicU64::new(0),
             epoch: Instant::now(),
             rtt_us: AtomicU64::new(0),
+            sent_packets: AtomicU64::new(0),
+            lost_packets: AtomicU64::new(0),
             geometry: Mutex::new(Geometry::default()),
         }
     }
@@ -142,6 +150,7 @@ pub fn spawn(
             #[cfg(windows)]
             crate::win::boost_thread_priority();
             let mut p = Pipeline {
+                rate: crate::ratecontrol::RateControl::new(config.bitrate_kbps, Instant::now()),
                 auto: AutoCodec {
                     retry_at: Instant::now(),
                     backoff: Duration::from_secs(30),
@@ -170,6 +179,8 @@ struct Pipeline {
     cmds: Receiver<Cmd>,
     events: UnboundedSender<Event>,
     auto: AutoCodec,
+    /// Automatic bitrate; kept across encoder and capturer reopens.
+    rate: crate::ratecontrol::RateControl,
 }
 
 enum Flow {
@@ -186,6 +197,50 @@ const PYROWAVE_MAX_RTT: Duration = Duration::from_millis(3);
 /// long it must be still first.
 const REFRESH_FRAMES: u32 = 30;
 const REFRESH_AFTER: Duration = Duration::from_millis(150);
+
+/// A quarter second of streaming, for automatic bitrate.
+struct Quarter {
+    start: Instant,
+    captured: u32,
+    encoded: u32,
+    blocked: bool,
+    bytes: u64,
+    sent_packets: u64,
+    lost_packets: u64,
+}
+
+impl Quarter {
+    fn new(shared: &Shared) -> Self {
+        Self {
+            start: Instant::now(),
+            captured: 0,
+            encoded: 0,
+            blocked: false,
+            bytes: 0,
+            sent_packets: shared.sent_packets.load(Ordering::Relaxed),
+            lost_packets: shared.lost_packets.load(Ordering::Relaxed),
+        }
+    }
+
+    fn sample(&self, shared: &Shared, max_fps: u32, rtt: Duration) -> crate::ratecontrol::Sample {
+        let secs = self.start.elapsed().as_secs_f32().max(0.001);
+        let wanted = self.captured.min((max_fps as f32 * secs) as u32);
+        let sent = shared.sent_packets.load(Ordering::Relaxed) - self.sent_packets;
+        let lost = shared.lost_packets.load(Ordering::Relaxed) - self.lost_packets;
+        crate::ratecontrol::Sample {
+            rtt,
+            // Waiting for acknowledgements is normal; it is congestion only
+            // when it cost frames.
+            blocked: self.blocked && wanted >= 3 && (self.encoded as f32) < wanted as f32 * 0.8,
+            loss: if sent >= 20 {
+                lost as f32 / sent as f32
+            } else {
+                0.0
+            },
+            sent_kbps: self.bytes as f32 * 8.0 / 1000.0 / secs,
+        }
+    }
+}
 
 /// Automatic codec switching state.
 struct AutoCodec {
@@ -275,6 +330,15 @@ impl Pipeline {
         bail!("no usable encoder: {}", errors.join("; "))
     }
 
+    /// The bitrate to encode at: the controller's when automatic.
+    fn video_kbps(&self, chosen: u32) -> u32 {
+        if self.config.auto_bitrate {
+            self.rate.target_kbps().min(chosen)
+        } else {
+            chosen
+        }
+    }
+
     fn run(&mut self) -> Result<()> {
         let mut bitrate = self.config.bitrate_kbps;
         // Outlives a capturer that is reopened for the same target (after a
@@ -295,7 +359,7 @@ impl Pipeline {
             keep = Some((self.config.target, cap.keep_alive()));
             *self.shared.geometry.lock() = cap.geometry();
             loop {
-                let (mut enc, codec) = self.open_encoder(cap.as_ref(), bitrate)?;
+                let (mut enc, codec) = self.open_encoder(cap.as_ref(), self.video_kbps(bitrate))?;
                 let (width, height) = cap.size();
                 self.send(Event::Surface(SurfaceInfo {
                     id: self.config.surface,
@@ -346,6 +410,11 @@ impl Pipeline {
         let mut window_encoded = 0u32;
         let mut window_blocked = false;
         let mut slow_windows = 0;
+        // Automatic bitrate looks at quarter seconds.
+        let mut quarter = Quarter::new(&self.shared);
+        // What the encoder runs at, and when it was last reopened for that.
+        let mut enc_kbps = self.video_kbps(*bitrate);
+        let mut reopened = Instant::now();
 
         loop {
             while let Ok(cmd) = self.cmds.try_recv() {
@@ -353,11 +422,30 @@ impl Pipeline {
                     Cmd::Keyframe => force_key = true,
                     Cmd::Bitrate(kbps) if kbps != *bitrate => {
                         *bitrate = kbps;
-                        let (new, _) = self.open_encoder(cap, kbps)?;
-                        *enc = new;
-                        force_key = true;
+                        self.rate.set_max(kbps);
+                        if codec != Codec::PyroWave {
+                            let kbps = self.video_kbps(kbps);
+                            if !enc.set_bitrate(kbps) {
+                                let (new, _) = self.open_encoder(cap, kbps)?;
+                                *enc = new;
+                                force_key = true;
+                            }
+                        }
                     }
                     Cmd::Bitrate(_) => {}
+                    Cmd::AutoBitrate(on) if on != self.config.auto_bitrate => {
+                        self.config.auto_bitrate = on;
+                        self.rate = crate::ratecontrol::RateControl::new(*bitrate, Instant::now());
+                        if codec != Codec::PyroWave && !on {
+                            let kbps = *bitrate;
+                            if !enc.set_bitrate(kbps) {
+                                let (new, _) = self.open_encoder(cap, kbps)?;
+                                *enc = new;
+                                force_key = true;
+                            }
+                        }
+                    }
+                    Cmd::AutoBitrate(_) => {}
                     Cmd::MaxFps(fps) if fps != self.config.max_fps => {
                         self.config.max_fps = fps.clamp(1, 240);
                         return Ok(Flow::Reencode);
@@ -415,6 +503,7 @@ impl Pipeline {
                     };
                     capture_time = Instant::now();
                     window_captured += 1;
+                    quarter.captured += 1;
                 }
                 Ok(false) => {}
                 Err(e) => {
@@ -456,6 +545,34 @@ impl Pipeline {
                 }
             }
 
+            if quarter.start.elapsed() >= Duration::from_millis(250) {
+                let sample = quarter.sample(&self.shared, self.config.max_fps, self.rtt());
+                quarter = Quarter::new(&self.shared);
+                if self.config.auto_bitrate
+                    && codec != Codec::PyroWave
+                    && let Some(kbps) = self.rate.update(Instant::now(), sample)
+                {
+                    let kbps = kbps.min(*bitrate);
+                    tracing::debug!(kbps, ?sample, "automatic bitrate");
+                    if !enc.set_bitrate(kbps) {
+                        // Reopening costs a keyframe: only for real cuts, or
+                        // to climb back after a while.
+                        let current = enc_kbps;
+                        let worth = kbps * 5 < current * 4
+                            || (kbps > current && reopened.elapsed() >= Duration::from_secs(5));
+                        if worth && reopened.elapsed() >= Duration::from_secs(2) {
+                            let (new, _) = self.open_encoder(cap, kbps)?;
+                            *enc = new;
+                            force_key = true;
+                            enc_kbps = kbps;
+                            reopened = Instant::now();
+                        }
+                    } else {
+                        enc_kbps = kbps;
+                    }
+                }
+            }
+
             if window_start.elapsed() >= Duration::from_secs(1) {
                 // Slow: the screen changed more often than we managed to
                 // send, because frames were waiting on the network.
@@ -471,6 +588,11 @@ impl Pipeline {
                     wanted_fps: wanted.min(u16::MAX as u32) as u16,
                     network_limited: slow,
                     loss_permille: 0,
+                    bitrate_kbps: if codec == Codec::PyroWave {
+                        self.config.pyrowave_kbps
+                    } else {
+                        enc_kbps
+                    },
                 }))?;
                 window_start = Instant::now();
                 window_captured = 0;
@@ -511,6 +633,7 @@ impl Pipeline {
             if self.shared.in_flight() >= limit.clamp(2, 16) {
                 blocked = true;
                 window_blocked = true;
+                quarter.blocked = true;
                 continue;
             }
 
@@ -561,8 +684,10 @@ impl Pipeline {
                     if force_key && !out.keyframe {
                         tracing::warn!("encoder ignored a keyframe request");
                     }
+                    quarter.bytes += out.data.len() as u64;
                     self.send(Event::Frame(header, out.data))?;
                     window_encoded += 1;
+                    quarter.encoded += 1;
                     if refresh {
                         refreshes_left -= 1;
                     }
@@ -574,7 +699,7 @@ impl Pipeline {
                     encode_errors += 1;
                     tracing::warn!("encode failed: {e:#}");
                     if encode_errors >= 3 {
-                        let (new, _) = self.open_encoder(cap, *bitrate)?;
+                        let (new, _) = self.open_encoder(cap, self.video_kbps(*bitrate))?;
                         *enc = new;
                         force_key = true;
                         encode_errors = 0;

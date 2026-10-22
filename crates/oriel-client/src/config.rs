@@ -18,6 +18,9 @@ pub struct ClientConfig {
     /// Opens the menu and releases keyboard and mouse.
     pub menu_shortcut: String,
     pub bitrate_kbps: u32,
+    /// Lower the bitrate (below `bitrate_kbps`) while the network cannot
+    /// carry it.
+    pub auto_bitrate: bool,
     pub max_fps: u32,
     /// Most preferred first: "hevc", "h264", "av1", "pyrowave", or just
     /// "auto" (PyroWave when the link allows, else HEVC/H.264).
@@ -70,6 +73,7 @@ pub struct HostPrefs {
     /// A codec choice key (see [`codec_choice`]).
     pub codec: Option<String>,
     pub bitrate_kbps: Option<u32>,
+    pub auto_bitrate: Option<bool>,
     pub pyrowave_kbps: Option<u32>,
     pub max_fps: Option<u32>,
     pub mouse: Option<String>,
@@ -98,6 +102,7 @@ pub struct Effective {
     pub fullscreen: bool,
     pub codec: String,
     pub bitrate_kbps: u32,
+    pub auto_bitrate: bool,
     pub pyrowave_kbps: u32,
     pub max_fps: u32,
     pub mouse: String,
@@ -218,6 +223,7 @@ impl Default for ClientConfig {
         Self {
             menu_shortcut: "Ctrl+Alt+Shift+M".into(),
             bitrate_kbps: 50_000,
+            auto_bitrate: true,
             max_fps: 120,
             codecs: vec!["hevc".into(), "h264".into()],
             pyrowave_kbps: 400_000,
@@ -250,6 +256,7 @@ impl ClientConfig {
             fullscreen: h.fullscreen.unwrap_or(self.fullscreen),
             codec: h.codec.clone().unwrap_or_else(|| self.codec_key()),
             bitrate_kbps: h.bitrate_kbps.unwrap_or(self.bitrate_kbps),
+            auto_bitrate: h.auto_bitrate.unwrap_or(self.auto_bitrate),
             pyrowave_kbps: h.pyrowave_kbps.unwrap_or(self.pyrowave_kbps),
             max_fps: h.max_fps.unwrap_or(self.max_fps),
             mouse: h.mouse.clone().unwrap_or_else(|| self.mouse.clone()),

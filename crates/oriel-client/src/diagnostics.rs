@@ -65,6 +65,8 @@ pub struct Inputs {
     pub bitrate_mbps: u32,
     pub pyrowave_mbps: u32,
     pub software_decode: bool,
+    /// The host lowers the bitrate by itself.
+    pub auto_bitrate: bool,
     /// The host's protocol version, when it is not ours.
     pub other_protocol: Option<u32>,
     /// Variation in frames' network delay.
@@ -171,10 +173,20 @@ pub fn detect(i: &Inputs) -> Vec<Found> {
                  second got through. Lower the PyroWave bitrate in the Video settings.",
                 i.pyrowave_mbps, host.sent_fps, host.wanted_fps
             )
+        } else if i.auto_bitrate && host.bitrate_kbps > 0 {
+            format!(
+                "The network cannot keep up even with the bitrate lowered to {:.1} Mbit/s: \
+                 {} of {} frames per second got through. A lower frame rate in the Video \
+                 settings helps.",
+                host.bitrate_kbps as f32 / 1000.0,
+                host.sent_fps,
+                host.wanted_fps
+            )
         } else {
             format!(
                 "The network cannot keep up: {} of {} frames per second got through. \
-                 Lower the bitrate ({} Mbit/s) or the frame rate in the Video settings.",
+                 Lower the bitrate ({} Mbit/s) or the frame rate in the Video settings, \
+                 or turn on automatic bitrate.",
                 host.sent_fps, host.wanted_fps, i.bitrate_mbps
             )
         };
@@ -308,6 +320,7 @@ mod tests {
                 wanted_fps: 60,
                 network_limited: false,
                 loss_permille: 0,
+                bitrate_kbps: 50_000,
             }),
             since_pong: Duration::from_millis(300),
             rtt_ms: 3.0,
@@ -319,6 +332,7 @@ mod tests {
             bitrate_mbps: 50,
             pyrowave_mbps: 400,
             software_decode: false,
+            auto_bitrate: false,
             other_protocol: None,
             jitter_ms: 1.0,
             audio_underruns: 0.0,

@@ -102,6 +102,8 @@ pub async fn run(
             encoder: options.encoder.clone(),
             auto_codec: settings.auto_codec,
             pyrowave_kbps: settings.pyrowave_kbps.max(10_000),
+            // The client turns it on with SetAutoBitrate right after.
+            auto_bitrate: false,
         },
         shared.clone(),
         test.clone(),
@@ -261,6 +263,13 @@ pub async fn run(
             rtt_shared
                 .rtt_us
                 .store(rtt_conn.rtt().as_micros() as u64, Ordering::Relaxed);
+            let path = rtt_conn.stats().path;
+            rtt_shared
+                .sent_packets
+                .store(path.sent_packets, Ordering::Relaxed);
+            rtt_shared
+                .lost_packets
+                .store(path.lost_packets, Ordering::Relaxed);
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
     });
@@ -383,6 +392,7 @@ pub async fn run(
                         }
                     }
                     Some(ClientMsg::SetBitrate { kbps }) => { let _ = cmd_tx.send(Cmd::Bitrate(kbps)); }
+                    Some(ClientMsg::SetAutoBitrate { enabled }) => { let _ = cmd_tx.send(Cmd::AutoBitrate(enabled)); }
                     Some(ClientMsg::ClipboardImage { png }) => {
                         if png.len() <= oriel_clipboard::MAX_IMAGE {
                             let _ = clipboard.set.send(oriel_clipboard::Content::Image(png));

@@ -48,6 +48,11 @@ pub async fn run(
         },
         sink,
     );
+    // Automatic bitrate, as in the window (ORIEL_HEADLESS_FIXED_BITRATE
+    // keeps the chosen one).
+    s.send(oriel_proto::ClientMsg::SetAutoBitrate {
+        enabled: std::env::var_os("ORIEL_HEADLESS_FIXED_BITRATE").is_none(),
+    });
     let start = Instant::now();
     let mut frames = 0u64;
     let mut last_report = Instant::now();
@@ -93,6 +98,14 @@ pub async fn run(
             }
             Some(UiEvent::Host(HostMsg::SurfaceStarted(info))) => println!("surface: {info:?}"),
             Some(UiEvent::Host(HostMsg::Notice { text })) => println!("host: {text}"),
+            Some(UiEvent::Host(HostMsg::Health(h))) => println!(
+                "host: sent {} of {} fps, target {:.1} Mbit/s, loss {:.1}%{}",
+                h.sent_fps,
+                h.wanted_fps,
+                h.bitrate_kbps as f32 / 1000.0,
+                h.loss_permille as f32 / 10.0,
+                if h.network_limited { ", network-limited" } else { "" }
+            ),
             Some(UiEvent::Host(HostMsg::CursorShape(c))) => {
                 let opaque = c.rgba.chunks(4).filter(|p| p[3] > 0).count();
                 println!(

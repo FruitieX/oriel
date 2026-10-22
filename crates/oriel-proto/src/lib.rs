@@ -22,7 +22,7 @@ pub const ALPN: &[u8] = b"oriel/1";
 /// when it only checks whether the host is up.
 pub const PROBE_REASON: &[u8] = b"probe";
 
-pub const PROTOCOL_VERSION: u32 = 9;
+pub const PROTOCOL_VERSION: u32 = 10;
 pub const DEFAULT_PORT: u16 = 48600;
 /// Upper bound for a single control/input message.
 pub const MAX_MESSAGE_LEN: usize = 32 * 1024 * 1024;
@@ -185,6 +185,10 @@ pub enum ClientMsg {
     SetAudio {
         enabled: bool,
     },
+    /// Follow the network below the chosen bitrate (on), or keep to it.
+    SetAutoBitrate {
+        enabled: bool,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -256,6 +260,9 @@ pub struct HostHealth {
     pub network_limited: bool,
     /// Packets lost on the way to the client, per mille.
     pub loss_permille: u16,
+    /// The bitrate the encoder aims for (below the client's choice with
+    /// automatic bitrate), kbit/s.
+    pub bitrate_kbps: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -155,6 +155,7 @@ struct FfEncoder {
     input: InputPath,
     device: *mut ff::AVBufferRef,
     name: String,
+    kind: Kind,
     start: Instant,
     last_pts: i64,
 }
@@ -198,6 +199,24 @@ impl FfEncoder {
         )
     }
 
+    /// FFmpeg applies a changed bitrate on the next frame for NVENC (on GPUs
+    /// that support it, checked at open), Quick Sync and x264; the others
+    /// read it only when opened.
+    fn set_bitrate(&mut self, kbps: u32) -> bool {
+        if !matches!(self.kind, Kind::Nvenc | Kind::Qsv | Kind::X264) {
+            return false;
+        }
+        let bit_rate = kbps.max(1000) as i64 * 1000;
+        unsafe {
+            let ctx = &mut *self.ctx;
+            let fps = ctx.framerate.num.max(1) as i64;
+            ctx.bit_rate = bit_rate;
+            ctx.rc_max_rate = bit_rate;
+            ctx.rc_buffer_size = (bit_rate * 2 / fps).min(i32::MAX as i64) as c_int;
+        }
+        true
+    }
+
     fn wants_cpu_input(&self) -> bool {
         match self.input {
             InputPath::Sws { .. } | InputPath::Upload { .. } => true,
@@ -222,6 +241,7 @@ impl FfEncoder {
             device: ptr::null_mut(),
             name: name.to_string(),
             start: Instant::now(),
+            kind,
             last_pts: -1,
         };
         if enc.ctx.is_null() || enc.pkt.is_null() {
@@ -693,6 +713,18 @@ impl Encoder {
             return Ok(Self(EncoderInner::Pyro(enc)));
         }
         Ok(Self(EncoderInner::Ff(FfEncoder::open(config)?)))
+    }
+
+    /// Change the bitrate for the next frames, if this encoder can do that
+    /// without reopening (and so without a keyframe).
+    pub fn set_bitrate(&mut self, kbps: u32) -> bool {
+        match &mut self.0 {
+            EncoderInner::Ff(e) => e.set_bitrate(kbps),
+            EncoderInner::Pyro(e) => {
+                e.set_bitrate(kbps);
+                true
+            }
+        }
     }
 
     pub fn name(&self) -> &str {
