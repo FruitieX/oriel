@@ -74,6 +74,8 @@ pub struct GuiOptions {
     pub quit_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 
+// Not derivable on Windows, where the tray is on by default.
+#[allow(clippy::derivable_impls)]
 impl Default for GuiOptions {
     fn default() -> Self {
         Self {
