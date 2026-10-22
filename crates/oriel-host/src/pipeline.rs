@@ -330,7 +330,9 @@ impl Pipeline {
             }
 
             let now = Instant::now();
-            let next_slot = last_encode + interval;
+            // Some slack so a frame arriving slightly early (capture jitter)
+            // does not wait for the next slot.
+            let next_slot = last_encode + interval * 3 / 4;
             let timeout = if blocked {
                 Duration::from_millis(1)
             } else if has_frame && (dirty || force_key) {
