@@ -1070,7 +1070,15 @@ impl ApplicationHandler<UiEvent> for Viewer {
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         let Some(gfx) = &mut self.gfx else { return };
         let response = gfx.egui.on_window_event(&gfx.window, &event);
-        if response.repaint {
+        // egui-winit asks for a repaint on nearly every event (including
+        // redraws themselves). Video frames drive redraws; the overlay only
+        // needs extra ones while the menu is open or the pointer is on it.
+        let overlay_active = self.menu_open || self.pointer_over_ui || self.closed.is_some();
+        let pointer_only = matches!(event, WindowEvent::CursorMoved { .. });
+        if response.repaint
+            && !matches!(event, WindowEvent::RedrawRequested)
+            && (overlay_active || !pointer_only)
+        {
             gfx.window.request_redraw();
         }
         match event {
