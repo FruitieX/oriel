@@ -45,6 +45,10 @@ display) and the client (connects to hosts).
   link is clean. NVENC, Quick Sync and x264 change it on the fly; other
   encoders are reopened (a keyframe), at most every 2 s. PyroWave keeps its
   own fallback to HEVC.
+- Smoothness (Settings → Video): off by default for the lowest latency;
+  Automatic or a fixed 10–100 ms holds frames so that network jitter does
+  not make motion stutter, showing each frame at its capture time plus the
+  buffer. The statistics show the buffer and how evenly frames are shown.
 - Warnings that explain a slow stream while it lasts: a link that cannot
   carry the bitrate, packet loss, jitter, high latency, sound dropouts, a
   host that stops answering, slow encoding or decoding, and a host on

@@ -222,8 +222,9 @@ impl FfDecoder {
             }
             if dec.export_dmabuf {
                 // Exported frames stay referenced by the renderer for a few
-                // frames; keep enough surfaces for the decoder meanwhile.
-                ctx.extra_hw_frames = 6;
+                // frames, and by the client's smoothing queue (up to 12);
+                // keep enough surfaces for the decoder meanwhile.
+                ctx.extra_hw_frames = 18;
             }
             check(
                 ff::avcodec_open2(dec.ctx, decoder, ptr::null_mut()),

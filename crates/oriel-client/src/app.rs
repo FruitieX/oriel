@@ -126,6 +126,11 @@ pub fn run(
         },
         sink.clone(),
     );
+    session
+        .frames
+        .0
+        .lock()
+        .set_smoothing(crate::playout::Smoothing::parse(&e.smoothing));
     // Hosts before protocol 10 skip this.
     session.send(ClientMsg::SetAutoBitrate {
         enabled: e.auto_bitrate,
@@ -206,6 +211,12 @@ struct Viewer {
     other_protocol: Option<u32>,
     /// Sound underruns counted at the last check.
     underruns: u64,
+    /// The smoothing buffer at the last check (`None`: off).
+    buffer_ms: Option<f32>,
+    /// The last frame shown (when, captured when), and how unevenly frames
+    /// are shown, ms.
+    last_shown: Option<(Instant, u64)>,
+    shown_jitter_ms: f32,
     closed: Option<String>,
     first_frame: Option<Instant>,
     frames_presented: u64,
@@ -274,6 +285,9 @@ impl Viewer {
             diagnosed: Instant::now(),
             other_protocol: None,
             underruns: 0,
+            buffer_ms: None,
+            last_shown: None,
+            shown_jitter_ms: 0.0,
             closed: None,
             first_frame: None,
             frames_presented: 0,
@@ -733,6 +747,14 @@ impl Viewer {
                 s.jitter_ms,
             )
         };
+        let (buffer_ms, late) = {
+            let mut q = self.session.frames.0.lock();
+            let (arrived, late) = q.take_counts();
+            let buffer = (q.smoothing() != crate::playout::Smoothing::Off)
+                .then(|| q.delay().as_secs_f32() * 1000.0);
+            (buffer, late as f32 / arrived.max(1) as f32)
+        };
+        self.buffer_ms = buffer_ms;
         let underruns = self.session.audio_stats().map_or(0, |a| a.underruns);
         let audio_underruns = underruns.saturating_sub(self.underruns) as f32 / elapsed.max(0.001);
         self.underruns = underruns;
@@ -758,6 +780,8 @@ impl Viewer {
             auto_bitrate: self.in_force.auto_bitrate,
             other_protocol: self.other_protocol,
             jitter_ms,
+            buffer_ms,
+            late,
             audio_underruns,
         };
         // Debugging aid: pretend the network is slow, lossy and far away.
@@ -822,6 +846,12 @@ impl Viewer {
                 kbps: new.bitrate_kbps,
             });
         }
+        if old.smoothing != new.smoothing {
+            s.frames
+                .0
+                .lock()
+                .set_smoothing(crate::playout::Smoothing::parse(&new.smoothing));
+        }
         if old.auto_bitrate != new.auto_bitrate {
             s.send(ClientMsg::SetAutoBitrate {
                 enabled: new.auto_bitrate,
@@ -882,7 +912,7 @@ impl Viewer {
     }
 
     fn draw(&mut self) {
-        if let Some(ready) = self.session.frames.take() {
+        if let Some(ready) = self.session.frames.take(Instant::now()) {
             if let Some(gfx) = &mut self.gfx {
                 match ready.picture {
                     crate::decode::Picture::Cpu(frame) => gfx.renderer.upload(&frame),
@@ -900,6 +930,15 @@ impl Viewer {
                 .since_capture(ready.header.capture_us, now)
                 .unwrap_or_else(|| now.duration_since(ready.received));
             self.latency_ms = self.latency_ms * 0.9 + latency.as_secs_f32() * 1000.0 * 0.1;
+            // How evenly frames are shown compared with how they were
+            // captured (RFC 3550's jitter, on the screen).
+            if let Some((shown, captured)) = self.last_shown {
+                let d = (now.duration_since(shown).as_secs_f32() * 1000.0
+                    - (ready.header.capture_us as f32 - captured as f32) / 1000.0)
+                    .abs();
+                self.shown_jitter_ms += (d - self.shown_jitter_ms) / 16.0;
+            }
+            self.last_shown = Some((now, ready.header.capture_us));
             self.first_frame.get_or_insert(now);
             self.frames_presented += 1;
             let _ = ready.decoded;
@@ -1088,7 +1127,7 @@ impl From<&Viewer> for OverlayState {
         let summary = v.session.stats.lock().summary();
         let s = v.session.stats.lock();
         let stats_line = format!(
-            "{} {}×{} · {:.0} fps · {:.1} Mbit/s{} · encode {:.1} ms · decode {:.1} ms · capture→draw {:.1} ms · RTT {:.1} ms · jitter {:.1} ms\n{} · {}",
+            "{} {}×{} · {:.0} fps · {:.1} Mbit/s{} · encode {:.1} ms · decode {:.1} ms · capture→draw {:.1} ms · RTT {:.1} ms · jitter {:.1} ms{} · shown ±{:.1} ms\n{} · {}",
             s.codec,
             s.resolution.0,
             s.resolution.1,
@@ -1103,6 +1142,10 @@ impl From<&Viewer> for OverlayState {
             v.latency_ms,
             v.session.rtt().as_secs_f32() * 1000.0,
             s.jitter_ms,
+            v.buffer_ms
+                .map(|b| format!(" · buffer {b:.0} ms"))
+                .unwrap_or_default(),
+            v.shown_jitter_ms,
             s.decoder,
             v.gfx
                 .as_ref()
@@ -1688,7 +1731,17 @@ impl ApplicationHandler<UiEvent> for Viewer {
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UiEvent) {
         match event {
-            UiEvent::FrameReady => self.request_redraw(),
+            // A buffered frame is drawn when due (see `about_to_wait`).
+            UiEvent::FrameReady => {
+                if self
+                    .session
+                    .frames
+                    .next_due()
+                    .is_none_or(|due| due <= Instant::now())
+                {
+                    self.request_redraw();
+                }
+            }
             UiEvent::HookKeys => {
                 #[cfg(windows)]
                 self.handle_hook_keys();
@@ -1769,13 +1822,18 @@ impl ApplicationHandler<UiEvent> for Viewer {
         // Wake for the clipboard while focused; redraw only for overlays.
         // Diagnostics need a look once a second either way.
         let periodic = self.overlay_ticks() || (self.focused && self.closed.is_none());
-        event_loop.set_control_flow(if periodic {
-            ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(250))
+        let mut wake = if periodic {
+            Some(Instant::now() + Duration::from_millis(250))
         } else if self.closed.is_none() {
-            ControlFlow::WaitUntil(self.diagnosed + Duration::from_secs(1))
+            Some(self.diagnosed + Duration::from_secs(1))
         } else {
-            ControlFlow::Wait
-        });
+            None
+        };
+        // The next buffered frame.
+        if let Some(due) = self.session.frames.next_due() {
+            wake = Some(wake.map_or(due, |w| w.min(due)));
+        }
+        event_loop.set_control_flow(wake.map_or(ControlFlow::Wait, ControlFlow::WaitUntil));
     }
 
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
@@ -1795,6 +1853,14 @@ impl ApplicationHandler<UiEvent> for Viewer {
     fn new_events(&mut self, _event_loop: &ActiveEventLoop, cause: StartCause) {
         if !matches!(cause, StartCause::ResumeTimeReached { .. }) {
             return;
+        }
+        if self
+            .session
+            .frames
+            .next_due()
+            .is_some_and(|due| due <= Instant::now())
+        {
+            self.request_redraw();
         }
         // Redraw once more after the last notice expires, to remove it.
         let notices = self.notices.len();

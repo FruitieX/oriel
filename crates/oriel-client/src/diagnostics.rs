@@ -71,6 +71,10 @@ pub struct Inputs {
     pub other_protocol: Option<u32>,
     /// Variation in frames' network delay.
     pub jitter_ms: f32,
+    /// The smoothing buffer (`None`: off), and the share of frames that
+    /// came too late for it, 0–1.
+    pub buffer_ms: Option<f32>,
+    pub late: f32,
     /// Times a second the sound ran dry.
     pub audio_underruns: f32,
 }
@@ -203,16 +207,29 @@ pub fn detect(i: &Inputs) -> Vec<Found> {
             ),
         ));
     }
-    if i.jitter_ms >= 10.0 && i.fps >= 10.0 {
-        out.push(found(
+    match i.buffer_ms {
+        None if i.jitter_ms >= 10.0 && i.fps >= 10.0 => out.push(found(
             Issue::Jitter,
             format!("Network jitter: {:.0} ms", i.jitter_ms),
             format!(
                 "Frames' network delay varies by about {:.0} ms (jitter), so motion is \
-                 uneven. Busy or weak Wi-Fi is the usual cause: a cable helps.",
+                 uneven. Smoothness in the Video settings evens it out for a little \
+                 latency; a cable instead of Wi-Fi helps too.",
                 i.jitter_ms
             ),
-        ));
+        )),
+        // The buffer absorbs jitter unless frames keep missing it.
+        Some(buffer) if i.late >= 0.05 && i.fps >= 10.0 => out.push(found(
+            Issue::Jitter,
+            format!("{:.0}% of frames late for the buffer", i.late * 100.0),
+            format!(
+                "{:.0}% of frames arrive later than the {buffer:.0} ms smoothing buffer \
+                 allows (jitter {:.0} ms). A larger Smoothness setting evens them out.",
+                i.late * 100.0,
+                i.jitter_ms
+            ),
+        )),
+        _ => {}
     }
     if i.audio_underruns >= 2.0 {
         out.push(found(
@@ -335,6 +352,8 @@ mod tests {
             auto_bitrate: false,
             other_protocol: None,
             jitter_ms: 1.0,
+            buffer_ms: None,
+            late: 0.0,
             audio_underruns: 0.0,
         }
     }
@@ -391,6 +410,16 @@ mod tests {
             issues(&i),
             [Issue::Version, Issue::Jitter, Issue::AudioDropouts]
         );
+
+        // A smoothing buffer that holds: no jitter warning; one that does
+        // not: a warning about late frames.
+        let mut i = healthy();
+        i.jitter_ms = 15.0;
+        i.buffer_ms = Some(40.0);
+        assert!(issues(&i).is_empty());
+        i.late = 0.2;
+        assert_eq!(issues(&i), [Issue::Jitter]);
+        assert!(detect(&i)[0].detail.contains("40 ms"));
     }
 
     #[test]

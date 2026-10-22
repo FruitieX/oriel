@@ -85,7 +85,7 @@ pub async fn run(
         };
         match ev {
             Some(UiEvent::FrameReady) => {
-                if let Some(ready) = s.frames.take() {
+                if let Some(ready) = s.frames.take(Instant::now()) {
                     frames += 1;
                     if let Some(l) = s
                         .clock
@@ -104,7 +104,11 @@ pub async fn run(
                 h.wanted_fps,
                 h.bitrate_kbps as f32 / 1000.0,
                 h.loss_permille as f32 / 10.0,
-                if h.network_limited { ", network-limited" } else { "" }
+                if h.network_limited {
+                    ", network-limited"
+                } else {
+                    ""
+                }
             ),
             Some(UiEvent::Host(HostMsg::CursorShape(c))) => {
                 let opaque = c.rgba.chunks(4).filter(|p| p[3] > 0).count();

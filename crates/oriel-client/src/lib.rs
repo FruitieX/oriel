@@ -7,6 +7,7 @@ pub mod config;
 pub mod connection;
 mod decode;
 mod diagnostics;
+mod playout;
 
 /// Name the window after the app, so desktops match it to oriel.desktop
 /// (the Wayland app id / X11 WM_CLASS) for its name and icon.

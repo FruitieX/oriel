@@ -349,6 +349,10 @@ pub fn start(
     let limit_kbps: Option<u64> = std::env::var("ORIEL_DEBUG_LIMIT_KBPS")
         .ok()
         .and_then(|v| v.parse().ok());
+    // Debugging aid: hold up every third frame this many ms (jitter).
+    let jitter_ms: Option<u64> = std::env::var("ORIEL_DEBUG_JITTER_MS")
+        .ok()
+        .and_then(|v| v.parse().ok());
     tokio::spawn(async move {
         let result: Result<()> = async {
             loop {
@@ -361,6 +365,11 @@ pub fn start(
                 let local_us = frame_clock.lock().local_us(Instant::now());
                 frame_stats.lock().arrived(header.capture_us, local_us);
                 let data = stream.read_to_end(256 * 1024 * 1024).await?;
+                if let Some(ms) = jitter_ms
+                    && header.seq.is_multiple_of(3)
+                {
+                    tokio::time::sleep(Duration::from_millis(ms)).await;
+                }
                 if let Some(kbps) = limit_kbps {
                     let secs = data.len() as f64 * 8.0 / (kbps as f64 * 1000.0);
                     tokio::time::sleep(Duration::from_secs_f64(secs)).await;

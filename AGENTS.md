@@ -42,6 +42,11 @@ Read [docs/architecture.md](docs/architecture.md) first.
   `ORIEL_DEBUG_DIALOG=settings[-<tab>]` or `host-settings[-<tab>]` (the
   first paired host) opens the settings on a tab, and
   `ORIEL_DEBUG_LAUNCHER_SIZE=420x400` sizes the start window.
+- Bad networks on one machine: the client's `ORIEL_DEBUG_LIMIT_KBPS=N`
+  emulates a slow link (automatic bitrate should cut within a second),
+  `ORIEL_DEBUG_JITTER_MS=N` holds up every third frame (compare Smoothness
+  off and automatic by the statistics' "shown ±" figure), and
+  `ORIEL_DEBUG_BAD_NETWORK=1` fakes the numbers behind the warnings.
 - Machines without a sound card: point `HOME` at a directory whose
   `.asoundrc` sets `pcm.!default { type null }`.
 - Headless GNOME host: run `gnome-shell --headless --wayland

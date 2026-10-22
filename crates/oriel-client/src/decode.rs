@@ -42,17 +42,37 @@ pub struct Ready {
     pub decoded: Instant,
 }
 
-/// The newest decoded frame, waiting to be drawn.
-#[derive(Clone, Default)]
-pub struct FrameSlot(Arc<Mutex<Option<Ready>>>);
+/// Decoded frames waiting to be drawn, each when it is due (see
+/// [`crate::playout`]).
+#[derive(Clone)]
+pub struct FrameSlot(pub Arc<Mutex<crate::playout::Playout<Ready>>>);
+
+impl Default for FrameSlot {
+    fn default() -> Self {
+        Self(Arc::new(Mutex::new(crate::playout::Playout::new(
+            crate::playout::Smoothing::Off,
+        ))))
+    }
+}
 
 impl FrameSlot {
-    pub fn take(&self) -> Option<Ready> {
-        self.0.lock().take()
+    /// The frame to draw now, if any.
+    pub fn take(&self, now: Instant) -> Option<Ready> {
+        self.0.lock().pop_due(now)
+    }
+
+    /// When the next queued frame is due (never without smoothing).
+    pub fn next_due(&self) -> Option<Instant> {
+        self.0.lock().next_due()
+    }
+
+    fn buffered(&self) -> bool {
+        self.0.lock().smoothing() != crate::playout::Smoothing::Off
     }
 
     fn put(&self, ready: Ready) {
-        *self.0.lock() = Some(ready);
+        let (capture_us, decoded) = (ready.header.capture_us, ready.decoded);
+        self.0.lock().push(capture_us, decoded, ready);
     }
 }
 
@@ -64,9 +84,10 @@ pub type InteropSlot = Arc<Mutex<Option<()>>>;
 
 pub type Job = (FrameHeader, Vec<u8>, Instant);
 
-/// Plane sets cycled through, so the one being drawn is not overwritten.
+/// Plane sets cycled through, so the ones queued or being drawn are not
+/// overwritten.
 #[cfg(not(target_os = "macos"))]
-const GPU_SETS: usize = 3;
+const GPU_SETS: usize = 4 + crate::playout::MAX_QUEUED;
 
 /// VAAPI surfaces imported as textures, by surface.
 #[cfg(target_os = "linux")]
@@ -317,8 +338,9 @@ pub fn spawn(
                                 header.encode_us,
                                 header.keyframe,
                             );
-                            // Only the newest frame matters to the renderer.
-                            if rx.is_empty() {
+                            // Without smoothing only the newest frame matters
+                            // to the renderer.
+                            if rx.is_empty() || slot.buffered() {
                                 slot.put(Ready {
                                     picture,
                                     header,

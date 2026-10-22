@@ -7,8 +7,8 @@ use oriel_proto::{Codec, VirtualMode};
 
 use crate::{
     config::{
-        CODEC_CHOICES, ClientConfig, HostPrefs, MENU_BUTTON_STYLES, MOUSE_MODES, WARNING_STYLES,
-        codec_choice_strings, format_resolution, format_virtual_mode,
+        CODEC_CHOICES, ClientConfig, HostPrefs, MENU_BUTTON_STYLES, MOUSE_MODES, SMOOTHING_CHOICES,
+        WARNING_STYLES, codec_choice_strings, format_resolution, format_virtual_mode,
     },
     keymap::{Command, Shortcut},
     theme::{self, AMBER},
@@ -575,6 +575,16 @@ fn video_tab(ui: &mut Ui, rows: &mut Rows, live: Option<&Live>) {
             |c| c.pyrowave_kbps,
             |c, v| c.pyrowave_kbps = v,
             |h| &mut h.pyrowave_kbps,
+        );
+        rows.choice(
+            ui,
+            "Smoothness",
+            "Holds frames briefly so that uneven network delay (jitter) does not \
+             make motion stutter; adds that much latency",
+            |c| c.smoothing.clone(),
+            |c, v| c.smoothing = v,
+            |h| &mut h.smoothing,
+            &SMOOTHING_CHOICES,
         );
         rows.row(
             ui,

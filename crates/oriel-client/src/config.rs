@@ -21,6 +21,9 @@ pub struct ClientConfig {
     /// Lower the bitrate (below `bitrate_kbps`) while the network cannot
     /// carry it.
     pub auto_bitrate: bool,
+    /// Hold frames briefly to even out network jitter: "off" (lowest
+    /// latency), "auto", or milliseconds.
+    pub smoothing: String,
     pub max_fps: u32,
     /// Most preferred first: "hevc", "h264", "av1", "pyrowave", or just
     /// "auto" (PyroWave when the link allows, else HEVC/H.264).
@@ -74,6 +77,7 @@ pub struct HostPrefs {
     pub codec: Option<String>,
     pub bitrate_kbps: Option<u32>,
     pub auto_bitrate: Option<bool>,
+    pub smoothing: Option<String>,
     pub pyrowave_kbps: Option<u32>,
     pub max_fps: Option<u32>,
     pub mouse: Option<String>,
@@ -103,6 +107,7 @@ pub struct Effective {
     pub codec: String,
     pub bitrate_kbps: u32,
     pub auto_bitrate: bool,
+    pub smoothing: String,
     pub pyrowave_kbps: u32,
     pub max_fps: u32,
     pub mouse: String,
@@ -178,6 +183,18 @@ pub const MENU_BUTTON_STYLES: [(&str, &str); 4] = [
     ("hidden", "Hidden (use the shortcut)"),
 ];
 
+/// Smoothing choices, as (key, label).
+pub const SMOOTHING_CHOICES: [(&str, &str); 8] = [
+    ("off", "Off (lowest latency)"),
+    ("auto", "Automatic (as jitter needs)"),
+    ("10", "10 ms"),
+    ("20", "20 ms"),
+    ("35", "35 ms"),
+    ("50", "50 ms"),
+    ("75", "75 ms"),
+    ("100", "100 ms"),
+];
+
 /// How connection warnings are shown, as (key, label).
 pub const WARNING_STYLES: [(&str, &str); 3] = [
     ("detailed", "Detailed, with what to try"),
@@ -224,6 +241,7 @@ impl Default for ClientConfig {
             menu_shortcut: "Ctrl+Alt+Shift+M".into(),
             bitrate_kbps: 50_000,
             auto_bitrate: true,
+            smoothing: "off".into(),
             max_fps: 120,
             codecs: vec!["hevc".into(), "h264".into()],
             pyrowave_kbps: 400_000,
@@ -257,6 +275,10 @@ impl ClientConfig {
             codec: h.codec.clone().unwrap_or_else(|| self.codec_key()),
             bitrate_kbps: h.bitrate_kbps.unwrap_or(self.bitrate_kbps),
             auto_bitrate: h.auto_bitrate.unwrap_or(self.auto_bitrate),
+            smoothing: h
+                .smoothing
+                .clone()
+                .unwrap_or_else(|| self.smoothing.clone()),
             pyrowave_kbps: h.pyrowave_kbps.unwrap_or(self.pyrowave_kbps),
             max_fps: h.max_fps.unwrap_or(self.max_fps),
             mouse: h.mouse.clone().unwrap_or_else(|| self.mouse.clone()),
