@@ -160,7 +160,7 @@ pub async fn run(
                     None => break,
                     Some(Event::Frame(header, data)) => send_frame(&conn, header, data, &shared).await,
                     Some(Event::Surface(info)) => {
-                        status.lock().codec = Some(info.codec.name().to_string());
+                        status.lock().set_codec(conn.stable_id(), info.codec.name());
                         write_msg(&mut ctl_send, &HostMsg::SurfaceStarted(info)).await?
                     }
                     Some(Event::CursorShape(shape)) => {

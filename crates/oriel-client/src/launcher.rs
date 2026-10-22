@@ -29,14 +29,28 @@ use crate::{
     session::UiEvent,
 };
 
-/// Lets the launcher start and stop hosting this computer.
+/// A client connected to this computer's host.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SharedClient {
+    pub id: usize,
+    pub name: String,
+    pub address: String,
+    pub codec: Option<String>,
+}
+
+/// Lets the app start, stop and watch hosting this computer.
 pub trait HostControl {
-    /// Start sharing; returns the PIN clients pair with.
-    fn start(&mut self) -> Result<String>;
+    fn start(&mut self) -> Result<()>;
     fn stop(&mut self);
     fn is_running(&self) -> bool;
     /// What would be shared, e.g. "Display 1 (2560×1440)".
     fn description(&self) -> String;
+    fn host_name(&self) -> String;
+    fn clients(&self) -> Vec<SharedClient>;
+    fn kick(&self, id: usize);
+    /// Accept pairing requests with a fresh PIN, which is returned.
+    fn allow_pairing(&mut self) -> Option<String>;
+    fn pairing_pin(&self) -> Option<String>;
 }
 
 pub struct GuiOptions {
@@ -47,6 +61,32 @@ pub struct GuiOptions {
     pub viewer: Option<ViewerOptions>,
     /// Quit when the first viewer window is closed (`oriel connect`).
     pub quit_with_viewer: bool,
+    /// Keep running in the tray when the window is closed (Windows).
+    pub tray: bool,
+    /// Start in the tray without opening the window.
+    pub start_hidden: bool,
+    /// Start sharing this computer right away.
+    pub start_sharing: bool,
+    /// Offered as "Open log" in the tray.
+    pub log_path: Option<std::path::PathBuf>,
+    /// Set from elsewhere to make the app quit (e.g. to restart into an
+    /// update).
+    pub quit_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
+}
+
+impl Default for GuiOptions {
+    fn default() -> Self {
+        Self {
+            connect: None,
+            viewer: None,
+            quit_with_viewer: false,
+            tray: cfg!(windows),
+            start_hidden: false,
+            start_sharing: false,
+            log_path: None,
+            quit_flag: None,
+        }
+    }
 }
 
 /// A small window icon: a frame with a lit pane.
@@ -83,7 +123,29 @@ pub fn run(
     options: GuiOptions,
 ) -> Result<()> {
     let mut event_loop = EventLoop::<UiEvent>::with_user_event().build()?;
+    #[cfg(windows)]
+    let tray = if options.tray {
+        match crate::tray::Tray::new(options.log_path.is_some()) {
+            Ok(t) => Some(t),
+            Err(e) => {
+                tracing::error!("cannot show the tray icon: {e:#}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    #[cfg(not(windows))]
+    let tray: Option<()> = None;
     let mut launcher = Launcher {
+        has_tray: tray.is_some(),
+        #[cfg(windows)]
+        tray,
+        window_wanted: !(options.start_hidden && options.connect.is_none()),
+        log_path: options.log_path.clone(),
+        quit_flag: options.quit_flag.clone(),
+        quit: false,
+        tray_updated: Instant::now(),
         config: ClientConfig::load(&paths).unwrap_or_default(),
         paths,
         host,
@@ -96,7 +158,6 @@ pub fn run(
         pair_address: String::new(),
         pair_pin: String::new(),
         pair_name: String::new(),
-        host_pin: None,
         status: String::new(),
         reconnect: None,
         result: None,
@@ -107,6 +168,12 @@ pub fn run(
     launcher.egui_ctx.set_visuals(egui::Visuals::dark());
     launcher.shortcut_text = launcher.config.menu_shortcut.clone();
     launcher.reload_hosts();
+    if options.start_sharing
+        && let Some(host) = &mut launcher.host
+        && let Err(e) = host.start()
+    {
+        launcher.status = format!("Cannot share this computer: {e:#}");
+    }
     if let Some(target) = &options.connect {
         launcher.connect(target.clone());
     }
@@ -116,8 +183,12 @@ pub fn run(
         launcher.result = None;
         event_loop.run_app_on_demand(&mut launcher)?;
         let Some(LauncherResult::Connected(connected, target)) = launcher.result.take() else {
-            break;
+            if launcher.quit || !launcher.has_tray {
+                break;
+            }
+            continue;
         };
+        launcher.window_wanted = true;
         let viewer_options = match &options.viewer {
             Some(v) => ViewerOptions {
                 target: target.clone(),
@@ -127,7 +198,7 @@ pub fn run(
         };
         let exit = app::run(&mut event_loop, &launcher.rt, connected, viewer_options)?;
         tracing::info!(?exit, "viewer ended");
-        let quit = options.quit_with_viewer && first_viewer;
+        let quit = options.quit_with_viewer && first_viewer && !launcher.has_tray;
         first_viewer = false;
         match exit {
             ViewerExit::Closed if quit => break,
@@ -170,6 +241,17 @@ struct Reconnect {
 type Pending<T> = Arc<Mutex<Option<Result<T>>>>;
 
 struct Launcher {
+    #[cfg(windows)]
+    tray: Option<crate::tray::Tray>,
+    has_tray: bool,
+    /// Whether the window should be open (it can be closed to the tray).
+    window_wanted: bool,
+    #[cfg_attr(not(windows), allow(dead_code))]
+    log_path: Option<std::path::PathBuf>,
+    quit_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
+    quit: bool,
+    #[cfg_attr(not(windows), allow(dead_code))]
+    tray_updated: Instant,
     paths: Paths,
     config: ClientConfig,
     host: Option<Box<dyn HostControl>>,
@@ -182,7 +264,6 @@ struct Launcher {
     pair_address: String,
     pair_pin: String,
     pair_name: String,
-    host_pin: Option<String>,
     status: String,
     reconnect: Option<Reconnect>,
     result: Option<LauncherResult>,
@@ -197,6 +278,8 @@ enum Action {
     Pair,
     StartHosting,
     StopHosting,
+    AllowPairing,
+    Kick(usize),
     CancelReconnect,
     SaveSettings,
 }
@@ -278,7 +361,7 @@ impl Launcher {
             Action::StartHosting => {
                 if let Some(host) = &mut self.host {
                     match host.start() {
-                        Ok(pin) => self.host_pin = Some(pin),
+                        Ok(()) => self.set_sharing_preference(true),
                         Err(e) => self.status = format!("Cannot share this computer: {e:#}"),
                     }
                 }
@@ -287,7 +370,17 @@ impl Launcher {
                 if let Some(host) = &mut self.host {
                     host.stop();
                 }
-                self.host_pin = None;
+                self.set_sharing_preference(false);
+            }
+            Action::AllowPairing => {
+                if let Some(host) = &mut self.host {
+                    host.allow_pairing();
+                }
+            }
+            Action::Kick(id) => {
+                if let Some(host) = &self.host {
+                    host.kick(id);
+                }
             }
             Action::CancelReconnect => {
                 self.reconnect = None;
@@ -305,6 +398,105 @@ impl Launcher {
                 if let Err(e) = self.config.save(&self.paths) {
                     self.status = format!("Cannot save settings: {e:#}");
                 }
+            }
+        }
+    }
+
+    /// Remember whether to share on the next start.
+    fn set_sharing_preference(&mut self, share: bool) {
+        if self.config.share != share {
+            self.config.share = share;
+            let _ = self.config.save(&self.paths);
+        }
+    }
+
+    #[cfg_attr(not(windows), allow(dead_code))]
+    fn open_window(&mut self, event_loop: &ActiveEventLoop) {
+        self.window_wanted = true;
+        if let Some((window, ..)) = &self.gfx {
+            window.focus_window();
+            window.request_redraw();
+        } else {
+            self.create_window(event_loop);
+        }
+    }
+
+    fn create_window(&mut self, event_loop: &ActiveEventLoop) {
+        let attrs = Window::default_attributes()
+            .with_title("oriel")
+            .with_window_icon(icon())
+            .with_inner_size(winit::dpi::LogicalSize::new(620.0, 680.0));
+        let window = match event_loop.create_window(attrs) {
+            Ok(w) => Arc::new(w),
+            Err(e) => {
+                tracing::error!("cannot create window: {e}");
+                if !self.has_tray {
+                    event_loop.exit();
+                }
+                return;
+            }
+        };
+        let renderer = match Renderer::new(window.clone()) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::error!("cannot initialise rendering: {e:#}");
+                if !self.has_tray {
+                    event_loop.exit();
+                }
+                return;
+            }
+        };
+        let egui = egui_winit::State::new(
+            self.egui_ctx.clone(),
+            egui::ViewportId::ROOT,
+            &window,
+            Some(window.scale_factor() as f32),
+            None,
+            Some(renderer.device.limits().max_texture_dimension_2d as usize),
+        );
+        window.request_redraw();
+        self.gfx = Some((window, renderer, egui));
+        self.opened = Instant::now();
+    }
+
+    /// Handle tray menu clicks and keep its status current.
+    #[cfg(windows)]
+    fn poll_tray(&mut self, event_loop: &ActiveEventLoop) {
+        use crate::tray::TrayAction;
+        let Some(tray) = &self.tray else { return };
+        for action in tray.poll() {
+            match action {
+                TrayAction::Open => self.open_window(event_loop),
+                TrayAction::Kick(id) => self.apply(Action::Kick(id)),
+                TrayAction::AllowPairing => {
+                    self.apply(Action::AllowPairing);
+                    // The PIN is shown in the window's sharing section.
+                    self.open_window(event_loop);
+                }
+                TrayAction::ToggleSharing => {
+                    let running = self.host.as_ref().is_some_and(|h| h.is_running());
+                    self.apply(if running {
+                        Action::StopHosting
+                    } else {
+                        Action::StartHosting
+                    });
+                }
+                TrayAction::OpenLog => {
+                    if let Some(log) = &self.log_path {
+                        let _ = std::process::Command::new("notepad.exe").arg(log).spawn();
+                    }
+                }
+                TrayAction::Quit => {
+                    self.quit = true;
+                    event_loop.exit();
+                }
+            }
+        }
+        if self.tray_updated.elapsed() > Duration::from_millis(500) {
+            self.tray_updated = Instant::now();
+            let host = self.host.as_deref();
+            if let Some(tray) = &mut self.tray {
+                tray.update(host);
             }
         }
     }
@@ -420,11 +612,39 @@ impl Launcher {
                 ui.label(egui::RichText::new("Share this computer").strong());
                 ui.label(host.description());
                 if host.is_running() {
-                    if let Some(pin) = &self.host_pin {
-                        ui.label(format!("Sharing. Pair a client with PIN {pin}"));
+                    ui.horizontal(|ui| {
+                        ui.label(format!("Sharing as {}.", host.host_name()));
+                        if ui.button("Stop sharing").clicked() {
+                            actions.push(Action::StopHosting);
+                        }
+                    });
+                    match host.pairing_pin() {
+                        Some(pin) => {
+                            ui.label(
+                                egui::RichText::new(format!("Pairing PIN: {pin}"))
+                                    .size(20.0)
+                                    .strong(),
+                            );
+                            ui.label("Enter it under \"Pair with a host\" on the other computer.");
+                        }
+                        None => {
+                            if ui.button("Allow pairing a new device").clicked() {
+                                actions.push(Action::AllowPairing);
+                            }
+                        }
                     }
-                    if ui.button("Stop sharing").clicked() {
-                        actions.push(Action::StopHosting);
+                    let clients = host.clients();
+                    if clients.is_empty() {
+                        ui.label("Nobody is connected.");
+                    }
+                    for c in clients {
+                        ui.horizontal(|ui| {
+                            let codec = c.codec.as_deref().map(|c| format!(" · {c}")).unwrap_or_default();
+                            ui.label(format!("{} ({}){codec}", c.name, c.address));
+                            if ui.small_button("Disconnect").clicked() {
+                                actions.push(Action::Kick(c.id));
+                            }
+                        });
                     }
                 } else if ui.button("Share").clicked() {
                     actions.push(Action::StartHosting);
@@ -515,40 +735,9 @@ fn codec_label(value: &str) -> &'static str {
 
 impl ApplicationHandler<UiEvent> for Launcher {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.gfx.is_some() {
-            return;
+        if self.gfx.is_none() && self.window_wanted {
+            self.create_window(event_loop);
         }
-        let attrs = Window::default_attributes()
-            .with_title("oriel")
-            .with_window_icon(icon())
-            .with_inner_size(winit::dpi::LogicalSize::new(620.0, 640.0));
-        let window = match event_loop.create_window(attrs) {
-            Ok(w) => Arc::new(w),
-            Err(e) => {
-                tracing::error!("cannot create window: {e}");
-                event_loop.exit();
-                return;
-            }
-        };
-        let renderer = match Renderer::new(window.clone()) {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::error!("cannot initialise rendering: {e:#}");
-                event_loop.exit();
-                return;
-            }
-        };
-        let egui = egui_winit::State::new(
-            self.egui_ctx.clone(),
-            egui::ViewportId::ROOT,
-            &window,
-            Some(window.scale_factor() as f32),
-            None,
-            Some(renderer.device.limits().max_texture_dimension_2d as usize),
-        );
-        window.request_redraw();
-        self.gfx = Some((window, renderer, egui));
-        self.opened = Instant::now();
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -559,7 +748,15 @@ impl ApplicationHandler<UiEvent> for Launcher {
             window.request_redraw();
         }
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::CloseRequested => {
+                if self.has_tray {
+                    // Keep running in the tray.
+                    self.gfx = None;
+                    self.window_wanted = false;
+                } else {
+                    event_loop.exit();
+                }
+            }
             WindowEvent::Resized(size) => {
                 renderer.resize(size.width, size.height);
                 window.request_redraw();
@@ -604,7 +801,13 @@ impl ApplicationHandler<UiEvent> for Launcher {
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         // Debugging aid: ORIEL_DEBUG_SCREENSHOT=path saves the launcher and quits.
         if let Some(path) = std::env::var_os("ORIEL_DEBUG_SCREENSHOT")
-            && self.opened.elapsed() > Duration::from_secs(1)
+            && self.opened.elapsed()
+                > Duration::from_secs_f64(
+                    std::env::var("ORIEL_DEBUG_SCREENSHOT_AFTER")
+                        .ok()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(1.0),
+                )
             && let Some((window, renderer, _)) = &mut self.gfx
         {
             if renderer.screenshot.is_none() && !self.screenshot_taken {
@@ -617,8 +820,24 @@ impl ApplicationHandler<UiEvent> for Launcher {
             }
         }
         self.poll(event_loop);
-        let waiting =
-            self.connecting.is_some() || self.pairing.is_some() || self.reconnect.is_some();
+        #[cfg(windows)]
+        self.poll_tray(event_loop);
+        if self
+            .quit_flag
+            .as_ref()
+            .is_some_and(|f| f.load(std::sync::atomic::Ordering::Relaxed))
+        {
+            self.quit = true;
+            event_loop.exit();
+            return;
+        }
+        // The tray and the sharing status need polling.
+        let sharing = self.host.as_ref().is_some_and(|h| h.is_running());
+        let waiting = self.has_tray
+            || (sharing && self.gfx.is_some())
+            || self.connecting.is_some()
+            || self.pairing.is_some()
+            || self.reconnect.is_some();
         event_loop.set_control_flow(if waiting {
             ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(100))
         } else {

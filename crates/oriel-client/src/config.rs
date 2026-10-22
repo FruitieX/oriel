@@ -25,6 +25,8 @@ pub struct ClientConfig {
     pub audio: bool,
     pub fullscreen: bool,
     pub show_stats: bool,
+    /// Share this computer when oriel starts.
+    pub share: bool,
 }
 
 impl Default for ClientConfig {
@@ -39,6 +41,7 @@ impl Default for ClientConfig {
             audio: true,
             fullscreen: false,
             show_stats: false,
+            share: false,
         }
     }
 }

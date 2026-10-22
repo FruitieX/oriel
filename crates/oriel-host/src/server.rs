@@ -33,6 +33,7 @@ struct Host {
     test: TestState,
     pairing: Arc<Mutex<PairingState>>,
     status: Arc<Mutex<HostStatus>>,
+    sessions: Arc<Mutex<Vec<quinn::Connection>>>,
     /// The connection currently streaming, replaced by newer sessions.
     active: Mutex<Option<quinn::Connection>>,
 }
@@ -42,12 +43,28 @@ struct PairingState {
     failures: u32,
 }
 
+/// A client with an open session.
+#[derive(Debug, Clone)]
+pub struct ClientInfo {
+    /// Identifies the session for [`HostControl::kick`].
+    pub id: usize,
+    pub name: String,
+    pub address: SocketAddr,
+    pub codec: Option<String>,
+}
+
 /// What the host is doing, for a tray icon or status display.
 #[derive(Debug, Clone, Default)]
 pub struct HostStatus {
-    /// The client currently streaming.
-    pub client: Option<String>,
-    pub codec: Option<String>,
+    pub clients: Vec<ClientInfo>,
+}
+
+impl HostStatus {
+    pub(crate) fn set_codec(&mut self, id: usize, codec: &str) {
+        if let Some(c) = self.clients.iter_mut().find(|c| c.id == id) {
+            c.codec = Some(codec.to_string());
+        }
+    }
 }
 
 /// Lets a UI watch a running host and allow pairing.
@@ -55,6 +72,7 @@ pub struct HostStatus {
 pub struct HostControl {
     pairing: Arc<Mutex<PairingState>>,
     status: Arc<Mutex<HostStatus>>,
+    sessions: Arc<Mutex<Vec<quinn::Connection>>>,
 }
 
 impl HostControl {
@@ -62,7 +80,21 @@ impl HostControl {
         Self {
             pairing: Arc::new(Mutex::new(PairingState { pin, failures: 0 })),
             status: Default::default(),
+            sessions: Default::default(),
         }
+    }
+
+    /// End a client's session.
+    pub fn kick(&self, id: usize) {
+        if let Some(conn) = self.sessions.lock().iter().find(|c| c.stable_id() == id) {
+            tracing::info!(remote = %conn.remote_address(), "disconnecting client");
+            conn.close(3u32.into(), b"disconnected by the host");
+        }
+    }
+
+    /// Stop accepting pairing requests.
+    pub fn stop_pairing(&self) {
+        self.pairing.lock().pin = None;
     }
 
     pub fn status(&self) -> HostStatus {
@@ -126,6 +158,7 @@ pub async fn run_with(paths: Paths, options: HostOptions, control: HostControl) 
     let host = Arc::new(Host {
         pairing: control.pairing.clone(),
         status: control.status.clone(),
+        sessions: control.sessions.clone(),
         options: Arc::new(options),
         paths,
         identity,
@@ -202,7 +235,14 @@ impl Host {
         if let Some(previous) = self.active.lock().replace(conn.clone()) {
             previous.close(1u32.into(), b"another session took over");
         }
-        self.status.lock().client = Some(name.clone());
+        let id = conn.stable_id();
+        self.sessions.lock().push(conn.clone());
+        self.status.lock().clients.push(ClientInfo {
+            id,
+            name: name.clone(),
+            address: remote,
+            codec: None,
+        });
         let result = crate::session::run(
             conn.clone(),
             ctl,
@@ -217,8 +257,10 @@ impl Host {
             .is_some_and(|c| c.stable_id() == conn.stable_id())
         {
             *active = None;
-            *self.status.lock() = HostStatus::default();
         }
+        drop(active);
+        self.sessions.lock().retain(|c| c.stable_id() != id);
+        self.status.lock().clients.retain(|c| c.id != id);
         conn.close(0u32.into(), b"bye");
         result
     }

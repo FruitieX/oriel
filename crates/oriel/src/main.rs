@@ -4,8 +4,6 @@
 // terminal attach to it (see `attach_console`).
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
-#[cfg(windows)]
-mod tray;
 mod update;
 
 use std::{net::SocketAddr, path::PathBuf, time::Duration};
@@ -225,14 +223,19 @@ fn run() -> Result<()> {
     oriel_media::init_logging();
 
     let Some(command) = cli.command else {
+        let config = oriel_client::config::ClientConfig::load(&paths).unwrap_or_default();
+        let log_path = cli.log_file.clone();
         return oriel_client::launcher::run(
             runtime()?,
             paths.clone(),
-            Some(Box::new(LocalHost::new(paths)?)),
+            Some(Box::new(LocalHost::new(
+                paths,
+                LocalHost::default_options(None),
+            )?)),
             oriel_client::launcher::GuiOptions {
-                connect: None,
-                viewer: None,
-                quit_with_viewer: false,
+                start_sharing: config.share,
+                log_path,
+                ..Default::default()
             },
         );
     };
@@ -299,21 +302,38 @@ fn run() -> Result<()> {
                 default_bitrate_kbps: bitrate,
             };
             let tray = cfg!(windows) && !no_tray;
+            let restart = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
             if let Some(src) = update_from {
+                let flag = restart.clone();
                 update::watch(src, move || {
-                    #[cfg(windows)]
                     if tray {
-                        tray::RESTART.store(true, std::sync::atomic::Ordering::Relaxed);
-                        return;
+                        // Let the app close its window and tray icon first.
+                        flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                    } else {
+                        update::relaunch();
                     }
-                    update::relaunch();
                 });
             }
-            #[cfg(windows)]
             if tray {
-                return tray::run_host(runtime()?, paths, options, log_path);
+                // The app in the tray, sharing; the window opens from there.
+                let result = oriel_client::launcher::run(
+                    runtime()?,
+                    paths.clone(),
+                    Some(Box::new(LocalHost::new(paths, options)?)),
+                    oriel_client::launcher::GuiOptions {
+                        start_hidden: true,
+                        start_sharing: true,
+                        log_path,
+                        quit_flag: Some(restart.clone()),
+                        ..Default::default()
+                    },
+                );
+                if restart.load(std::sync::atomic::Ordering::Relaxed) {
+                    update::relaunch();
+                }
+                return result;
             }
-            let _ = (tray, log_path);
+            let _ = log_path;
             runtime()?.block_on(oriel_host::run(paths, options))
         }
         Command::Pair { address, pin, name } => {
@@ -398,6 +418,8 @@ fn run() -> Result<()> {
                             .map(|p| (p, Duration::from_secs_f64(screenshot_after))),
                     }),
                     quit_with_viewer: true,
+                    tray: false,
+                    ..Default::default()
                 },
             )
         }
@@ -528,56 +550,66 @@ fn service(_cmd: ServiceCommand) -> Result<()> {
     bail!("the host service is only available on Windows; run `oriel host` instead")
 }
 
-/// "Share this computer" in the launcher: runs the host inside this process.
+/// Hosting inside the app ("Share this computer" and the tray).
 struct LocalHost {
     paths: Paths,
+    options: oriel_host::HostOptions,
     rt: tokio::runtime::Runtime,
+    control: oriel_host::HostControl,
     task: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl LocalHost {
-    fn new(paths: Paths) -> Result<Self> {
+    fn new(paths: Paths, options: oriel_host::HostOptions) -> Result<Self> {
         Ok(Self {
+            control: oriel_host::HostControl::new(options.pair_pin.clone()),
             paths,
+            options,
             rt: runtime()?,
             task: None,
         })
     }
 
-    fn source() -> oriel_host::SourceKind {
-        if cfg!(windows) {
-            oriel_host::SourceKind::Auto
-        } else {
-            oriel_host::SourceKind::TestPattern
+    fn default_options(pin: Option<String>) -> oriel_host::HostOptions {
+        oriel_host::HostOptions {
+            listen: SocketAddr::from(([0, 0, 0, 0], DEFAULT_PORT)),
+            name: oriel_client::connection::device_name(),
+            source: if cfg!(windows) {
+                oriel_host::SourceKind::Auto
+            } else {
+                oriel_host::SourceKind::TestPattern
+            },
+            pair_pin: pin,
+            encoder: None,
+            codec: None,
+            default_bitrate_kbps: 30_000,
         }
     }
 }
 
 impl oriel_client::launcher::HostControl for LocalHost {
-    fn start(&mut self) -> Result<String> {
-        let pin = oriel_net::pairing::generate_pin();
-        let options = oriel_host::HostOptions {
-            listen: SocketAddr::from(([0, 0, 0, 0], DEFAULT_PORT)),
-            name: oriel_client::connection::device_name(),
-            source: Self::source(),
-            pair_pin: Some(pin.clone()),
-            encoder: None,
-            codec: None,
-            default_bitrate_kbps: 30_000,
-        };
-        let paths = self.paths.clone();
+    fn start(&mut self) -> Result<()> {
+        if self.is_running() {
+            return Ok(());
+        }
+        let (paths, options, control) = (
+            self.paths.clone(),
+            self.options.clone(),
+            self.control.clone(),
+        );
         self.task = Some(self.rt.spawn(async move {
-            if let Err(e) = oriel_host::run(paths, options).await {
+            if let Err(e) = oriel_host::run_with(paths, options, control).await {
                 tracing::error!("host stopped: {e:#}");
             }
         }));
-        Ok(pin)
+        Ok(())
     }
 
     fn stop(&mut self) {
         if let Some(task) = self.task.take() {
             task.abort();
         }
+        self.control.stop_pairing();
     }
 
     fn is_running(&self) -> bool {
@@ -585,16 +617,44 @@ impl oriel_client::launcher::HostControl for LocalHost {
     }
 
     fn description(&self) -> String {
-        let displays = oriel_host::capture::list_displays(Self::source());
-        let list: Vec<String> = displays
+        if !cfg!(windows) {
+            return "Linux hosting streams a test pattern for now.".into();
+        }
+        let list: Vec<String> = oriel_host::capture::list_displays(self.options.source)
             .iter()
             .map(|d| format!("{} ({}×{})", d.name, d.width, d.height))
             .collect();
-        if cfg!(windows) {
-            format!("Lets paired devices see and control: {}", list.join(", "))
-        } else {
-            "Linux hosting streams a test pattern for now.".into()
-        }
+        format!("Lets paired devices see and control: {}", list.join(", "))
+    }
+
+    fn host_name(&self) -> String {
+        self.options.name.clone()
+    }
+
+    fn clients(&self) -> Vec<oriel_client::launcher::SharedClient> {
+        self.control
+            .status()
+            .clients
+            .into_iter()
+            .map(|c| oriel_client::launcher::SharedClient {
+                id: c.id,
+                name: c.name,
+                address: c.address.ip().to_string(),
+                codec: c.codec,
+            })
+            .collect()
+    }
+
+    fn kick(&self, id: usize) {
+        self.control.kick(id);
+    }
+
+    fn allow_pairing(&mut self) -> Option<String> {
+        Some(self.control.allow_pairing())
+    }
+
+    fn pairing_pin(&self) -> Option<String> {
+        self.control.pairing_pin()
     }
 }
 

@@ -14,7 +14,7 @@ mod session;
 pub mod win;
 
 pub use capture::SourceKind;
-pub use server::{HostControl, HostOptions, HostStatus, run, run_with};
+pub use server::{ClientInfo, HostControl, HostOptions, HostStatus, run, run_with};
 
 /// Microseconds on the host clock that frame timestamps and pongs use.
 pub(crate) fn host_us() -> u64 {

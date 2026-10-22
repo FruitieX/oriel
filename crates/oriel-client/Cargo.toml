@@ -30,3 +30,6 @@ toml.workspace = true
 wayland-client = { version = "0.31", features = ["system", "dlopen"] }
 wayland-backend = { version = "0.3", features = ["client_system", "dlopen"] }
 wayland-protocols = { version = "0.32", features = ["client", "unstable"] }
+
+[target.'cfg(windows)'.dependencies]
+tray-icon.workspace = true

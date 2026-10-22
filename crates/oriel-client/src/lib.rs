@@ -13,5 +13,7 @@ pub mod launcher;
 mod render;
 pub mod session;
 mod stats;
+#[cfg(windows)]
+mod tray;
 
 pub use app::{MouseMode, ViewerOptions};
