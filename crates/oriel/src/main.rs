@@ -25,6 +25,8 @@ enum CodecArg {
     H264,
     Hevc,
     Av1,
+    /// Intra-only wavelet codec for fast LANs (hundreds of Mbit/s).
+    Pyrowave,
 }
 
 impl From<CodecArg> for Codec {
@@ -33,6 +35,7 @@ impl From<CodecArg> for Codec {
             CodecArg::H264 => Codec::H264,
             CodecArg::Hevc => Codec::Hevc,
             CodecArg::Av1 => Codec::Av1,
+            CodecArg::Pyrowave => Codec::PyroWave,
         }
     }
 }

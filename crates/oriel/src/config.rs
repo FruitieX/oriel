@@ -51,6 +51,7 @@ impl ClientConfig {
                     "h264" | "avc" => Codec::H264,
                     "hevc" | "h265" => Codec::Hevc,
                     "av1" => Codec::Av1,
+                    "pyrowave" => Codec::PyroWave,
                     other => bail!("unknown codec {other:?} in client.toml"),
                 })
             })

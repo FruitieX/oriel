@@ -9,3 +9,4 @@ oriel-proto.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 ffmpeg-sys-next.workspace = true
+libloading = "0.8"

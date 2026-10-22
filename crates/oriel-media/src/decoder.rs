@@ -39,6 +39,21 @@ pub struct DecodedFrame {
 unsafe impl Send for DecodedFrame {}
 
 impl DecodedFrame {
+    /// Take ownership of a CPU frame in `format`.
+    pub(crate) fn from_raw(
+        frame: *mut ff::AVFrame,
+        format: PlaneFormat,
+        matrix: ColorMatrix,
+        full_range: bool,
+    ) -> Self {
+        Self {
+            frame,
+            format,
+            matrix,
+            full_range,
+        }
+    }
+
     pub fn width(&self) -> u32 {
         unsafe { (*self.frame).width as u32 }
     }
@@ -83,7 +98,7 @@ impl Drop for DecodedFrame {
     }
 }
 
-pub struct Decoder {
+struct FfDecoder {
     ctx: *mut ff::AVCodecContext,
     pkt: *mut ff::AVPacket,
     frame: *mut ff::AVFrame,
@@ -94,7 +109,7 @@ pub struct Decoder {
     description: String,
 }
 
-unsafe impl Send for Decoder {}
+unsafe impl Send for FfDecoder {}
 
 unsafe extern "C" fn pick_hw_format(
     ctx: *mut ff::AVCodecContext,
@@ -126,8 +141,8 @@ fn hw_device_types() -> &'static [ff::AVHWDeviceType] {
     }
 }
 
-impl Decoder {
-    pub fn open(codec: Codec, hardware: bool) -> Result<Self> {
+impl FfDecoder {
+    fn open(codec: Codec, hardware: bool) -> Result<Self> {
         let id = match codec {
             Codec::H264 => ff::AVCodecID::AV_CODEC_ID_H264,
             Codec::Hevc => ff::AVCodecID::AV_CODEC_ID_HEVC,
@@ -139,7 +154,7 @@ impl Decoder {
             if decoder.is_null() {
                 bail!("no {} decoder in this FFmpeg build", codec.name());
             }
-            let mut dec = Decoder {
+            let mut dec = FfDecoder {
                 ctx: ff::avcodec_alloc_context3(decoder),
                 pkt: ff::av_packet_alloc(),
                 frame: ff::av_frame_alloc(),
@@ -209,12 +224,8 @@ impl Decoder {
         }
     }
 
-    pub fn description(&self) -> &str {
-        &self.description
-    }
-
     /// Decode one access unit. Returns the newest frame it produced.
-    pub fn decode(&mut self, data: &[u8]) -> Result<Option<DecodedFrame>> {
+    fn decode(&mut self, data: &[u8]) -> Result<Option<DecodedFrame>> {
         unsafe {
             check(
                 ff::av_new_packet(self.pkt, data.len() as c_int),
@@ -337,6 +348,46 @@ impl Decoder {
     }
 }
 
+/// A video decoder: FFmpeg (preferring hardware) or PyroWave.
+pub struct Decoder {
+    inner: DecoderInner,
+    description: String,
+}
+
+enum DecoderInner {
+    Ff(FfDecoder),
+    Pyro(crate::pyrowave::PyroDecoder),
+}
+
+impl Decoder {
+    pub fn open(codec: Codec, width: u32, height: u32, hardware: bool) -> Result<Self> {
+        if codec == Codec::PyroWave {
+            let dec = crate::pyrowave::PyroDecoder::new(width, height)?;
+            return Ok(Self {
+                inner: DecoderInner::Pyro(dec),
+                description: "pyrowave (Vulkan)".into(),
+            });
+        }
+        let dec = FfDecoder::open(codec, hardware)?;
+        Ok(Self {
+            description: dec.description.clone(),
+            inner: DecoderInner::Ff(dec),
+        })
+    }
+
+    pub fn description(&self) -> &str {
+        &self.description
+    }
+
+    /// Decode one frame's data. Returns the newest frame it produced.
+    pub fn decode(&mut self, data: &[u8]) -> Result<Option<DecodedFrame>> {
+        match &mut self.inner {
+            DecoderInner::Ff(d) => d.decode(data),
+            DecoderInner::Pyro(d) => d.decode(data),
+        }
+    }
+}
+
 fn hw_name(format: ff::AVPixelFormat) -> String {
     unsafe {
         let name = ff::av_get_pix_fmt_name(format);
@@ -350,7 +401,7 @@ fn hw_name(format: ff::AVPixelFormat) -> String {
     }
 }
 
-impl Drop for Decoder {
+impl Drop for FfDecoder {
     fn drop(&mut self) {
         unsafe {
             ff::avcodec_free_context(&mut self.ctx);
@@ -380,6 +431,16 @@ mod tests {
         roundtrip(Codec::Hevc, "hevc_vaapi", true, 1280, 720);
     }
 
+    /// Needs the PyroWave library and a Vulkan 1.3 GPU; skipped otherwise.
+    #[test]
+    fn pyrowave_roundtrip() {
+        if !crate::pyrowave::available() {
+            eprintln!("skipping: PyroWave library not found");
+            return;
+        }
+        roundtrip(Codec::PyroWave, "pyrowave", true, 1280, 720);
+    }
+
     fn roundtrip(codec: Codec, encoder: &str, hardware: bool, w: u32, h: u32) {
         let config = EncoderConfig {
             codec,
@@ -397,7 +458,7 @@ mod tests {
                 return;
             }
         };
-        let mut dec = Decoder::open(codec, hardware).unwrap();
+        let mut dec = Decoder::open(codec, w, h, hardware).unwrap();
         let mut bgra = vec![0u8; (w * h * 4) as usize];
         for (i, px) in bgra.chunks_mut(4).enumerate() {
             px.copy_from_slice(&[(i % 255) as u8, 128, 64, 255]);
@@ -414,11 +475,15 @@ mod tests {
                 )
                 .unwrap()
                 .expect("low-delay encoder returns a packet per frame");
-            assert_eq!(out.keyframe, n == 0);
+            assert_eq!(out.keyframe, n == 0 || codec == Codec::PyroWave);
             if let Some(frame) = dec.decode(&out.data).unwrap() {
                 assert_eq!((frame.width(), frame.height()), (w, h));
                 assert_eq!(frame.matrix, ColorMatrix::Bt709);
-                assert!(!frame.full_range);
+                assert_eq!(frame.full_range, codec == Codec::PyroWave);
+                // The encoded colour (B=i, G=128, R=64) survives the trip.
+                let (y, _) = frame.plane(0);
+                let luma = y[0] as f32;
+                assert!((40.0..140.0).contains(&luma), "luma {luma}");
                 decoded += 1;
             }
         }

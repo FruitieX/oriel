@@ -52,8 +52,10 @@
         let
           pkgs = pkgsFor system;
           lib = pkgs.lib;
+          pyrowave = pkgs.callPackage ./nix/pyrowave.nix { };
         in
         {
+          inherit pyrowave;
           default = pkgs.rustPlatform.buildRustPackage {
             pname = "oriel";
             version = "0.1.0";
@@ -77,7 +79,7 @@
             ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux ([ pkgs.pipewire.dev ] ++ linuxRuntimeLibs pkgs);
             postFixup = lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
               wrapProgram $out/bin/oriel \
-                --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath (linuxRuntimeLibs pkgs)}
+                --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath (linuxRuntimeLibs pkgs ++ [ pyrowave ])}
             '';
             meta = {
               description = "Low-latency remote desktop host and client";
@@ -96,6 +98,7 @@
           # Cross-compiling the Windows host is set up on x86_64 Linux only.
           windowsCross = system == "x86_64-linux";
           mingw = pkgs.pkgsCross.mingwW64;
+          pyrowave = pkgs.callPackage ./nix/pyrowave.nix { };
 
           rust = pkgs.rust-bin.stable.latest.default.override {
             extensions = [
@@ -142,6 +145,9 @@
                 ++ lib.optionals isLinux ([ pipewire.dev ] ++ linuxRuntimeLibs pkgs);
 
               LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
+              ORIEL_PYROWAVE_LIB = "${pyrowave}/lib/libpyrowave-shared${
+                if pkgs.stdenv.hostPlatform.isDarwin then ".1.dylib" else ".so.1"
+              }";
             }
             // lib.optionalAttrs isLinux {
               LD_LIBRARY_PATH = lib.makeLibraryPath (linuxRuntimeLibs pkgs);
@@ -158,6 +164,7 @@
               ORIEL_MINGW_PTHREADS = mingw.windows.pthreads;
               ORIEL_MINGW_CC = mingw.stdenv.cc;
               ORIEL_WINE = "${pkgs.wineWow64Packages.stable}/bin/wine";
+              ORIEL_PYROWAVE_WIN64 = mingw.callPackage ./nix/pyrowave.nix { };
 
               shellHook = ''
                 # Prefixed mingw tools (dlltool for windows-rs import libraries).

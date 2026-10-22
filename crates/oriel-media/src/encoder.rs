@@ -149,7 +149,7 @@ enum InputPath {
     D3D11 { frames: *mut ff::AVBufferRef },
 }
 
-pub struct Encoder {
+struct FfEncoder {
     ctx: *mut ff::AVCodecContext,
     pkt: *mut ff::AVPacket,
     input: InputPath,
@@ -159,11 +159,10 @@ pub struct Encoder {
     last_pts: i64,
 }
 
-unsafe impl Send for Encoder {}
+unsafe impl Send for FfEncoder {}
 
-impl Encoder {
-    /// Open the best available encoder for `config.codec`.
-    pub fn open(config: &EncoderConfig) -> Result<Self> {
+impl FfEncoder {
+    fn open(config: &EncoderConfig) -> Result<Self> {
         let mut errors = Vec::new();
         for (name, kind) in candidates(config.codec) {
             if config.encoder.as_deref().is_some_and(|only| only != name) {
@@ -199,12 +198,7 @@ impl Encoder {
         )
     }
 
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-
-    /// Whether frames must be passed as [`EncoderInput::Bgra`].
-    pub fn wants_cpu_input(&self) -> bool {
+    fn wants_cpu_input(&self) -> bool {
         match self.input {
             InputPath::Sws { .. } | InputPath::Upload { .. } => true,
             #[cfg(windows)]
@@ -218,7 +212,7 @@ impl Encoder {
         if codec.is_null() {
             bail!("not built into FFmpeg");
         }
-        let mut enc = Encoder {
+        let mut enc = FfEncoder {
             ctx: unsafe { ff::avcodec_alloc_context3(codec) },
             pkt: unsafe { ff::av_packet_alloc() },
             input: InputPath::Sws {
@@ -410,7 +404,7 @@ impl Encoder {
 
     /// Encode one frame. Returns `None` if the encoder produced no output
     /// for it (which low-delay encoders should not do).
-    pub fn encode(
+    fn encode(
         &mut self,
         input: EncoderInput<'_>,
         keyframe: bool,
@@ -510,7 +504,7 @@ impl Encoder {
     }
 }
 
-impl Drop for Encoder {
+impl Drop for FfEncoder {
     fn drop(&mut self) {
         unsafe {
             match &mut self.input {
@@ -652,6 +646,64 @@ unsafe fn convert_bgra(
     Ok(())
 }
 
+/// A video encoder: FFmpeg for H.264/HEVC/AV1, PyroWave for its codec.
+pub struct Encoder(EncoderInner);
+
+enum EncoderInner {
+    Ff(FfEncoder),
+    Pyro(crate::pyrowave::PyroEncoder),
+}
+
+impl Encoder {
+    /// Open the best available encoder for `config.codec`.
+    pub fn open(config: &EncoderConfig) -> Result<Self> {
+        if config.codec == Codec::PyroWave {
+            let enc = crate::pyrowave::PyroEncoder::new(
+                config.width,
+                config.height,
+                config.fps,
+                config.bitrate_kbps,
+            )?;
+            tracing::info!(
+                width = config.width,
+                height = config.height,
+                kbps = config.bitrate_kbps,
+                "opened PyroWave encoder"
+            );
+            return Ok(Self(EncoderInner::Pyro(enc)));
+        }
+        Ok(Self(EncoderInner::Ff(FfEncoder::open(config)?)))
+    }
+
+    pub fn name(&self) -> &str {
+        match &self.0 {
+            EncoderInner::Ff(e) => &e.name,
+            EncoderInner::Pyro(_) => "pyrowave",
+        }
+    }
+
+    /// Whether frames must be passed as [`EncoderInput::Bgra`].
+    pub fn wants_cpu_input(&self) -> bool {
+        match &self.0 {
+            EncoderInner::Ff(e) => e.wants_cpu_input(),
+            EncoderInner::Pyro(_) => true,
+        }
+    }
+
+    /// Encode one frame. Returns `None` if the encoder produced no output
+    /// for it (which low-delay encoders should not do).
+    pub fn encode(&mut self, input: EncoderInput<'_>, keyframe: bool) -> Result<Option<EncodedFrame>> {
+        match &mut self.0 {
+            EncoderInner::Ff(e) => e.encode(input, keyframe),
+            EncoderInner::Pyro(e) => match input {
+                EncoderInput::Bgra { data, stride } => e.encode_bgra(data, stride).map(Some),
+                #[cfg(windows)]
+                EncoderInput::D3D11 { .. } => bail!("PyroWave takes CPU frames"),
+            },
+        }
+    }
+}
+
 /// Names of encoders built into this FFmpeg that oriel knows how to drive.
 pub fn available_encoders() -> Vec<&'static str> {
     [Codec::H264, Codec::Hevc, Codec::Av1]
@@ -662,5 +714,6 @@ pub fn available_encoders() -> Vec<&'static str> {
             !unsafe { ff::avcodec_find_encoder_by_name(c.as_ptr()) }.is_null()
         })
         .map(|(name, _)| name)
+        .chain(crate::pyrowave::available().then_some("pyrowave"))
         .collect()
 }

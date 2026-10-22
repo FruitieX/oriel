@@ -160,9 +160,6 @@ impl Pipeline {
         let (width, height) = cap.size();
         let mut errors = Vec::new();
         for &codec in &self.config.codecs {
-            if codec == Codec::PyroWave {
-                continue;
-            }
             let config = EncoderConfig {
                 codec,
                 width,

@@ -8,8 +8,10 @@ pub use ffmpeg_sys_next as ff;
 
 mod decoder;
 mod encoder;
+mod pyrowave;
 mod util;
 
+pub use pyrowave::available as pyrowave_available;
 pub use decoder::{ColorMatrix, DecodedFrame, Decoder, PlaneFormat};
 pub use encoder::{
     EncodedFrame, Encoder, EncoderConfig, EncoderInput, HwDevice, available_encoders,

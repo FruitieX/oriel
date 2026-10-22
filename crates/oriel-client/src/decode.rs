@@ -63,7 +63,7 @@ pub fn spawn(
                     .as_ref()
                     .is_none_or(|(_, codec, s)| *codec != header.codec || *s != size)
                 {
-                    decoder = match Decoder::open(header.codec, hardware) {
+                    decoder = match Decoder::open(header.codec, header.width, header.height, hardware) {
                         Ok(d) => {
                             let mut s = stats.lock();
                             s.decoder = d.description().to_string();
