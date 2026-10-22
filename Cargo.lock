@@ -950,6 +950,7 @@ dependencies = [
  "bytemuck",
  "ecolor",
  "emath",
+ "epaint_default_fonts",
  "font-types",
  "harfrust",
  "log",
@@ -964,6 +965,12 @@ dependencies = [
  "unicode-segmentation",
  "vello_cpu",
 ]
+
+[[package]]
+name = "epaint_default_fonts"
+version = "0.37.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cfc1cc505827f4c23eedc297975a0fd038268d41293f389dd8ff3b574aefab19"
 
 [[package]]
 name = "equivalent"
@@ -2337,7 +2344,9 @@ dependencies = [
  "oriel-media",
  "oriel-net",
  "oriel-proto",
+ "serde",
  "tokio",
+ "toml",
  "tracing",
  "tracing-subscriber",
 ]
@@ -2356,6 +2365,7 @@ dependencies = [
  "oriel-net",
  "oriel-proto",
  "parking_lot",
+ "png",
  "pollster",
  "quinn",
  "serde",

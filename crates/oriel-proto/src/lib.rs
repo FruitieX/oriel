@@ -164,7 +164,7 @@ pub struct CursorState {
     pub y: i32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum MouseButton {
     Left,
     Right,
@@ -209,7 +209,11 @@ pub enum InputEvent {
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum Datagram {
+    /// Host → client: where the host's cursor is.
     CursorPosition { surface: SurfaceId, x: i32, y: i32 },
+    /// Client → host: every frame up to `seq` has been decoded. Paces the
+    /// host's encoder (QUIC acknowledgements can be delayed by up to 25 ms).
+    FrameAck { surface: SurfaceId, seq: u64 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

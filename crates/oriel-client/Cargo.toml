@@ -22,3 +22,4 @@ pollster.workspace = true
 crossbeam-channel.workspace = true
 parking_lot.workspace = true
 serde.workspace = true
+png = "0.18"

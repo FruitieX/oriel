@@ -36,7 +36,7 @@ directories = "6"
 ffmpeg-sys-next = "9"
 winit = "0.30"
 wgpu = "30"
-egui = "0.37"
+egui = { version = "0.37", features = ["default_fonts"] }
 egui-wgpu = "0.37"
 egui-winit = "0.37"
 pollster = "0.4"
