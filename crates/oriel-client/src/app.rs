@@ -27,7 +27,7 @@ use winit::{
 
 use crate::{
     connection,
-    keymap::{Shortcut, hid_usage},
+    keymap::{Bindings, Command, hid_usage},
     render::{Renderer, Viewport, letterbox},
     session::{self, Session, UiEvent},
 };
@@ -45,7 +45,7 @@ pub struct ViewerOptions {
     pub target: String,
     pub settings: StreamSettings,
     pub hardware_decode: bool,
-    pub menu_shortcut: Shortcut,
+    pub shortcuts: Bindings,
     pub mouse_mode: MouseMode,
     pub fullscreen: bool,
     pub show_stats: bool,
@@ -444,9 +444,10 @@ impl Viewer {
             return;
         };
         let pressed = event.state == ElementState::Pressed;
-        if pressed && self.options.menu_shortcut.matches(self.modifiers, code) {
-            let open = !self.menu_open;
-            self.set_menu(open);
+        if pressed && let Some(command) = self.options.shortcuts.find(self.modifiers, code) {
+            if !event.repeat {
+                self.run_command(command);
+            }
             return;
         }
         if !self.forwarding() || event.repeat {
@@ -474,13 +475,13 @@ impl Viewer {
         for (usage, down) in hook.drain() {
             if down
                 && !self.keys_down.contains(&usage)
-                && self
-                    .options
-                    .menu_shortcut
-                    .matches_hid(&self.keys_down, usage)
+                && let Some(command) = self.options.shortcuts.find_hid(&self.keys_down, usage)
             {
-                self.set_menu(true);
-                break;
+                self.run_command(command);
+                if command == Command::Menu {
+                    break;
+                }
+                continue;
             }
             if !self.forwarding() {
                 continue;
@@ -494,6 +495,44 @@ impl Viewer {
             }
             self.session.input(InputEvent::Key { usage, down });
         }
+    }
+
+    fn run_command(&mut self, command: Command) {
+        match command {
+            Command::Menu => {
+                let open = !self.menu_open;
+                self.set_menu(open);
+            }
+            Command::Fullscreen => self.apply(Action::ToggleFullscreen),
+            Command::Stats => self.apply(Action::ToggleStats),
+            Command::Disconnect => self.apply(Action::Disconnect),
+            Command::NextDisplay => self.cycle_display(1),
+            Command::PreviousDisplay => self.cycle_display(-1),
+        }
+    }
+
+    /// Switch to the next (`step` 1) or previous (-1) host display.
+    fn cycle_display(&mut self, step: isize) {
+        let n = self.displays.len();
+        if n < 2 {
+            self.notices
+                .push(("The host has only one display".into(), Instant::now()));
+            self.request_redraw();
+            return;
+        }
+        let current = self
+            .display
+            .or_else(|| self.displays.iter().find(|d| d.primary).map(|d| d.id));
+        let i = self
+            .displays
+            .iter()
+            .position(|d| Some(d.id) == current)
+            .unwrap_or(0);
+        let next = &self.displays[(i as isize + step).rem_euclid(n as isize) as usize];
+        let (id, name) = (next.id, next.name.clone());
+        self.notices
+            .push((format!("Display: {name}"), Instant::now()));
+        self.apply(Action::SelectDisplay(id));
     }
 
     fn handle_pointer_moved(&mut self, position: PhysicalPosition<f64>) {
@@ -697,6 +736,7 @@ enum Action {
 struct OverlayState {
     host_name: String,
     shortcut: String,
+    shortcuts: Bindings,
     menu_open: bool,
     show_stats: bool,
     mouse_mode: MouseMode,
@@ -756,7 +796,8 @@ impl From<&Viewer> for OverlayState {
             .flatten();
         OverlayState {
             host_name: v.host_name.clone(),
-            shortcut: v.options.menu_shortcut.to_string(),
+            shortcut: v.options.shortcuts.menu().to_string(),
+            shortcuts: v.options.shortcuts.clone(),
             menu_open: v.menu_open,
             show_stats: v.show_stats,
             mouse_mode: v.mouse_mode,
@@ -913,9 +954,24 @@ fn overlay(ctx: &egui::Context, s: &OverlayState, viewport: Option<Viewport>) ->
                     }
                 }
             });
+            let hint = |command: Command| {
+                s.shortcuts
+                    .get(command)
+                    .map_or_else(String::new, |k| format!("Shortcut: {k}"))
+            };
             if s.displays.len() > 1 {
                 ui.horizontal(|ui| {
-                    ui.label("Display:");
+                    ui.label("Display:").on_hover_text(
+                        match (
+                            s.shortcuts.get(Command::PreviousDisplay),
+                            s.shortcuts.get(Command::NextDisplay),
+                        ) {
+                            (Some(p), Some(n)) => format!("Previous: {p}\nNext: {n}"),
+                            (None, Some(n)) => format!("Next: {n}"),
+                            (Some(p), None) => format!("Previous: {p}"),
+                            (None, None) => String::new(),
+                        },
+                    );
                     for (id, name) in &s.displays {
                         if ui.selectable_label(s.display == Some(*id), name).clicked() {
                             actions.push(Action::SelectDisplay(*id));
@@ -969,7 +1025,11 @@ fn overlay(ctx: &egui::Context, s: &OverlayState, viewport: Option<Viewport>) ->
                 }
             });
             ui.horizontal(|ui| {
-                if ui.button("Fullscreen").clicked() {
+                if ui
+                    .button("Fullscreen")
+                    .on_hover_text(hint(Command::Fullscreen))
+                    .clicked()
+                {
                     actions.push(Action::ToggleFullscreen);
                 }
                 if ui
@@ -978,6 +1038,7 @@ fn overlay(ctx: &egui::Context, s: &OverlayState, viewport: Option<Viewport>) ->
                     } else {
                         "Show statistics"
                     })
+                    .on_hover_text(hint(Command::Stats))
                     .clicked()
                 {
                     actions.push(Action::ToggleStats);
@@ -994,7 +1055,11 @@ fn overlay(ctx: &egui::Context, s: &OverlayState, viewport: Option<Viewport>) ->
                 {
                     actions.push(Action::CloseMenu);
                 }
-                if ui.button("Disconnect").clicked() {
+                if ui
+                    .button("Disconnect")
+                    .on_hover_text(hint(Command::Disconnect))
+                    .clicked()
+                {
                     actions.push(Action::Disconnect);
                 }
             });

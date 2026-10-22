@@ -10,7 +10,10 @@ use std::{net::SocketAddr, path::PathBuf, time::Duration};
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
-use oriel_client::{MouseMode, ViewerOptions, keymap::Shortcut};
+use oriel_client::{
+    MouseMode, ViewerOptions,
+    keymap::{Command as ViewerCommand, Shortcut},
+};
 use oriel_net::{Identity, Paths, TrustStore};
 use oriel_proto::{Codec, DEFAULT_PORT, StreamSettings};
 
@@ -402,9 +405,12 @@ fn run() -> Result<()> {
                     Duration::from_secs(secs),
                 ));
             }
-            let shortcut_text = menu_shortcut.unwrap_or(file.menu_shortcut.clone());
-            let menu_shortcut = Shortcut::parse(&shortcut_text)
-                .with_context(|| format!("cannot parse shortcut {shortcut_text:?}"))?;
+            let mut shortcuts = file.bindings();
+            if let Some(text) = menu_shortcut {
+                let shortcut = Shortcut::parse(&text)
+                    .with_context(|| format!("cannot parse shortcut {text:?}"))?;
+                shortcuts.set(ViewerCommand::Menu, Some(shortcut));
+            }
             let mouse_mode = match mouse {
                 Some(MouseArg::Auto) => MouseMode::Auto,
                 Some(MouseArg::Desktop) => MouseMode::Absolute,
@@ -422,7 +428,7 @@ fn run() -> Result<()> {
                         target: host,
                         settings,
                         hardware_decode: !software_decode,
-                        menu_shortcut,
+                        shortcuts,
                         mouse_mode,
                         fullscreen,
                         show_stats: stats,

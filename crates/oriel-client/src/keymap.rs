@@ -132,6 +132,112 @@ pub fn hid_usage(key: KeyCode) -> Option<u16> {
     })
 }
 
+/// Viewer commands that can be bound to a shortcut.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Command {
+    /// Open the menu and release keyboard and mouse.
+    Menu,
+    Fullscreen,
+    NextDisplay,
+    PreviousDisplay,
+    Stats,
+    Disconnect,
+}
+
+impl Command {
+    pub const ALL: [Command; 6] = [
+        Command::Menu,
+        Command::Fullscreen,
+        Command::NextDisplay,
+        Command::PreviousDisplay,
+        Command::Stats,
+        Command::Disconnect,
+    ];
+
+    /// Key in the `[shortcuts]` table of client.toml.
+    pub fn id(self) -> &'static str {
+        match self {
+            Command::Menu => "menu",
+            Command::Fullscreen => "fullscreen",
+            Command::NextDisplay => "next_display",
+            Command::PreviousDisplay => "previous_display",
+            Command::Stats => "stats",
+            Command::Disconnect => "disconnect",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Command::Menu => "Open menu",
+            Command::Fullscreen => "Toggle fullscreen",
+            Command::NextDisplay => "Next display",
+            Command::PreviousDisplay => "Previous display",
+            Command::Stats => "Toggle statistics",
+            Command::Disconnect => "Disconnect",
+        }
+    }
+
+    pub fn default_shortcut(self) -> &'static str {
+        match self {
+            Command::Menu => "Ctrl+Alt+Shift+M",
+            Command::Fullscreen => "Ctrl+Alt+Shift+F",
+            Command::NextDisplay => "Ctrl+Alt+Shift+ArrowRight",
+            Command::PreviousDisplay => "Ctrl+Alt+Shift+ArrowLeft",
+            Command::Stats => "Ctrl+Alt+Shift+S",
+            Command::Disconnect => "Ctrl+Alt+Shift+Q",
+        }
+    }
+}
+
+/// The shortcut bound to each command (unbound commands are absent).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Bindings(pub Vec<(Command, Shortcut)>);
+
+impl Default for Bindings {
+    fn default() -> Self {
+        Self(
+            Command::ALL
+                .iter()
+                .filter_map(|&c| Some((c, Shortcut::parse(c.default_shortcut())?)))
+                .collect(),
+        )
+    }
+}
+
+impl Bindings {
+    pub fn get(&self, command: Command) -> Option<Shortcut> {
+        self.0.iter().find(|(c, _)| *c == command).map(|(_, s)| *s)
+    }
+
+    /// The menu shortcut, which is always bound.
+    pub fn menu(&self) -> Shortcut {
+        self.get(Command::Menu)
+            .unwrap_or_else(|| Shortcut::parse(Command::Menu.default_shortcut()).unwrap())
+    }
+
+    pub fn set(&mut self, command: Command, shortcut: Option<Shortcut>) {
+        self.0.retain(|(c, _)| *c != command);
+        if let Some(s) = shortcut {
+            self.0.push((command, s));
+            self.0.sort_by_key(|(c, _)| *c);
+        }
+    }
+
+    pub fn find(&self, mods: winit::keyboard::ModifiersState, key: KeyCode) -> Option<Command> {
+        self.0
+            .iter()
+            .find(|(_, s)| s.matches(mods, key))
+            .map(|(c, _)| *c)
+    }
+
+    pub fn find_hid(&self, held: &std::collections::HashSet<u16>, usage: u16) -> Option<Command> {
+        self.0
+            .iter()
+            .find(|(_, s)| s.matches_hid(held, usage))
+            .map(|(c, _)| *c)
+    }
+}
+
 /// A key combination such as `Ctrl+Alt+Shift+M`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Shortcut {
@@ -198,6 +304,7 @@ impl std::fmt::Display for Shortcut {
             .strip_prefix("Key")
             .or_else(|| key.strip_prefix("Digit"))
             .unwrap_or(&key);
+        let key = key.strip_prefix("Arrow").unwrap_or(key);
         write!(
             f,
             "{}{}{}{}{key}",
@@ -228,8 +335,21 @@ fn parse_key(name: &str) -> Option<KeyCode> {
         };
     }
     if let Some(n) = upper.strip_prefix('F').and_then(|n| n.parse::<u8>().ok()) {
-        const FN: [KeyCode; 12] = [F1, F2, F3, F4, F5, F6, F7, F8, F9, F10, F11, F12];
+        const FN: [KeyCode; 24] = [
+            F1, F2, F3, F4, F5, F6, F7, F8, F9, F10, F11, F12, F13, F14, F15, F16, F17, F18, F19,
+            F20, F21, F22, F23, F24,
+        ];
         return FN.get(n.checked_sub(1)? as usize).copied();
+    }
+    if let Some(n) = upper
+        .strip_prefix("NUMPAD")
+        .and_then(|n| n.parse::<u8>().ok())
+    {
+        const NUM: [KeyCode; 10] = [
+            Numpad0, Numpad1, Numpad2, Numpad3, Numpad4, Numpad5, Numpad6, Numpad7, Numpad8,
+            Numpad9,
+        ];
+        return NUM.get(n as usize).copied();
     }
     Some(match upper.as_str() {
         "ESC" | "ESCAPE" => Escape,
@@ -243,6 +363,24 @@ fn parse_key(name: &str) -> Option<KeyCode> {
         "ENTER" => Enter,
         "BACKSPACE" => Backspace,
         "SCROLLLOCK" => ScrollLock,
+        "LEFT" | "ARROWLEFT" => ArrowLeft,
+        "RIGHT" | "ARROWRIGHT" => ArrowRight,
+        "UP" | "ARROWUP" => ArrowUp,
+        "DOWN" | "ARROWDOWN" => ArrowDown,
+        "PAGEUP" => PageUp,
+        "PAGEDOWN" => PageDown,
+        "MINUS" | "-" => Minus,
+        "EQUAL" | "EQUALS" | "=" => Equal,
+        "COMMA" | "," => Comma,
+        "PERIOD" | "." => Period,
+        "SLASH" | "/" => Slash,
+        "BACKSLASH" | "\\" => Backslash,
+        "SEMICOLON" | ";" => Semicolon,
+        "QUOTE" | "'" => Quote,
+        "BACKQUOTE" | "BACKTICK" | "`" => Backquote,
+        "BRACKETLEFT" | "OPENBRACKET" | "[" => BracketLeft,
+        "BRACKETRIGHT" | "CLOSEBRACKET" | "]" => BracketRight,
+        "PRINTSCREEN" => PrintScreen,
         _ => return None,
     })
 }
@@ -258,6 +396,17 @@ mod tests {
         assert_eq!(s.key, KeyCode::KeyM);
         assert_eq!(s.to_string(), "Ctrl+Alt+Shift+M");
         assert_eq!(Shortcut::parse("ctrl + f12").unwrap().key, KeyCode::F12);
+        let s = Shortcut::parse("Ctrl+Alt+Shift+ArrowRight").unwrap();
+        assert_eq!(s.to_string(), "Ctrl+Alt+Shift+Right");
+        assert_eq!(Shortcut::parse(&s.to_string()), Some(s));
+        assert_eq!(
+            Shortcut::parse("Alt+PageDown").unwrap().key,
+            KeyCode::PageDown
+        );
+        assert_eq!(Shortcut::parse("Alt+F13").unwrap().key, KeyCode::F13);
+        for c in Command::ALL {
+            assert!(Shortcut::parse(c.default_shortcut()).is_some(), "{c:?}");
+        }
         assert!(Shortcut::parse("Ctrl+Alt").is_none());
     }
 

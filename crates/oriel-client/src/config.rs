@@ -5,7 +5,10 @@ use oriel_net::Paths;
 use oriel_proto::Codec;
 use serde::{Deserialize, Serialize};
 
-use crate::MouseMode;
+use crate::{
+    MouseMode,
+    keymap::{Bindings, Command, Shortcut},
+};
 
 pub const AUTO_CODECS: [Codec; 3] = [Codec::PyroWave, Codec::Hevc, Codec::H264];
 
@@ -27,6 +30,10 @@ pub struct ClientConfig {
     pub show_stats: bool,
     /// Share this computer when oriel starts.
     pub share: bool,
+    /// Shortcuts for the other viewer commands, by command id (see
+    /// [`Command::id`]): a missing entry uses the default, an empty one
+    /// disables the shortcut.
+    pub shortcuts: std::collections::BTreeMap<String, String>,
     /// Remembered per-host choices, by host name.
     pub hosts: std::collections::BTreeMap<String, HostPrefs>,
 }
@@ -88,12 +95,53 @@ impl Default for ClientConfig {
             fullscreen: false,
             show_stats: false,
             share: false,
+            shortcuts: Default::default(),
             hosts: Default::default(),
         }
     }
 }
 
 impl ClientConfig {
+    /// The configured shortcuts; unparsable entries fall back to defaults.
+    pub fn bindings(&self) -> Bindings {
+        let mut bindings = Bindings::default();
+        for command in Command::ALL {
+            let text = match command {
+                Command::Menu => Some(&self.menu_shortcut),
+                _ => self.shortcuts.get(command.id()),
+            };
+            let Some(text) = text else { continue };
+            if text.trim().is_empty() && command != Command::Menu {
+                bindings.set(command, None);
+            } else if let Some(s) = Shortcut::parse(text) {
+                bindings.set(command, Some(s));
+            } else {
+                tracing::warn!("ignoring unknown shortcut {text:?} for {}", command.id());
+            }
+        }
+        bindings
+    }
+
+    /// Store `bindings`, keeping only entries that differ from the default.
+    pub fn set_bindings(&mut self, bindings: &Bindings) {
+        self.menu_shortcut = bindings.menu().to_string();
+        for command in Command::ALL {
+            if command == Command::Menu {
+                continue;
+            }
+            let text = bindings
+                .get(command)
+                .map(|s| s.to_string())
+                .unwrap_or_default();
+            let default = Shortcut::parse(command.default_shortcut()).map(|s| s.to_string());
+            if Some(&text) == default.as_ref() {
+                self.shortcuts.remove(command.id());
+            } else {
+                self.shortcuts.insert(command.id().into(), text);
+            }
+        }
+    }
+
     pub fn path(paths: &Paths) -> std::path::PathBuf {
         paths.config_dir.join("client.toml")
     }
@@ -153,5 +201,28 @@ impl ClientConfig {
             "captured" => MouseMode::Relative,
             other => bail!("unknown mouse mode {other:?} in client.toml"),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bindings_roundtrip() {
+        let mut c = ClientConfig::default();
+        assert_eq!(c.bindings(), Bindings::default());
+        let mut b = c.bindings();
+        b.set(Command::Stats, None);
+        b.set(Command::NextDisplay, Shortcut::parse("Alt+PageDown"));
+        c.set_bindings(&b);
+        // Only the changes are stored.
+        assert_eq!(c.shortcuts.len(), 2);
+        assert_eq!(c.shortcuts["stats"], "");
+        let c: ClientConfig = toml::from_str(&toml::to_string(&c).unwrap()).unwrap();
+        let b = c.bindings();
+        assert_eq!(b.get(Command::Stats), None);
+        assert_eq!(b.get(Command::NextDisplay), Shortcut::parse("Alt+PageDown"));
+        assert_eq!(b.menu().to_string(), "Ctrl+Alt+Shift+M");
     }
 }

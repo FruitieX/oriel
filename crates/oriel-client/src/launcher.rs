@@ -27,7 +27,7 @@ use crate::{
         CODEC_CHOICES, ClientConfig, HostPrefs, codec_choice, format_resolution, parse_resolution,
     },
     connection::{self, Connected},
-    keymap::Shortcut,
+    keymap::{Bindings, Command, Shortcut},
     render::Renderer,
     session::UiEvent,
 };
@@ -208,7 +208,9 @@ pub fn run(
         quit_flag: options.quit_flag.clone(),
         quit: false,
         tray_updated: Instant::now(),
-        shortcut_text: config.menu_shortcut.clone(),
+        bindings: config.bindings(),
+        recording: None,
+        shortcut_hint: String::new(),
         config,
         paths,
         host,
@@ -232,6 +234,10 @@ pub fn run(
     match std::env::var("ORIEL_DEBUG_DIALOG").as_deref() {
         Ok("pair") => launcher.pair_dialog = Some(PairDialog::default()),
         Ok("settings") => launcher.settings_open = true,
+        Ok("settings-input") => {
+            launcher.settings_open = true;
+            launcher.settings_tab = SettingsTab::Input;
+        }
         _ => {}
     }
     if options.start_sharing
@@ -352,7 +358,11 @@ struct Launcher {
     status: String,
     reconnect: Option<Reconnect>,
     result: Option<LauncherResult>,
-    shortcut_text: String,
+    /// Shortcuts being edited in the settings dialog.
+    bindings: Bindings,
+    /// The command whose shortcut the next key press sets.
+    recording: Option<Command>,
+    shortcut_hint: String,
     opened: Instant,
     screenshot_taken: bool,
 }
@@ -437,8 +447,7 @@ impl Launcher {
                 resolution: prefs.resolution.as_deref().and_then(parse_resolution),
             },
             hardware_decode: true,
-            menu_shortcut: Shortcut::parse(&c.menu_shortcut)
-                .unwrap_or_else(|| Shortcut::parse("Ctrl+Alt+Shift+M").unwrap()),
+            shortcuts: c.bindings(),
             mouse_mode: c.mouse_mode()?,
             fullscreen: prefs.fullscreen.unwrap_or(c.fullscreen),
             show_stats: c.show_stats,
@@ -480,23 +489,20 @@ impl Launcher {
                 self.pairing = Some(pending);
             }
             Action::OpenSettings => {
-                self.shortcut_text = self.config.menu_shortcut.clone();
+                self.bindings = self.config.bindings();
+                self.recording = None;
+                self.shortcut_hint.clear();
                 self.settings_open = true;
             }
             Action::CloseSettings => {
                 // Discard unsaved edits.
                 self.config = ClientConfig::load(&self.paths).unwrap_or_default();
+                self.recording = None;
                 self.settings_open = false;
             }
             Action::SaveSettings => {
-                match Shortcut::parse(&self.shortcut_text) {
-                    Some(s) => self.config.menu_shortcut = s.to_string(),
-                    None => {
-                        self.status =
-                            format!("Cannot understand the shortcut {:?}", self.shortcut_text);
-                        return;
-                    }
-                }
+                self.config.set_bindings(&self.bindings);
+                self.recording = None;
                 self.save_config();
                 self.settings_open = false;
             }
@@ -1016,6 +1022,63 @@ impl Launcher {
         }
     }
 
+    /// Take the next key press as the shortcut for `command`.
+    fn record_shortcut(&mut self, ui: &mut egui::Ui, command: Command) {
+        let events = ui.input(|i| i.events.clone());
+        for event in events {
+            let egui::Event::Key {
+                key,
+                physical_key,
+                pressed: true,
+                modifiers: m,
+                ..
+            } = event
+            else {
+                continue;
+            };
+            if key == egui::Key::Escape && m.is_none() {
+                // Cancel recording without closing the dialog.
+                ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+                self.recording = None;
+                return;
+            }
+            let logo = cfg!(target_os = "macos") && m.mac_cmd;
+            if !(m.ctrl || m.alt || m.shift || logo) {
+                self.shortcut_hint =
+                    "Include Ctrl, Alt or Shift, so the key still reaches the host.".into();
+                continue;
+            }
+            // Shortcuts name physical keys, like everything sent to the host.
+            let key = physical_key.unwrap_or(key);
+            let text = format!(
+                "{}{}{}{}{}",
+                if m.ctrl { "Ctrl+" } else { "" },
+                if m.alt { "Alt+" } else { "" },
+                if m.shift { "Shift+" } else { "" },
+                if logo { "Cmd+" } else { "" },
+                key.name()
+            );
+            let Some(shortcut) = Shortcut::parse(&text) else {
+                self.shortcut_hint = format!("{} cannot be used in a shortcut.", key.name());
+                continue;
+            };
+            // One shortcut, one command.
+            for other in Command::ALL {
+                if other != command && self.bindings.get(other) == Some(shortcut) {
+                    if other == Command::Menu {
+                        self.shortcut_hint = format!("{shortcut} already opens the menu.");
+                        return;
+                    }
+                    self.bindings.set(other, None);
+                    self.shortcut_hint = format!("Removed {shortcut} from {}.", other.label());
+                }
+            }
+            self.bindings.set(command, Some(shortcut));
+            self.recording = None;
+            return;
+        }
+    }
+
     fn settings_modal(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
         if !self.settings_open {
             return;
@@ -1024,6 +1087,9 @@ impl Launcher {
             .frame(dialog_frame())
             .show(ctx, |ui| {
                 ui.set_width(480.0);
+                if let Some(command) = self.recording {
+                    self.record_shortcut(ui, command);
+                }
                 ui.heading("Settings");
                 ui.horizontal(|ui| {
                     for (tab, label) in [
@@ -1109,9 +1175,46 @@ impl Launcher {
                                     }
                                 });
                             ui.end_row();
-                            ui.label("Menu shortcut");
-                            ui.text_edit_singleline(&mut self.shortcut_text);
-                            ui.end_row();
+                            for command in Command::ALL {
+                                ui.label(command.label());
+                                ui.horizontal(|ui| {
+                                    let recording = self.recording == Some(command);
+                                    let current = self.bindings.get(command);
+                                    let text = if recording {
+                                        "Press the new shortcut...".to_string()
+                                    } else {
+                                        current.map_or_else(|| "None".into(), |s| s.to_string())
+                                    };
+                                    let button = egui::Button::new(text)
+                                        .min_size(egui::vec2(210.0, 0.0))
+                                        .selected(recording);
+                                    let response = ui
+                                        .add(button)
+                                        .on_hover_text("Click, then press the keys (Esc cancels)");
+                                    if response.clicked() {
+                                        // Keep Space/Enter from clicking it again.
+                                        response.surrender_focus();
+                                        self.recording = (!recording).then_some(command);
+                                        self.shortcut_hint.clear();
+                                    }
+                                    if command != Command::Menu
+                                        && current.is_some()
+                                        && ui.small_button("Clear").clicked()
+                                    {
+                                        self.bindings.set(command, None);
+                                    }
+                                    let default = Shortcut::parse(command.default_shortcut());
+                                    if current != default && ui.small_button("Reset").clicked() {
+                                        self.bindings.set(command, default);
+                                    }
+                                });
+                                ui.end_row();
+                            }
+                            if !self.shortcut_hint.is_empty() {
+                                ui.label("");
+                                ui.colored_label(AMBER, &self.shortcut_hint);
+                                ui.end_row();
+                            }
                         }
                         SettingsTab::Window => {
                             ui.label("Fullscreen");
