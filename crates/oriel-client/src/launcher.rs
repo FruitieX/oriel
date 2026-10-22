@@ -175,7 +175,6 @@ pub fn run(
         connecting: None,
         pairing: None,
         pair_dialog: None,
-        edit_dialog: None,
         settings: None,
         status: String::new(),
         reconnect: None,
@@ -187,16 +186,11 @@ pub fn run(
     // Debugging aid for screenshots.
     match std::env::var("ORIEL_DEBUG_DIALOG").as_deref() {
         Ok("pair") => launcher.pair_dialog = Some(PairDialog::default()),
-        Ok("edit") => {
-            if let Some(h) = launcher.hosts.first().map(|h| h.name.clone()) {
-                launcher.apply(Action::OpenEdit(h));
-            }
-        }
         // "settings[-tab]" or "host-settings[-tab]" (for the first host).
         Ok(d) if d.starts_with("settings") || d.starts_with("host-settings") => {
             let host = d
                 .starts_with("host")
-                .then(|| launcher.hosts.first().map(|h| h.name.clone()))
+                .then(|| launcher.hosts.first())
                 .flatten();
             let mut dialog = SettingsDialog::new(host);
             if let Some((_, tab)) = d.rsplit_once('-')
@@ -295,8 +289,9 @@ const PROBE_INTERVAL: Duration = Duration::from_secs(15);
 
 type Pending<T> = Arc<Mutex<Option<Result<T>>>>;
 
-/// Renaming a host or changing its address.
-struct EditDialog {
+/// A host's name and address as edited in its settings, stored when the
+/// dialog closes.
+struct HostEdit {
     /// The host's name before editing.
     original: String,
     name: String,
@@ -340,7 +335,6 @@ struct Launcher {
     connecting: Option<(String, Pending<Connected>)>,
     pairing: Option<Pending<String>>,
     pair_dialog: Option<PairDialog>,
-    edit_dialog: Option<EditDialog>,
     /// The open settings dialog.
     settings: Option<SettingsDialog>,
     status: String,
@@ -354,9 +348,6 @@ enum Action {
     Connect(String),
     Forget(String),
     OpenPair,
-    OpenEdit(String),
-    CloseEdit,
-    SaveEdit,
     ClosePair,
     Pair,
     OpenSettings,
@@ -376,13 +367,20 @@ enum Action {
 struct SettingsDialog {
     host: Option<String>,
     panel: crate::settings_ui::Panel,
+    edit: Option<HostEdit>,
 }
 
 impl SettingsDialog {
-    fn new(host: Option<String>) -> Self {
+    fn new(host: Option<&oriel_net::TrustedPeer>) -> Self {
         Self {
             panel: crate::settings_ui::Panel::new(host.is_some()),
-            host,
+            host: host.map(|h| h.name.clone()),
+            edit: host.map(|h| HostEdit {
+                original: h.name.clone(),
+                name: h.name.clone(),
+                address: h.address.clone().unwrap_or_default(),
+                error: None,
+            }),
         }
     }
 }
@@ -465,32 +463,6 @@ impl Launcher {
                 }
                 self.reload_hosts();
             }
-            Action::OpenEdit(name) => {
-                if let Some(h) = self.hosts.iter().find(|h| h.name == name) {
-                    self.edit_dialog = Some(EditDialog {
-                        original: h.name.clone(),
-                        name: h.name.clone(),
-                        address: h.address.clone().unwrap_or_default(),
-                        error: None,
-                    });
-                }
-            }
-            Action::CloseEdit => self.edit_dialog = None,
-            Action::SaveEdit => {
-                if let Some(d) = &mut self.edit_dialog {
-                    match save_edit(&self.paths, &mut self.config, d) {
-                        Ok(renamed) => {
-                            if renamed {
-                                self.save_config();
-                            }
-                            self.edit_dialog = None;
-                            self.reach.clear();
-                            self.reload_hosts();
-                        }
-                        Err(e) => d.error = Some(format!("{e:#}")),
-                    }
-                }
-            }
             Action::OpenPair => self.pair_dialog = Some(PairDialog::default()),
             Action::ClosePair => self.pair_dialog = None,
             Action::Pair => {
@@ -507,8 +479,39 @@ impl Launcher {
                 self.pairing = Some(pending);
             }
             Action::OpenSettings => self.settings = Some(SettingsDialog::new(None)),
-            Action::OpenHostSettings(host) => self.settings = Some(SettingsDialog::new(Some(host))),
-            Action::CloseSettings => self.settings = None,
+            Action::OpenHostSettings(host) => {
+                if let Some(h) = self.hosts.iter().find(|h| h.name == host) {
+                    self.settings = Some(SettingsDialog::new(Some(h)));
+                }
+            }
+            Action::CloseSettings => {
+                // Store an edited name or address first; on a mistake the
+                // dialog stays open and says why.
+                if let Some(d) = self.settings.as_mut().and_then(|s| s.edit.as_mut())
+                    && (d.name.trim() != d.original
+                        || Some(d.address.trim())
+                            != self
+                                .hosts
+                                .iter()
+                                .find(|h| h.name == d.original)
+                                .and_then(|h| h.address.as_deref()))
+                {
+                    match save_edit(&self.paths, &mut self.config, d) {
+                        Ok(renamed) => {
+                            if renamed {
+                                self.save_config();
+                            }
+                            self.reach.clear();
+                            self.reload_hosts();
+                        }
+                        Err(e) => {
+                            d.error = Some(format!("{e:#}"));
+                            return;
+                        }
+                    }
+                }
+                self.settings = None;
+            }
             Action::SettingsChanged => {
                 let saved = ClientConfig::load(&self.paths).unwrap_or_default();
                 if (saved.autostart, saved.start_hidden)
@@ -757,7 +760,6 @@ impl Launcher {
             });
         let ctx = root.ctx().clone();
         self.pair_modal(&ctx, &mut actions);
-        self.edit_modal(&ctx, &mut actions);
         self.settings_modal(&ctx, &mut actions);
         actions
     }
@@ -936,10 +938,6 @@ impl Launcher {
                         actions.push(Action::OpenHostSettings(h.name.clone()));
                         ui.close();
                     }
-                    if ui.button("Rename or change address…").clicked() {
-                        actions.push(Action::OpenEdit(h.name.clone()));
-                        ui.close();
-                    }
                     ui.separator();
                     if ui.button(format!("Forget {}", h.name)).clicked() {
                         actions.push(Action::Forget(h.name.clone()));
@@ -1089,61 +1087,6 @@ impl Launcher {
         }
     }
 
-    fn edit_modal(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
-        let Some(d) = &mut self.edit_dialog else {
-            return;
-        };
-        let modal = egui::Modal::new(egui::Id::unique("edit-host"))
-            .frame(dialog_frame())
-            .show(ctx, |ui| {
-                ui.set_width(380.0);
-                ui.heading(format!("Edit {}", d.original));
-                ui.label(
-                    egui::RichText::new(
-                        "The name is only used on this device. The address can be an IP \
-                         address or a host name, with :port if it is not 48600.",
-                    )
-                    .color(MUTED),
-                );
-                ui.add_space(8.0);
-                let mut submit = false;
-                egui::Grid::new("edit-fields")
-                    .num_columns(2)
-                    .spacing([12.0, 10.0])
-                    .show(ui, |ui| {
-                        ui.label("Name");
-                        let r = ui.text_edit_singleline(&mut d.name);
-                        submit |= r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                        ui.end_row();
-                        ui.label("Address");
-                        let r = ui.add(
-                            egui::TextEdit::singleline(&mut d.address)
-                                .hint_text("192.168.1.10 or name"),
-                        );
-                        submit |= r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                        ui.end_row();
-                    });
-                if let Some(error) = &d.error {
-                    ui.add_space(6.0);
-                    ui.label(egui::RichText::new(error).color(crate::theme::RED));
-                }
-                ui.add_space(10.0);
-                ui.horizontal(|ui| {
-                    let ready = !d.name.trim().is_empty() && !d.address.trim().is_empty();
-                    if ui.add_enabled(ready, primary_button("Save")).clicked() || (submit && ready)
-                    {
-                        actions.push(Action::SaveEdit);
-                    }
-                    if ui.button("Cancel").clicked() {
-                        actions.push(Action::CloseEdit);
-                    }
-                });
-            });
-        if modal.should_close() {
-            actions.push(Action::CloseEdit);
-        }
-    }
-
     fn settings_modal(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
         let Some(dialog) = &mut self.settings else {
             return;
@@ -1153,7 +1096,8 @@ impl Launcher {
         // scrolls.
         let width = (screen.width() - 92.0).clamp(240.0, 560.0);
         // Narrow dialogs wrap their tabs and subtitle onto more lines.
-        let chrome = if width < 440.0 { 290.0 } else { 230.0 };
+        let chrome = if width < 440.0 { 290.0 } else { 230.0 }
+            + if dialog.edit.is_some() { 96.0 } else { 0.0 };
         let height = (screen.height() - chrome).clamp(60.0, 380.0);
         let config = &mut self.config;
         let modal = egui::Modal::new(egui::Id::unique("settings"))
@@ -1174,6 +1118,30 @@ impl Launcher {
                     actions.push(Action::CloseSettings);
                 }
                 ui.add_space(10.0);
+                if let Some(d) = &mut dialog.edit {
+                    egui::Grid::new("host-identity")
+                        .num_columns(2)
+                        .spacing([12.0, 8.0])
+                        .show(ui, |ui| {
+                            let field = (width - 110.0).max(120.0);
+                            ui.label("Name");
+                            ui.add(egui::TextEdit::singleline(&mut d.name).desired_width(field));
+                            ui.end_row();
+                            ui.label("Address");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut d.address)
+                                    .hint_text("IP address or host name, :port if not 48600")
+                                    .desired_width(field),
+                            );
+                            ui.end_row();
+                        });
+                    if let Some(error) = &d.error {
+                        ui.label(egui::RichText::new(error).color(crate::theme::RED));
+                    }
+                    ui.add_space(6.0);
+                    ui.separator();
+                    ui.add_space(6.0);
+                }
                 let outcome = dialog.panel.show(
                     ui,
                     config,
@@ -1325,7 +1293,7 @@ impl ApplicationHandler<UiEvent> for Launcher {
 
 /// Store an edited name and address. Returns whether the host was renamed
 /// (its settings in `config` move along and need saving).
-fn save_edit(paths: &Paths, config: &mut ClientConfig, d: &EditDialog) -> Result<bool> {
+fn save_edit(paths: &Paths, config: &mut ClientConfig, d: &HostEdit) -> Result<bool> {
     let (name, address) = (d.name.trim(), d.address.trim());
     let mut store = TrustStore::load(&paths.known_hosts())?;
     if store
@@ -1371,13 +1339,16 @@ mod tests {
         let mut config = ClientConfig::default();
         config.host_mut("alpha").show_stats = Some(true);
 
-        let mut d = EditDialog {
+        let mut d = HostEdit {
             original: "alpha".into(),
             name: "Beta".into(),
             address: "10.0.0.9".into(),
             error: None,
         };
-        assert!(save_edit(&paths, &mut config, &d).is_err(), "names are unique");
+        assert!(
+            save_edit(&paths, &mut config, &d).is_err(),
+            "names are unique"
+        );
 
         d.name = " gamma ".into();
         assert!(save_edit(&paths, &mut config, &d).unwrap());
