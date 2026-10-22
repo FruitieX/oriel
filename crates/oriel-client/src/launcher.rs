@@ -51,6 +51,12 @@ pub struct GuiOptions {
 
 /// A small window icon: a frame with a lit pane.
 pub fn icon() -> Option<Icon> {
+    let (rgba, n) = icon_rgba();
+    Icon::from_rgba(rgba, n, n).ok()
+}
+
+/// The icon as square RGBA pixels and its size.
+pub fn icon_rgba() -> (Vec<u8>, u32) {
     let n = 32u32;
     let mut rgba = Vec::with_capacity((n * n * 4) as usize);
     for y in 0..n {
@@ -67,7 +73,7 @@ pub fn icon() -> Option<Icon> {
             rgba.extend_from_slice(&px);
         }
     }
-    Icon::from_rgba(rgba, n, n).ok()
+    (rgba, n)
 }
 
 pub fn run(

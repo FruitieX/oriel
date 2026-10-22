@@ -229,9 +229,20 @@ impl Device {
         let mut device = ptr::null_mut();
         // HIGH priority puts encoding on an async compute queue, so it does
         // not wait behind a game's rendering.
-        for priority in [gpu::QUEUE_GLOBAL_PRIORITY_HIGH, gpu::QUEUE_GLOBAL_PRIORITY_MEDIUM] {
+        for priority in [
+            gpu::QUEUE_GLOBAL_PRIORITY_HIGH,
+            gpu::QUEUE_GLOBAL_PRIORITY_MEDIUM,
+        ] {
             let r = unsafe {
-                (api.create_device_by_compat)(0, 0, ptr::null(), ptr::null(), &luid, priority, &mut device)
+                (api.create_device_by_compat)(
+                    0,
+                    0,
+                    ptr::null(),
+                    ptr::null(),
+                    &luid,
+                    priority,
+                    &mut device,
+                )
             };
             if r == SUCCESS {
                 return Ok(Self(device));
@@ -670,28 +681,41 @@ mod d3d11 {
                     MipLevels: 1,
                     ArraySize: 1,
                     Format: DXGI_FORMAT_B8G8R8A8_UNORM,
-                    SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+                    SampleDesc: DXGI_SAMPLE_DESC {
+                        Count: 1,
+                        Quality: 0,
+                    },
                     Usage: D3D11_USAGE_DEFAULT,
                     BindFlags: (D3D11_BIND_RENDER_TARGET.0 | D3D11_BIND_SHADER_RESOURCE.0) as u32,
                     CPUAccessFlags: 0,
-                    MiscFlags: (D3D11_RESOURCE_MISC_SHARED.0 | D3D11_RESOURCE_MISC_SHARED_NTHANDLE.0) as u32,
+                    MiscFlags: (D3D11_RESOURCE_MISC_SHARED.0
+                        | D3D11_RESOURCE_MISC_SHARED_NTHANDLE.0)
+                        as u32,
                 };
                 let mut texture = None;
                 device.CreateTexture2D(&desc, None, Some(&mut texture))?;
                 let texture = texture.context("CreateTexture2D returned nothing")?;
-                let handle = texture
-                    .cast::<IDXGIResource1>()?
-                    .CreateSharedHandle(None, GENERIC_ALL.0, None)?;
+                let handle = texture.cast::<IDXGIResource1>()?.CreateSharedHandle(
+                    None,
+                    GENERIC_ALL.0,
+                    None,
+                )?;
 
                 let image_info = ash::vk::ImageCreateInfo::default()
                     .image_type(ash::vk::ImageType::TYPE_2D)
                     .format(ash::vk::Format::B8G8R8A8_UNORM)
-                    .extent(ash::vk::Extent3D { width: w, height: h, depth: 1 })
+                    .extent(ash::vk::Extent3D {
+                        width: w,
+                        height: h,
+                        depth: 1,
+                    })
                     .mip_levels(1)
                     .array_layers(1)
                     .samples(ash::vk::SampleCountFlags::TYPE_1)
                     .tiling(ash::vk::ImageTiling::OPTIMAL)
-                    .usage(ash::vk::ImageUsageFlags::SAMPLED | ash::vk::ImageUsageFlags::TRANSFER_SRC)
+                    .usage(
+                        ash::vk::ImageUsageFlags::SAMPLED | ash::vk::ImageUsageFlags::TRANSFER_SRC,
+                    )
                     .sharing_mode(ash::vk::SharingMode::EXCLUSIVE);
                 let info = gpu::ImageCreateInfo {
                     device: pyro_device,
@@ -701,7 +725,10 @@ mod d3d11 {
                     image_create_info: &image_info as *const _ as *const _,
                 };
                 let mut image = std::ptr::null_mut();
-                pw((api.image_create)(&info, &mut image), "import the shared texture into Vulkan")?;
+                pw(
+                    (api.image_create)(&info, &mut image),
+                    "import the shared texture into Vulkan",
+                )?;
 
                 let fence: ID3D11Fence = {
                     let mut f: Option<ID3D11Fence> = None;
@@ -729,7 +756,6 @@ mod d3d11 {
                     fence_value: 0,
                     image,
                     sync,
-
                 })
             }
         }
@@ -759,11 +785,19 @@ mod d3d11 {
                 let release = gpu::SyncOp {
                     images: refs.as_ptr(),
                     num_images: 1,
-                    sync: gpu::SyncPoint { semaphore: 0, value: 0 },
+                    sync: gpu::SyncPoint {
+                        semaphore: 0,
+                        value: 0,
+                    },
                 };
                 let mut view = gpu::ImageView::default();
                 pw(
-                    (api.image_get_image_view)(self.image, gpu::ASPECT_COLOR, gpu::USAGE_SAMPLED, &mut view),
+                    (api.image_get_image_view)(
+                        self.image,
+                        gpu::ASPECT_COLOR,
+                        gpu::USAGE_SAMPLED,
+                        &mut view,
+                    ),
                     "PyroWave image view",
                 )?;
                 let info = gpu::ScaledEncodeInfo {
@@ -827,7 +861,10 @@ impl PyroEncoder {
             height: height as c_int,
             chroma: CHROMA_420,
         };
-        pw(unsafe { (api.encoder_create)(&info, &mut encoder) }, "create PyroWave encoder")?;
+        pw(
+            unsafe { (api.encoder_create)(&info, &mut encoder) },
+            "create PyroWave encoder",
+        )?;
         let mut enc = Self {
             encoder,
             gpu: Some(gpu),
@@ -853,7 +890,10 @@ impl PyroEncoder {
         copy: &mut dyn FnMut(*mut c_void, u32) -> Result<()>,
     ) -> Result<EncodedFrame> {
         let started = Instant::now();
-        let gpu = self.gpu.as_mut().ok_or_else(|| anyhow!("not a D3D11 encoder"))?;
+        let gpu = self
+            .gpu
+            .as_mut()
+            .ok_or_else(|| anyhow!("not a D3D11 encoder"))?;
         copy(gpu.texture_ptr(), 0)?;
         let rate = RateControl {
             maximum_bitstream_size: self.max_bytes,

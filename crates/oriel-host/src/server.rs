@@ -31,7 +31,8 @@ struct Host {
     paths: Paths,
     identity: Identity,
     test: TestState,
-    pairing: Mutex<PairingState>,
+    pairing: Arc<Mutex<PairingState>>,
+    status: Arc<Mutex<HostStatus>>,
     /// The connection currently streaming, replaced by newer sessions.
     active: Mutex<Option<quinn::Connection>>,
 }
@@ -39,6 +40,47 @@ struct Host {
 struct PairingState {
     pin: Option<String>,
     failures: u32,
+}
+
+/// What the host is doing, for a tray icon or status display.
+#[derive(Debug, Clone, Default)]
+pub struct HostStatus {
+    /// The client currently streaming.
+    pub client: Option<String>,
+    pub codec: Option<String>,
+}
+
+/// Lets a UI watch a running host and allow pairing.
+#[derive(Clone)]
+pub struct HostControl {
+    pairing: Arc<Mutex<PairingState>>,
+    status: Arc<Mutex<HostStatus>>,
+}
+
+impl HostControl {
+    pub fn new(pin: Option<String>) -> Self {
+        Self {
+            pairing: Arc::new(Mutex::new(PairingState { pin, failures: 0 })),
+            status: Default::default(),
+        }
+    }
+
+    pub fn status(&self) -> HostStatus {
+        self.status.lock().clone()
+    }
+
+    /// Accept pairing with a fresh PIN, which is returned.
+    pub fn allow_pairing(&self) -> String {
+        let pin = oriel_net::pairing::generate_pin();
+        let mut state = self.pairing.lock();
+        state.pin = Some(pin.clone());
+        state.failures = 0;
+        pin
+    }
+
+    pub fn pairing_pin(&self) -> Option<String> {
+        self.pairing.lock().pin.clone()
+    }
 }
 
 const MAX_PAIR_FAILURES: u32 = 5;
@@ -49,9 +91,27 @@ pub const PIN_FILE: &str = "pairing-pin";
 const PIN_FILE_VALIDITY: Duration = Duration::from_secs(600);
 
 pub async fn run(paths: Paths, options: HostOptions) -> Result<()> {
+    let control = HostControl::new(options.pair_pin.clone());
+    run_with(paths, options, control).await
+}
+
+/// Run the host, observable and controllable through `control`.
+pub async fn run_with(paths: Paths, options: HostOptions, control: HostControl) -> Result<()> {
     crate::init_process();
     let identity = Identity::load_or_create(&paths.config_dir)?;
-    let endpoint = server_endpoint(&identity, options.listen)?;
+    // A restarting host may still hold the port for a moment.
+    let mut attempt = 0;
+    let endpoint = loop {
+        match server_endpoint(&identity, options.listen) {
+            Ok(e) => break e,
+            Err(e) if attempt < 20 => {
+                attempt += 1;
+                tracing::debug!("cannot listen yet: {e:#}");
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+            Err(e) => return Err(e),
+        }
+    };
     tracing::info!(
         listen = %endpoint.local_addr()?,
         fingerprint = %identity.fingerprint.short(),
@@ -64,10 +124,8 @@ pub async fn run(paths: Paths, options: HostOptions) -> Result<()> {
         );
     }
     let host = Arc::new(Host {
-        pairing: Mutex::new(PairingState {
-            pin: options.pair_pin.clone(),
-            failures: 0,
-        }),
+        pairing: control.pairing.clone(),
+        status: control.status.clone(),
         options: Arc::new(options),
         paths,
         identity,
@@ -144,14 +202,22 @@ impl Host {
         if let Some(previous) = self.active.lock().replace(conn.clone()) {
             previous.close(1u32.into(), b"another session took over");
         }
-        let result =
-            crate::session::run(conn.clone(), ctl, self.options.clone(), self.test.clone()).await;
+        self.status.lock().client = Some(name.clone());
+        let result = crate::session::run(
+            conn.clone(),
+            ctl,
+            self.options.clone(),
+            self.test.clone(),
+            self.status.clone(),
+        )
+        .await;
         let mut active = self.active.lock();
         if active
             .as_ref()
             .is_some_and(|c| c.stable_id() == conn.stable_id())
         {
             *active = None;
+            *self.status.lock() = HostStatus::default();
         }
         conn.close(0u32.into(), b"bye");
         result

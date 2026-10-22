@@ -13,10 +13,10 @@ target=x86_64-pc-windows-gnu
 export FFMPEG_DIR="$ORIEL_FFMPEG_WIN64"
 export BINDGEN_EXTRA_CLANG_ARGS_x86_64_pc_windows_gnu="--target=x86_64-w64-mingw32 -D__IMMINTRIN_H -D__X86INTRIN_H $("${CC_x86_64_pc_windows_gnu}" -E -Wp,-v -x c /dev/null 2>&1 | grep -v '/lib/gcc/' | sed -n 's/^ \(\/nix.*include.*\)$/-isystem \1/p' | tr '\n' ' ')"
 
-profile=debug
-for a in "$@"; do [[ "$a" == "--release" ]] && profile=release; done
-
-cargo build --target "$target" -p oriel "$@"
+# Always release: dist/ is what the test PC runs (debug builds can overflow
+# Windows' 1 MB main thread stack).
+profile=release
+cargo build --release --target "$target" -p oriel "$@"
 
 out=dist/windows
 mkdir -p "$out"

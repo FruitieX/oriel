@@ -1,5 +1,13 @@
 //! `oriel`: one binary that hosts a desktop and connects to other hosts.
 
+// No console window when started from Explorer; commands typed in a
+// terminal attach to it (see `attach_console`).
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
+#[cfg(windows)]
+mod tray;
+mod update;
+
 use std::{net::SocketAddr, path::PathBuf, time::Duration};
 
 use anyhow::{Context, Result, bail};
@@ -80,6 +88,13 @@ enum Command {
         /// script then installs the new build and restarts).
         #[arg(long, hide = true)]
         restart_when_changed: Option<PathBuf>,
+        /// Development: install new builds that appear in this folder and
+        /// restart into them.
+        #[arg(long, hide = true)]
+        update_from: Option<PathBuf>,
+        /// Do not show a tray icon (Windows).
+        #[arg(long)]
+        no_tray: bool,
     },
     /// Pair with a host that runs `oriel host --pair`.
     Pair {
@@ -173,6 +188,18 @@ enum ServiceCommand {
 }
 
 fn main() -> Result<()> {
+    #[cfg(windows)]
+    attach_console();
+    let result = run();
+    if let Err(e) = &result {
+        // GUI-subsystem processes have nowhere to print; make sure the log
+        // file has it.
+        tracing::error!("{e:#}");
+    }
+    result
+}
+
+fn run() -> Result<()> {
     let cli = Cli::parse();
     #[cfg(windows)]
     if matches!(
@@ -220,10 +247,39 @@ fn main() -> Result<()> {
             codec,
             bitrate,
             restart_when_changed,
+            update_from,
+            no_tray,
         } => {
+            update::clean_old();
             if let Some(path) = restart_when_changed {
-                watch_for_update(path);
+                // Older dev scripts loop on exit code 75; hand over to a
+                // tray host that updates itself instead.
+                let dir = path.parent().map(PathBuf::from).unwrap_or_default();
+                let args: Vec<String> = std::env::args().skip(1).collect();
+                let mut out = Vec::new();
+                let mut skip = false;
+                for a in args {
+                    if skip {
+                        skip = false;
+                        continue;
+                    }
+                    if a == "--restart-when-changed" {
+                        skip = true;
+                        continue;
+                    }
+                    out.push(a);
+                }
+                out.push("--update-from".into());
+                out.push(dir.to_string_lossy().into_owned());
+                std::process::Command::new(std::env::current_exe()?)
+                    .args(&out)
+                    .spawn()?;
+                return Ok(());
             }
+            let log_path = cli
+                .log_file
+                .clone()
+                .or_else(|| cfg!(windows).then(|| paths.config_dir.join("oriel-host.log")));
             let pair_pin = match (pair, pin) {
                 (_, Some(pin)) => Some(pin),
                 (true, None) => Some(oriel_net::pairing::generate_pin()),
@@ -242,6 +298,22 @@ fn main() -> Result<()> {
                 codec: codec.map(Into::into),
                 default_bitrate_kbps: bitrate,
             };
+            let tray = cfg!(windows) && !no_tray;
+            if let Some(src) = update_from {
+                update::watch(src, move || {
+                    #[cfg(windows)]
+                    if tray {
+                        tray::RESTART.store(true, std::sync::atomic::Ordering::Relaxed);
+                        return;
+                    }
+                    update::relaunch();
+                });
+            }
+            #[cfg(windows)]
+            if tray {
+                return tray::run_host(runtime()?, paths, options, log_path);
+            }
+            let _ = (tray, log_path);
             runtime()?.block_on(oriel_host::run(paths, options))
         }
         Command::Pair { address, pin, name } => {
@@ -526,20 +598,12 @@ impl oriel_client::launcher::HostControl for LocalHost {
     }
 }
 
-/// Exit with code 75 once `path` is modified and has stopped changing.
-fn watch_for_update(path: PathBuf) {
-    let mtime = |p: &std::path::Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
-    let initial = mtime(&path);
-    std::thread::spawn(move || {
-        loop {
-            std::thread::sleep(Duration::from_secs(2));
-            let now = mtime(&path);
-            if now.is_some() && now != initial {
-                // Let the copy finish.
-                std::thread::sleep(Duration::from_secs(3));
-                tracing::info!("new build found at {}, restarting", path.display());
-                std::process::exit(75);
-            }
-        }
-    });
+/// GUI-subsystem builds have no console; reuse the one of the terminal we
+/// were started from, if any, so command output shows up there.
+#[cfg(windows)]
+fn attach_console() {
+    use windows::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
+    unsafe {
+        let _ = AttachConsole(ATTACH_PARENT_PROCESS);
+    }
 }

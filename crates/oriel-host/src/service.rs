@@ -390,7 +390,8 @@ fn spawn_host(exe: &Path, args: &[String], session: u32) -> Result<HANDLE> {
                 &session as *const u32 as *const _,
                 size_of::<u32>() as u32,
             )?;
-            let mut cmdline = format!("\"{}\" host", exe.display());
+            // SYSTEM processes cannot reliably own a tray icon.
+            let mut cmdline = format!("\"{}\" host --no-tray", exe.display());
             for a in args {
                 cmdline.push_str(&format!(" \"{}\"", a.replace('"', "\\\"")));
             }

@@ -1,13 +1,10 @@
 @echo off
-rem Development host: runs a local copy of the build on the share and
-rem restarts with the new build whenever it changes. Set ORIEL_PIN to allow
-rem pairing.
+rem Development host: installs the build from this folder locally, starts it
+rem in the tray and lets it update itself when a new build lands here. Set
+rem ORIEL_PIN to allow pairing.
 set SRC=%~dp0
 set DST=%LOCALAPPDATA%\oriel-dev
 set PAIR=
 if not "%ORIEL_PIN%"=="" set PAIR=--pin %ORIEL_PIN%
-:loop
 robocopy "%SRC%." "%DST%" *.exe *.dll /NJH /NJS /NFL /NDL >nul
-"%DST%\oriel.exe" host %PAIR% --log-file "%SRC%..\host.log" --restart-when-changed "%SRC%oriel.exe"
-if %ERRORLEVEL%==75 goto loop
-pause
+start "" "%DST%\oriel.exe" host %PAIR% --log-file "%SRC%..\host.log" --update-from "%SRC%."

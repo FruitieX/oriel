@@ -22,6 +22,7 @@ pub async fn run(
     mut ctl: ControlStream,
     options: Arc<HostOptions>,
     test: TestState,
+    status: Arc<parking_lot::Mutex<crate::server::HostStatus>>,
 ) -> Result<()> {
     let settings = loop {
         match ctl.recv().await? {
@@ -159,6 +160,7 @@ pub async fn run(
                     None => break,
                     Some(Event::Frame(header, data)) => send_frame(&conn, header, data, &shared).await,
                     Some(Event::Surface(info)) => {
+                        status.lock().codec = Some(info.codec.name().to_string());
                         write_msg(&mut ctl_send, &HostMsg::SurfaceStarted(info)).await?
                     }
                     Some(Event::CursorShape(shape)) => {

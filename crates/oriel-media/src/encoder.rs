@@ -673,7 +673,9 @@ impl Encoder {
                         );
                         return Ok(Self(EncoderInner::Pyro(enc)));
                     }
-                    Err(e) => tracing::warn!("PyroWave zero-copy unavailable, using CPU input: {e:#}"),
+                    Err(e) => {
+                        tracing::warn!("PyroWave zero-copy unavailable, using CPU input: {e:#}")
+                    }
                 }
             }
             let enc = crate::pyrowave::PyroEncoder::new(
