@@ -122,7 +122,11 @@ impl Panel {
         let mut rows = Rows {
             config,
             host,
-            field: (size.x - 200.0).clamp(150.0, 300.0),
+            field: if size.x < COMPACT_WIDTH {
+                size.x.min(300.0)
+            } else {
+                (size.x - 200.0).clamp(150.0, 300.0)
+            },
             outcome: Outcome::default(),
         };
         egui::ScrollArea::vertical()
@@ -651,8 +655,19 @@ fn app_tab(ui: &mut Ui, rows: &mut Rows) {
     }
 }
 
-/// A settings grid: label, control, and a column for "Reset".
+/// Narrower than this, rows stack: label above control.
+const COMPACT_WIDTH: f32 = 440.0;
+
+/// A settings grid: label, control, and a column for "Reset". In narrow
+/// windows the cells stack instead.
 fn grid(ui: &mut Ui, id: &str, add: impl FnOnce(&mut Ui)) {
+    if ui.available_width() < COMPACT_WIDTH {
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 4.0;
+            add(ui);
+        });
+        return;
+    }
     egui::Grid::new(id)
         .num_columns(3)
         .spacing([16.0, 10.0])

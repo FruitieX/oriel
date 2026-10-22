@@ -101,11 +101,14 @@ pub fn note(ui: &mut egui::Ui, text: &str) {
 /// Returns whether the close button was clicked.
 pub fn title_bar(ui: &mut egui::Ui, title: &str, subtitle: Option<&str>) -> bool {
     let mut close = false;
+    let width = ui.available_width();
     ui.horizontal(|ui| {
+        // Leave room for the close button; long text wraps.
         ui.vertical(|ui| {
-            ui.label(RichText::new(title).heading().color(Color32::WHITE));
+            ui.set_max_width(width - 40.0);
+            ui.add(egui::Label::new(RichText::new(title).heading().color(Color32::WHITE)).wrap());
             if let Some(sub) = subtitle {
-                ui.label(RichText::new(sub).size(12.5).color(MUTED));
+                ui.add(egui::Label::new(RichText::new(sub).size(12.5).color(MUTED)).wrap());
             }
         });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
@@ -161,7 +164,8 @@ pub fn tab_bar<T: Copy + PartialEq>(
     tabs: &[(T, &str)],
 ) -> bool {
     let mut changed = false;
-    ui.horizontal(|ui| {
+    // Wraps onto more lines in narrow windows.
+    ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
         for &(tab, label) in tabs {
             if ui.selectable_label(*current == tab, label).clicked() && *current != tab {

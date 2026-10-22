@@ -93,6 +93,14 @@ pub async fn run(
             }
             Some(UiEvent::Host(HostMsg::SurfaceStarted(info))) => println!("surface: {info:?}"),
             Some(UiEvent::Host(HostMsg::Notice { text })) => println!("host: {text}"),
+            Some(UiEvent::Host(HostMsg::CursorShape(c))) => {
+                let opaque = c.rgba.chunks(4).filter(|p| p[3] > 0).count();
+                println!(
+                    "cursor shape {}: {}x{} hotspot {},{}, {opaque} visible pixels",
+                    c.id, c.width, c.height, c.hotspot_x, c.hotspot_y
+                );
+            }
+            Some(UiEvent::Host(HostMsg::CursorState(c))) => println!("cursor state: {c:?}"),
             Some(UiEvent::Closed { reason, .. }) => bail!("session closed: {reason}"),
             _ => {}
         }

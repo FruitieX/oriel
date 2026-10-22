@@ -938,7 +938,9 @@ impl Launcher {
         // One size on every tab, within the window; what does not fit
         // scrolls.
         let width = (screen.width() - 92.0).clamp(240.0, 560.0);
-        let height = (screen.height() - 230.0).clamp(120.0, 380.0);
+        // Narrow dialogs wrap their tabs and subtitle onto more lines.
+        let chrome = if width < 440.0 { 290.0 } else { 230.0 };
+        let height = (screen.height() - chrome).clamp(60.0, 380.0);
         let config = &mut self.config;
         let modal = egui::Modal::new(egui::Id::unique("settings"))
             .frame(crate::theme::dialog_frame())

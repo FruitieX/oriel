@@ -161,9 +161,13 @@ impl Capturer for PipeWireCapturer {
     }
 }
 
-/// Room for a cursor bitmap of up to 256×256 in the metadata.
-const CURSOR_META_SIZE: usize =
-    size_of::<spa::sys::spa_meta_cursor>() + size_of::<spa::sys::spa_meta_bitmap>() + 256 * 256 * 4;
+/// Metadata size for a cursor bitmap of up to `n`×`n` pixels.
+const fn cursor_meta_size(n: usize) -> usize {
+    size_of::<spa::sys::spa_meta_cursor>() + size_of::<spa::sys::spa_meta_bitmap>() + n * n * 4
+}
+
+/// Room for cursors up to 384×384 (Mutter's largest, at high scales).
+const CURSOR_META_SIZE: usize = cursor_meta_size(384);
 
 /// Capture node `node_id`. For a virtual monitor, `mode` fixes its size and
 /// refresh rate (Mutter sizes the monitor from the negotiated format).
@@ -222,9 +226,19 @@ fn run_stream(
                         spa::sys::SPA_PARAM_META_type,
                         spa::pod::Value::Id(spa::utils::Id(spa::sys::SPA_META_Cursor)),
                     ),
+                    // A range, as gnome-remote-desktop asks: a fixed size
+                    // that differs from what Mutter offers is refused, and
+                    // then no cursor arrives at all.
                     spa::pod::Property::new(
                         spa::sys::SPA_PARAM_META_size,
-                        spa::pod::Value::Int(CURSOR_META_SIZE as i32),
+                        spa::pod::Value::Choice(spa::pod::ChoiceValue::Int(spa::utils::Choice(
+                            spa::utils::ChoiceFlags::empty(),
+                            spa::utils::ChoiceEnum::Range {
+                                default: CURSOR_META_SIZE as i32,
+                                min: cursor_meta_size(1) as i32,
+                                max: CURSOR_META_SIZE as i32,
+                            },
+                        ))),
                     ),
                 ],
             }));
@@ -427,7 +441,7 @@ unsafe fn read_buffer(
                         as *const spa::sys::spa_meta_bitmap;
                     let b = &*bitmap;
                     let (w, h) = (b.size.width, b.size.height);
-                    if w > 0 && h > 0 && w <= 256 && h <= 256 {
+                    if w > 0 && h > 0 && w <= 384 && h <= 384 {
                         let pixels = (bitmap as *const u8).add(b.offset as usize);
                         let mut rgba = Vec::with_capacity((w * h * 4) as usize);
                         let bgra = b.format == spa::sys::SPA_VIDEO_FORMAT_BGRA;
