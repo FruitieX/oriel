@@ -567,6 +567,11 @@ impl Viewer {
         }
     }
 
+    /// The overlay shows something that changes without new frames.
+    fn overlay_ticks(&self) -> bool {
+        self.show_stats || self.menu_open || !self.notices.is_empty()
+    }
+
     fn draw(&mut self) {
         if let Some(ready) = self.session.frames.take() {
             if let Some(gfx) = &mut self.gfx {
@@ -1212,10 +1217,8 @@ impl ApplicationHandler<UiEvent> for Viewer {
                 self.shortcuts_inhibited = active;
             }
         }
-        let periodic = self.show_stats
-            || self.menu_open
-            || !self.notices.is_empty()
-            || (self.focused && self.closed.is_none());
+        // Wake for the clipboard while focused; redraw only for overlays.
+        let periodic = self.overlay_ticks() || (self.focused && self.closed.is_none());
         event_loop.set_control_flow(if periodic {
             ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(250))
         } else {
@@ -1238,7 +1241,14 @@ impl ApplicationHandler<UiEvent> for Viewer {
     }
 
     fn new_events(&mut self, _event_loop: &ActiveEventLoop, cause: StartCause) {
-        if matches!(cause, StartCause::ResumeTimeReached { .. }) {
+        if !matches!(cause, StartCause::ResumeTimeReached { .. }) {
+            return;
+        }
+        // Redraw once more after the last notice expires, to remove it.
+        let notices = self.notices.len();
+        self.notices
+            .retain(|(_, at)| at.elapsed() < Duration::from_secs(5));
+        if self.overlay_ticks() || self.notices.len() != notices {
             self.request_redraw();
         }
     }

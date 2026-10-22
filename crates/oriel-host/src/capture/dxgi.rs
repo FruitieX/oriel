@@ -260,6 +260,8 @@ pub struct DxgiCapturer {
     staging: Option<ID3D11Texture2D>,
     cpu: Vec<u8>,
     cpu_fresh: bool,
+    /// An image has been captured since duplication started.
+    have_image: bool,
     new_shape: Option<CursorShape>,
     shape_buf: Vec<u8>,
 }
@@ -329,6 +331,7 @@ impl DxgiCapturer {
             staging: None,
             cpu: Vec::new(),
             cpu_fresh: false,
+            have_image: false,
             new_shape: None,
             shape_buf: Vec::new(),
         })
@@ -470,6 +473,13 @@ impl Capturer for DxgiCapturer {
             if info.LastPresentTime == 0 {
                 return Ok(false);
             }
+            // Something presented, but without dirty or move rectangles the
+            // image is unchanged (e.g. a game or video presenting the same
+            // frame); sending it again would only keep the stream busy.
+            if info.TotalMetadataBufferSize == 0 && self.have_image {
+                return Ok(false);
+            }
+            self.have_image = true;
             let frame: ID3D11Texture2D = resource.context("no frame resource")?.cast()?;
             unsafe { self.context.CopyResource(&self.latest, &frame) };
             self.cpu_fresh = false;

@@ -6,7 +6,9 @@ use std::{
 };
 
 use anyhow::Result;
-use oriel_media::{ColorMatrix, DecodedFrame, Decoder, Frame};
+#[cfg(target_os = "linux")]
+use oriel_media::Frame;
+use oriel_media::{ColorMatrix, DecodedFrame, Decoder};
 use oriel_proto::{ClientMsg, Codec, Datagram, FrameHeader};
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
