@@ -18,6 +18,10 @@ use serde::{Deserialize, Serialize};
 pub mod keys;
 
 pub const ALPN: &[u8] = b"oriel/1";
+/// A client closes a connection with this reason right after the handshake
+/// when it only checks whether the host is up.
+pub const PROBE_REASON: &[u8] = b"probe";
+
 pub const PROTOCOL_VERSION: u32 = 8;
 pub const DEFAULT_PORT: u16 = 48600;
 /// Upper bound for a single control/input message.

@@ -132,6 +132,8 @@ pub fn install(host_args: &[String]) -> Result<()> {
         ],
     )?;
 
+    adopt_user_identity(&data);
+
     // Let services generate Ctrl+Alt+Del (SendSAS).
     run(
         "reg",
@@ -191,6 +193,42 @@ pub fn install(host_args: &[String]) -> Result<()> {
     println!("Service started. Pair a client with: oriel service pair");
     Ok(())
 }
+
+/// Hand the service the identity and paired clients of the user installing
+/// it, so clients that paired with their host keep working. Only while the
+/// service has no pairings of its own.
+fn adopt_user_identity(data: &Path) {
+    let service = oriel_net::config::Paths {
+        config_dir: data.to_path_buf(),
+    };
+    let paired = oriel_net::config::TrustStore::load(&service.trusted_clients())
+        .is_ok_and(|store| !store.peers.is_empty());
+    let Some(user) = std::env::var_os("ORIEL_CONFIG_DIR")
+        .is_none()
+        .then(oriel_net::config::Paths::discover)
+        .and_then(Result::ok)
+    else {
+        return;
+    };
+    if paired || !user.config_dir.join(IDENTITY_FILES[0]).is_file() {
+        return;
+    }
+    for name in IDENTITY_FILES
+        .iter()
+        .copied()
+        .chain(["trusted-clients.toml"])
+    {
+        let from = user.config_dir.join(name);
+        if from.is_file() {
+            match std::fs::copy(&from, data.join(name)) {
+                Ok(_) => println!("Took over {}", from.display()),
+                Err(e) => eprintln!("cannot copy {}: {e}", from.display()),
+            }
+        }
+    }
+}
+
+const IDENTITY_FILES: [&str; 2] = ["identity.crt.der", "identity.key.der"];
 
 fn wait_stopped(service: &windows_service::service::Service) {
     let deadline = Instant::now() + Duration::from_secs(10);

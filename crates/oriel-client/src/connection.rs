@@ -132,6 +132,55 @@ pub async fn connect(paths: &Paths, target: &str) -> Result<Connected> {
     }
 }
 
+/// Whether a paired host answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reach {
+    Online,
+    Offline,
+    /// Something answers at the address, but with another identity.
+    Changed,
+}
+
+/// Check every known host with a bare handshake (no session, nothing shown
+/// on the host). Results come in the order of `hosts`.
+pub async fn probe(paths: &Paths, hosts: &[TrustedPeer]) -> Result<Vec<Reach>> {
+    let identity = Identity::load_or_create(&paths.config_dir)?;
+    let endpoint = client_endpoint(&identity)?;
+    let checks: Vec<_> = hosts
+        .iter()
+        .cloned()
+        .map(|host| {
+            let endpoint = endpoint.clone();
+            tokio::spawn(async move {
+                let Some(address) = &host.address else {
+                    return Reach::Offline;
+                };
+                let attempt = async {
+                    let addr = resolve(address).await?;
+                    let conn = endpoint.connect(addr, "oriel")?.await?;
+                    let fingerprint = peer_fingerprint(&conn)?;
+                    conn.close(0u32.into(), PROBE_REASON);
+                    anyhow::Ok(fingerprint)
+                };
+                match tokio::time::timeout(Duration::from_secs(3), attempt).await {
+                    Ok(Ok(fp)) if fp == host.fingerprint => Reach::Online,
+                    Ok(Ok(_)) => Reach::Changed,
+                    _ => Reach::Offline,
+                }
+            })
+        })
+        .collect();
+    let mut results = Vec::with_capacity(checks.len());
+    for check in checks {
+        results.push(check.await.unwrap_or(Reach::Offline));
+    }
+    endpoint.wait_idle().await;
+    Ok(results)
+}
+
+/// The close reason of a reachability check, which hosts don't log.
+pub const PROBE_REASON: &[u8] = oriel_proto::PROBE_REASON;
+
 /// Pair with the host at `address` using the PIN it shows. Returns its name.
 pub async fn pair(paths: &Paths, address: &str, pin: &str, name: Option<&str>) -> Result<String> {
     let identity = Identity::load_or_create(&paths.config_dir)?;

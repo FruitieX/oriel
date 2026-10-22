@@ -23,7 +23,7 @@ use crate::{
     ViewerOptions,
     app::{self, ViewerExit},
     config::ClientConfig,
-    connection::{self, Connected},
+    connection::{self, Connected, Reach},
     render::Renderer,
     session::UiEvent,
     theme::{
@@ -163,6 +163,9 @@ pub fn run(
         gfx: None,
         egui_ctx: egui::Context::default(),
         hosts: Vec::new(),
+        reach: Default::default(),
+        probe: None,
+        next_probe: Instant::now(),
         connecting: None,
         pairing: None,
         pair_dialog: None,
@@ -272,6 +275,10 @@ struct Reconnect {
     at: Instant,
 }
 
+const DIM_SCREEN: egui::Color32 = egui::Color32::from_rgb(0x3a, 0x3f, 0x50);
+
+const PROBE_INTERVAL: Duration = Duration::from_secs(15);
+
 type Pending<T> = Arc<Mutex<Option<Result<T>>>>;
 
 #[derive(Default)]
@@ -302,6 +309,11 @@ struct Launcher {
     gfx: Option<(Arc<Window>, Renderer, egui_winit::State)>,
     egui_ctx: egui::Context,
     hosts: Vec<oriel_net::TrustedPeer>,
+    /// Whether each host (by name) answered the last check.
+    reach: std::collections::HashMap<String, connection::Reach>,
+    /// A running check of all hosts, and the names it covers.
+    probe: Option<(Vec<String>, Pending<Vec<connection::Reach>>)>,
+    next_probe: Instant,
     connecting: Option<(String, Pending<Connected>)>,
     pairing: Option<Pending<String>>,
     pair_dialog: Option<PairDialog>,
@@ -352,6 +364,41 @@ impl Launcher {
         self.hosts = TrustStore::load(&self.paths.known_hosts())
             .map(|s| s.peers)
             .unwrap_or_default();
+        self.next_probe = Instant::now();
+    }
+
+    /// Check which hosts are up, every [`PROBE_INTERVAL`] while the window
+    /// is open.
+    fn poll_probe(&mut self) {
+        if let Some((names, pending)) = &self.probe {
+            let Some(result) = pending.lock().take() else {
+                return;
+            };
+            if let Ok(results) = result {
+                self.reach = names.iter().cloned().zip(results).collect();
+            }
+            self.probe = None;
+            self.next_probe = Instant::now() + PROBE_INTERVAL;
+            if let Some((window, ..)) = &self.gfx {
+                window.request_redraw();
+            }
+        }
+        if self.gfx.is_none()
+            || self.hosts.is_empty()
+            || self.connecting.is_some()
+            || Instant::now() < self.next_probe
+        {
+            return;
+        }
+        let hosts = self.hosts.clone();
+        let pending: Pending<Vec<connection::Reach>> = Default::default();
+        let out = pending.clone();
+        let paths = self.paths.clone();
+        self.rt.spawn(async move {
+            let result = connection::probe(&paths, &hosts).await;
+            *out.lock() = Some(result);
+        });
+        self.probe = Some((self.hosts.iter().map(|h| h.name.clone()).collect(), pending));
     }
 
     fn connect(&mut self, target: String) {
@@ -587,6 +634,7 @@ impl Launcher {
                     }
                     Err(e) => {
                         self.status = format!("Cannot connect to {target}: {e:#}");
+                        self.next_probe = Instant::now();
                         if let Some(r) = &mut self.reconnect {
                             r.attempt += 1;
                             r.at = Instant::now()
@@ -610,6 +658,7 @@ impl Launcher {
                 }
             }
         }
+        self.poll_probe();
         if self.connecting.is_none()
             && let Some(r) = &self.reconnect
             && Instant::now() >= r.at
@@ -712,6 +761,9 @@ impl Launcher {
             ui.spacing_mut().item_spacing = egui::vec2(14.0, 14.0);
             for h in &self.hosts {
                 let connecting = self.connecting.as_ref().is_some_and(|(t, _)| *t == h.name);
+                let reach = self.reach.get(&h.name).copied();
+                // Unreachable hosts are dimmed but can still be tried.
+                let dim = matches!(reach, Some(Reach::Offline)) && !connecting;
                 let (rect, response) = ui.allocate_exact_size(tile, egui::Sense::click());
                 let hovered = response.hovered() && !busy;
                 let painter = ui.painter();
@@ -733,8 +785,22 @@ impl Launcher {
                 painter.rect_filled(
                     screen.shrink(5.0),
                     3,
-                    if hovered { BLUE } else { DEEP_BLUE },
+                    match (hovered, dim) {
+                        (true, _) => BLUE,
+                        (false, true) => DIM_SCREEN,
+                        (false, false) => DEEP_BLUE,
+                    },
                 );
+                // Reachability in the top left corner.
+                let (dot, note) = match reach {
+                    Some(Reach::Online) => (Some(GREEN), None),
+                    Some(Reach::Offline) => (Some(MUTED), Some("Offline")),
+                    Some(Reach::Changed) => (Some(AMBER), Some("Identity changed")),
+                    None => (None, None),
+                };
+                if let Some(color) = dot {
+                    painter.circle_filled(rect.left_top() + egui::vec2(20.0, 22.0), 5.0, color);
+                }
                 let stand = egui::Rect::from_center_size(
                     screen.center_bottom() + egui::vec2(0.0, 8.0),
                     egui::vec2(30.0, 4.0),
@@ -745,14 +811,23 @@ impl Launcher {
                     egui::Align2::CENTER_CENTER,
                     &h.name,
                     egui::FontId::proportional(18.0),
-                    egui::Color32::WHITE,
+                    if dim { MUTED } else { egui::Color32::WHITE },
                 );
+                let address = h.address.as_deref().unwrap_or("");
                 painter.text(
                     rect.center_top() + egui::vec2(0.0, 132.0),
                     egui::Align2::CENTER_CENTER,
-                    h.address.as_deref().unwrap_or(""),
+                    match note {
+                        Some(note) if !address.is_empty() => format!("{address} · {note}"),
+                        Some(note) => note.to_string(),
+                        None => address.to_string(),
+                    },
                     egui::FontId::proportional(12.5),
-                    MUTED,
+                    if reach == Some(Reach::Changed) {
+                        AMBER
+                    } else {
+                        MUTED
+                    },
                 );
                 if connecting {
                     let spin =
@@ -772,6 +847,15 @@ impl Launcher {
                 )
                 .on_hover_text("More");
                 let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+                let response = match reach {
+                    Some(Reach::Offline) => response
+                        .on_hover_text("Not answering right now. Click to try connecting anyway."),
+                    Some(Reach::Changed) => response.on_hover_text(
+                        "Something answers at this address, but not the computer you paired \
+                         with. If oriel was reinstalled there, pair again.",
+                    ),
+                    _ => response,
+                };
                 if response.clicked() && !busy && !more.hovered() {
                     actions.push(Action::Connect(h.name.clone()));
                 }
@@ -1092,10 +1176,13 @@ impl ApplicationHandler<UiEvent> for Launcher {
             || (sharing && self.gfx.is_some())
             || self.connecting.is_some()
             || self.pairing.is_some()
+            || self.probe.is_some()
             || self.reconnect.is_some()
             || std::env::var_os("ORIEL_DEBUG_SCREENSHOT").is_some();
         event_loop.set_control_flow(if waiting {
             ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(100))
+        } else if self.gfx.is_some() && !self.hosts.is_empty() {
+            ControlFlow::WaitUntil(self.next_probe)
         } else {
             ControlFlow::Wait
         });

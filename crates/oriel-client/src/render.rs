@@ -474,7 +474,7 @@ impl Renderer {
         &mut self,
         viewport: Option<Viewport>,
         egui_ctx: &egui::Context,
-        output: egui::FullOutput,
+        mut output: egui::FullOutput,
     ) -> Result<()> {
         // egui sends each texture change once; apply them even when this
         // frame cannot be drawn (occluded windows, startup), or later frames
@@ -489,6 +489,7 @@ impl Renderer {
         for id in &output.textures_delta.free {
             self.egui.free_texture(id);
         }
+        output.textures_delta.clear();
         result
     }
 

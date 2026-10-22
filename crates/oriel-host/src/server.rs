@@ -1,6 +1,10 @@
 //! Accepts connections, authenticates clients and runs pairing and sessions.
 
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{
+    net::SocketAddr,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use anyhow::{Context, Result};
 use oriel_net::{
@@ -40,7 +44,27 @@ struct Host {
 
 struct PairingState {
     pin: Option<String>,
+    /// When `pin` was set; it is valid for [`PIN_VALIDITY`].
+    granted: Instant,
     failures: u32,
+}
+
+impl PairingState {
+    fn new(pin: Option<String>) -> Self {
+        Self {
+            pin,
+            granted: Instant::now(),
+            failures: 0,
+        }
+    }
+
+    /// The PIN, unless it has expired.
+    fn current(&mut self) -> Option<String> {
+        if self.granted.elapsed() >= PIN_VALIDITY {
+            self.pin = None;
+        }
+        self.pin.clone()
+    }
 }
 
 /// A client with an open session.
@@ -78,7 +102,7 @@ pub struct HostControl {
 impl HostControl {
     pub fn new(pin: Option<String>) -> Self {
         Self {
-            pairing: Arc::new(Mutex::new(PairingState { pin, failures: 0 })),
+            pairing: Arc::new(Mutex::new(PairingState::new(pin))),
             status: Default::default(),
             sessions: Default::default(),
         }
@@ -104,23 +128,22 @@ impl HostControl {
     /// Accept pairing with a fresh PIN, which is returned.
     pub fn allow_pairing(&self) -> String {
         let pin = oriel_net::pairing::generate_pin();
-        let mut state = self.pairing.lock();
-        state.pin = Some(pin.clone());
-        state.failures = 0;
+        *self.pairing.lock() = PairingState::new(Some(pin.clone()));
         pin
     }
 
     pub fn pairing_pin(&self) -> Option<String> {
-        self.pairing.lock().pin.clone()
+        self.pairing.lock().current()
     }
 }
 
 const MAX_PAIR_FAILURES: u32 = 5;
 /// A PIN in this file (in the config directory) allows pairing for
-/// [`PIN_FILE_VALIDITY`] after it was written; used by unattended hosts
+/// [`PIN_VALIDITY`] after it was written; used by unattended hosts
 /// (`oriel service pair`).
 pub const PIN_FILE: &str = "pairing-pin";
-const PIN_FILE_VALIDITY: Duration = Duration::from_secs(600);
+/// A PIN pairs one device, within this time.
+const PIN_VALIDITY: Duration = Duration::from_secs(600);
 
 pub async fn run(paths: Paths, options: HostOptions) -> Result<()> {
     let control = HostControl::new(options.pair_pin.clone());
@@ -187,9 +210,19 @@ impl Host {
     async fn handle(self: Arc<Self>, conn: quinn::Connection) -> Result<()> {
         let remote = conn.remote_address();
         let client_fp = peer_fingerprint(&conn)?;
-        let (send, recv) = tokio::time::timeout(Duration::from_secs(10), conn.accept_bi())
+        let (send, recv) = match tokio::time::timeout(Duration::from_secs(10), conn.accept_bi())
             .await
-            .context("client did not open a control stream")??;
+            .context("client did not open a control stream")?
+        {
+            Ok(streams) => streams,
+            // A client checking whether this host is up.
+            Err(quinn::ConnectionError::ApplicationClosed(close))
+                if close.reason.as_ref() == oriel_proto::PROBE_REASON =>
+            {
+                return Ok(());
+            }
+            Err(e) => return Err(e.into()),
+        };
         let mut ctl = ControlStream { send, recv };
         let ClientMsg::Hello {
             protocol,
@@ -288,14 +321,11 @@ impl Host {
         let file_pin = std::fs::metadata(&pin_file)
             .ok()
             .and_then(|m| m.modified().ok())
-            .filter(|t| t.elapsed().is_ok_and(|age| age < PIN_FILE_VALIDITY))
+            .filter(|t| t.elapsed().is_ok_and(|age| age < PIN_VALIDITY))
             .and_then(|_| std::fs::read_to_string(&pin_file).ok())
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
-        let pin = {
-            let state = self.pairing.lock();
-            state.pin.clone().or(file_pin.clone())
-        };
+        let pin = { self.pairing.lock().current().or(file_pin.clone()) };
         let Some(pin) = pin else {
             return reject(
                 &conn,
@@ -320,9 +350,7 @@ impl Host {
                 tracing::warn!(client = %name, failures = state.failures, "pairing attempt with wrong PIN");
                 if state.failures >= MAX_PAIR_FAILURES {
                     state.pin = None;
-                    tracing::warn!(
-                        "too many failed pairing attempts; pairing disabled until restart"
-                    );
+                    tracing::warn!("too many failed pairing attempts; pairing needs a new PIN");
                 }
             }
             finish(&conn, &mut ctl).await;
@@ -335,8 +363,11 @@ impl Host {
             address: None,
         });
         trusted.save(&self.paths.trusted_clients())?;
-        if file_pin.is_some() {
+        // Each PIN pairs one device.
+        if file_pin.as_deref() == Some(pin.as_str()) {
             let _ = std::fs::remove_file(&pin_file);
+        } else {
+            self.pairing.lock().pin = None;
         }
         ctl.send(&HostMsg::PairResult {
             ok: true,

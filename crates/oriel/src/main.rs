@@ -71,7 +71,8 @@ enum Command {
         /// Stream a synthetic test pattern instead of the real display.
         #[arg(long)]
         test_pattern: bool,
-        /// Accept pairing requests; prints a PIN to enter on the client.
+        /// Accept one pairing request within ten minutes; prints a PIN to
+        /// enter on the client.
         #[arg(long)]
         pair: bool,
         /// Use this PIN instead of a random one (implies --pair).
