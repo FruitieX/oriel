@@ -24,3 +24,8 @@ crossbeam-channel.workspace = true
 parking_lot.workspace = true
 serde.workspace = true
 png = "0.18"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+wayland-client = { version = "0.31", features = ["system", "dlopen"] }
+wayland-backend = { version = "0.3", features = ["client_system", "dlopen"] }
+wayland-protocols = { version = "0.32", features = ["client", "unstable"] }

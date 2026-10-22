@@ -31,6 +31,7 @@ pub struct Config {
 
 pub enum Cmd {
     Keyframe,
+    Display(u32),
     Bitrate(u32),
     Stop,
 }
@@ -45,6 +46,7 @@ pub enum Event {
         y: i32,
     },
     Notice(String),
+    Clipboard(String),
     /// The pipeline gave up; the session should end.
     Failed(String),
 }
@@ -232,6 +234,12 @@ impl Pipeline {
                         force_key = true;
                     }
                     Cmd::Bitrate(_) => {}
+                    Cmd::Display(id) => {
+                        if self.config.display != Some(id) {
+                            self.config.display = Some(id);
+                            return Ok(Flow::Continue);
+                        }
+                    }
                     Cmd::Stop => return Ok(Flow::Stop),
                 }
             }

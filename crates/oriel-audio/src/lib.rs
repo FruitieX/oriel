@@ -57,7 +57,11 @@ pub fn start_capture(
     let thread = std::thread::Builder::new()
         .name("oriel-audio-capture".into())
         .spawn(move || {
-            let mut encoder = match opus::Encoder::new(SAMPLE_RATE, opus::Channels::Stereo, opus::Application::LowDelay) {
+            let mut encoder = match opus::Encoder::new(
+                SAMPLE_RATE,
+                opus::Channels::Stereo,
+                opus::Application::LowDelay,
+            ) {
                 Ok(e) => e,
                 Err(e) => {
                     let _ = ready_tx.send(Err(e.into()));
@@ -98,9 +102,7 @@ pub fn start_capture(
                 }
             }
         })?;
-    ready_rx
-        .recv()
-        .context("audio capture thread exited")??;
+    ready_rx.recv().context("audio capture thread exited")??;
     Ok(Capture {
         stop,
         thread: Some(thread),
@@ -205,7 +207,11 @@ fn tone(tx: crossbeam_channel::Sender<Vec<f32>>, stop: Arc<AtomicBool>) {
         while produced < due {
             let t = produced as f64 / SAMPLE_RATE as f64;
             let on = t.fract() < 0.15;
-            let v = if on { (t * 440.0 * std::f64::consts::TAU).sin() as f32 * 0.2 } else { 0.0 };
+            let v = if on {
+                (t * 440.0 * std::f64::consts::TAU).sin() as f32 * 0.2
+            } else {
+                0.0
+            };
             buf.extend_from_slice(&[v, v]);
             produced += 1;
         }
@@ -303,9 +309,14 @@ impl Player {
     }
 }
 
-fn open_output(buffer: Arc<Mutex<VecDeque<f32>>>, stats: Arc<Mutex<PlayerStats>>) -> Result<cpal::Stream> {
+fn open_output(
+    buffer: Arc<Mutex<VecDeque<f32>>>,
+    stats: Arc<Mutex<PlayerStats>>,
+) -> Result<cpal::Stream> {
     let host = cpal::default_host();
-    let device = host.default_output_device().context("no audio output device")?;
+    let device = host
+        .default_output_device()
+        .context("no audio output device")?;
     let supported = device.default_output_config()?;
     let rate = supported.sample_rate();
     let channels = supported.channels() as usize;
@@ -371,7 +382,10 @@ fn open_output(buffer: Arc<Mutex<VecDeque<f32>>>, stats: Arc<Mutex<PlayerStats>>
             config,
             move |data, _| {
                 let frames = data.len() / channels;
-                fill(&mut |i, v| data[i] = (v.clamp(-1.0, 1.0) * 32767.0) as i16, frames);
+                fill(
+                    &mut |i, v| data[i] = (v.clamp(-1.0, 1.0) * 32767.0) as i16,
+                    frames,
+                );
             },
             err,
             None,
@@ -398,13 +412,20 @@ mod tests {
 
     #[test]
     fn opus_roundtrip() {
-        let mut enc =
-            opus::Encoder::new(SAMPLE_RATE, opus::Channels::Stereo, opus::Application::LowDelay).unwrap();
+        let mut enc = opus::Encoder::new(
+            SAMPLE_RATE,
+            opus::Channels::Stereo,
+            opus::Application::LowDelay,
+        )
+        .unwrap();
         let mut dec = opus::Decoder::new(SAMPLE_RATE, opus::Channels::Stereo).unwrap();
         let input = vec![0.1f32; FRAME * CHANNELS];
         let mut packet = vec![0u8; 1500];
         let n = enc.encode_float(&input, &mut packet).unwrap();
         let mut pcm = vec![0f32; FRAME * CHANNELS];
-        assert_eq!(dec.decode_float(&packet[..n], &mut pcm, false).unwrap(), FRAME);
+        assert_eq!(
+            dec.decode_float(&packet[..n], &mut pcm, false).unwrap(),
+            FRAME
+        );
     }
 }

@@ -2,6 +2,7 @@
 //! client, and injects the client's input.
 
 pub mod capture;
+mod clipboard;
 mod cursor;
 pub mod input;
 mod pipeline;

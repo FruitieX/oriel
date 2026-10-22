@@ -61,6 +61,11 @@ pub async fn run(
         ev_tx,
     );
 
+    let clip_events = ev_tx_audio.clone();
+    let clipboard = crate::clipboard::start(move |text| {
+        let _ = clip_events.send(Event::Clipboard(text));
+    });
+
     let _audio = if settings.audio {
         start_audio(&conn, options.source, &ev_tx_audio)
     } else {
@@ -161,6 +166,9 @@ pub async fn run(
                     Some(Event::Notice(text)) => {
                         write_msg(&mut ctl_send, &HostMsg::Notice { text }).await?
                     }
+                    Some(Event::Clipboard(text)) => {
+                        write_msg(&mut ctl_send, &HostMsg::Clipboard { text }).await?
+                    }
                     Some(Event::Failed(text)) => {
                         write_msg(&mut ctl_send, &HostMsg::Notice { text }).await?;
                         break;
@@ -169,8 +177,14 @@ pub async fn run(
                 msg = ctl_rx.recv() => match msg {
                     None | Some(ClientMsg::Bye) => break,
                     Some(ClientMsg::RequestKeyframe) => { let _ = cmd_tx.send(Cmd::Keyframe); }
+                    Some(ClientMsg::SelectDisplay { id }) => { let _ = cmd_tx.send(Cmd::Display(id)); }
                     Some(ClientMsg::SetBitrate { kbps }) => { let _ = cmd_tx.send(Cmd::Bitrate(kbps)); }
                     Some(ClientMsg::Ping { id }) => write_msg(&mut ctl_send, &HostMsg::Pong { id }).await?,
+                    Some(ClientMsg::Clipboard { text }) => {
+                        if text.len() <= crate::clipboard::MAX_TEXT {
+                            let _ = clipboard.set.send(text);
+                        }
+                    }
                     Some(other) => tracing::debug!(?other, "ignoring message"),
                 },
                 _ = conn.closed() => break,
@@ -241,7 +255,9 @@ fn start_audio(
         SourceKind::TestPattern => oriel_audio::CaptureSource::TestTone,
         SourceKind::Auto if cfg!(windows) => oriel_audio::CaptureSource::SystemOutput,
         SourceKind::Auto => {
-            let _ = events.send(Event::Notice("Audio capture is not supported on this host yet".into()));
+            let _ = events.send(Event::Notice(
+                "Audio capture is not supported on this host yet".into(),
+            ));
             return None;
         }
     };

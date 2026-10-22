@@ -5,6 +5,8 @@ pub mod app;
 pub mod connection;
 mod decode;
 pub mod headless;
+#[cfg(target_os = "linux")]
+mod inhibit;
 pub mod keymap;
 mod render;
 pub mod session;

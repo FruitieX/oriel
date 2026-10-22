@@ -98,11 +98,19 @@ pub enum ClientMsg {
     Pair(PairMsg),
     StartStream(StreamSettings),
     RequestKeyframe,
+    /// Switch the stream to another display.
+    SelectDisplay {
+        id: u32,
+    },
     SetBitrate {
         kbps: u32,
     },
     Ping {
         id: u64,
+    },
+    /// The client's clipboard changed (text only).
+    Clipboard {
+        text: String,
     },
     /// Sent on graceful disconnect.
     Bye,
@@ -135,6 +143,10 @@ pub enum HostMsg {
     CursorState(CursorState),
     Pong {
         id: u64,
+    },
+    /// The host's clipboard changed (text only).
+    Clipboard {
+        text: String,
     },
     /// Human-readable notice, e.g. "secure desktop active".
     Notice {

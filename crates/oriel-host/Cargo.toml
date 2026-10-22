@@ -17,6 +17,7 @@ tracing.workspace = true
 crossbeam-channel.workspace = true
 parking_lot.workspace = true
 rand.workspace = true
+arboard.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows = { workspace = true, features = [

@@ -101,6 +101,9 @@ enum Command {
         /// Do not stream sound.
         #[arg(long)]
         no_audio: bool,
+        /// Display to stream (see `oriel info` on the host); default primary.
+        #[arg(long)]
+        display: Option<u32>,
         #[arg(long)]
         fullscreen: bool,
         #[arg(long, value_enum)]
@@ -189,6 +192,7 @@ fn main() -> Result<()> {
             codec,
             software_decode,
             no_audio,
+            display,
             fullscreen,
             mouse,
             stats,
@@ -204,7 +208,7 @@ fn main() -> Result<()> {
                 codec.into_iter().map(Into::into).collect()
             };
             let settings = StreamSettings {
-                display: None,
+                display,
                 codecs,
                 bitrate_kbps: bitrate.unwrap_or(file.bitrate_kbps),
                 max_fps: fps.unwrap_or(file.max_fps),
@@ -318,7 +322,9 @@ fn runtime() -> Result<tokio::runtime::Runtime> {
 fn init_logging(file: Option<PathBuf>) -> Result<()> {
     use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
     let filter = EnvFilter::try_from_env("ORIEL_LOG").unwrap_or_else(|_| {
-        EnvFilter::new("info,wgpu_core=warn,wgpu_hal=warn,naga=warn,quinn=warn,egui=warn")
+        EnvFilter::new(
+            "info,wgpu_core=warn,wgpu_hal=warn,naga=warn,quinn=warn,egui=warn,arboard=error,egui_winit=error,sctk_adwaita=off",
+        )
     });
     let file_layer = match file {
         Some(path) => {

@@ -74,6 +74,7 @@ pub fn run(
         sink,
     );
     let mut viewer = Viewer::new(session.clone(), connected.host_name, options);
+    viewer.displays = connected.displays;
     event_loop.run_app(&mut viewer)?;
     session.close();
     rt.block_on(async {
@@ -95,6 +96,9 @@ struct Gfx {
     window: Arc<Window>,
     renderer: Renderer,
     egui: egui_winit::State,
+    clipboard: egui_winit::clipboard::Clipboard,
+    #[cfg(target_os = "linux")]
+    inhibitor: Option<crate::inhibit::ShortcutInhibitor>,
 }
 
 struct Viewer {
@@ -134,6 +138,11 @@ struct Viewer {
     latency_ms: f32,
     screenshot_taken: bool,
     quit: bool,
+    clipboard_last: Option<String>,
+    clipboard_polled: Instant,
+    displays: Vec<oriel_proto::DisplayInfo>,
+    display: Option<u32>,
+    shortcuts_inhibited: bool,
 }
 
 impl Viewer {
@@ -174,6 +183,11 @@ impl Viewer {
             latency_ms: 0.0,
             screenshot_taken: false,
             quit: false,
+            clipboard_last: None,
+            clipboard_polled: Instant::now(),
+            displays: Vec::new(),
+            display: options.settings.display,
+            shortcuts_inhibited: false,
             options,
         }
     }
@@ -245,6 +259,13 @@ impl Viewer {
     }
 
     fn update_cursor(&mut self) {
+        #[cfg(target_os = "linux")]
+        {
+            let forwarding = self.forwarding();
+            if let Some(i) = self.gfx.as_mut().and_then(|g| g.inhibitor.as_mut()) {
+                i.set(forwarding);
+            }
+        }
         let relative = self.relative();
         let Some(window) = self.window().cloned() else {
             return;
@@ -330,6 +351,12 @@ impl Viewer {
                 self.request_redraw();
             }
             HostMsg::Rejected { reason } => self.closed = Some(reason),
+            HostMsg::Clipboard { text } => {
+                if let Some(gfx) = &mut self.gfx {
+                    gfx.clipboard.set_text(text.clone());
+                }
+                self.clipboard_last = Some(text);
+            }
             _ => {}
         }
     }
@@ -493,6 +520,26 @@ impl Viewer {
         }
     }
 
+    /// Send local clipboard changes to the host while the window is focused.
+    fn poll_clipboard(&mut self) {
+        if !self.focused
+            || self.closed.is_some()
+            || self.clipboard_polled.elapsed() < Duration::from_millis(500)
+        {
+            return;
+        }
+        self.clipboard_polled = Instant::now();
+        let Some(gfx) = &mut self.gfx else { return };
+        let Some(text) = gfx.clipboard.get() else {
+            return;
+        };
+        if text.is_empty() || self.clipboard_last.as_ref() == Some(&text) || text.len() > 1 << 20 {
+            return;
+        }
+        self.clipboard_last = Some(text.clone());
+        self.session.send(ClientMsg::Clipboard { text });
+    }
+
     fn apply(&mut self, action: Action) {
         match action {
             Action::OpenMenu => self.set_menu(true),
@@ -516,6 +563,11 @@ impl Viewer {
                     .send(ClientMsg::SetBitrate { kbps: mbps * 1000 });
             }
             Action::SecureAttention => self.session.input(InputEvent::SecureAttention),
+            Action::SelectDisplay(id) => {
+                self.display = Some(id);
+                self.sized_window = false;
+                self.session.send(ClientMsg::SelectDisplay { id });
+            }
             Action::Disconnect => {
                 self.session.close();
                 self.closed = Some("disconnected".into());
@@ -534,6 +586,7 @@ enum Action {
     ToggleFullscreen,
     SetBitrate(u32),
     SecureAttention,
+    SelectDisplay(u32),
     Disconnect,
 }
 
@@ -550,6 +603,8 @@ struct OverlayState {
     notices: Vec<String>,
     closed: Option<String>,
     remote_cursor: Option<(egui::TextureId, egui::Vec2, egui::Pos2)>,
+    displays: Vec<(u32, String)>,
+    display: Option<u32>,
 }
 
 impl From<&Viewer> for OverlayState {
@@ -609,6 +664,23 @@ impl From<&Viewer> for OverlayState {
                 .collect(),
             closed: v.closed.clone(),
             remote_cursor,
+            displays: v
+                .displays
+                .iter()
+                .map(|d| {
+                    let primary = if d.primary { ", primary" } else { "" };
+                    (
+                        d.id,
+                        format!(
+                            "{} ({}×{} @ {} Hz{primary})",
+                            d.name, d.width, d.height, d.refresh_hz
+                        ),
+                    )
+                })
+                .collect(),
+            display: v
+                .display
+                .or_else(|| v.displays.iter().find(|d| d.primary).map(|d| d.id)),
         }
     }
 }
@@ -704,6 +776,16 @@ fn overlay(ctx: &egui::Context, s: &OverlayState, viewport: Option<Viewport>) ->
                     }
                 }
             });
+            if s.displays.len() > 1 {
+                ui.horizontal(|ui| {
+                    ui.label("Display:");
+                    for (id, name) in &s.displays {
+                        if ui.selectable_label(s.display == Some(*id), name).clicked() {
+                            actions.push(Action::SelectDisplay(*id));
+                        }
+                    }
+                });
+            }
             ui.horizontal(|ui| {
                 ui.label("Bitrate:");
                 let mut mbps = s.bitrate_mbps;
@@ -785,10 +867,17 @@ impl ApplicationHandler<UiEvent> for Viewer {
             None,
             Some(renderer.device.limits().max_texture_dimension_2d as usize),
         );
+        use winit::raw_window_handle::HasDisplayHandle;
+        let display = window.display_handle().ok().map(|h| h.as_raw());
+        // SAFETY: the display outlives the clipboard (both dropped in `exiting`).
+        let clipboard = unsafe { egui_winit::clipboard::Clipboard::new(display) };
         self.gfx = Some(Gfx {
+            #[cfg(target_os = "linux")]
+            inhibitor: crate::inhibit::ShortcutInhibitor::new(&window),
             window,
             renderer,
             egui,
+            clipboard,
         });
         self.fit_window();
         self.update_cursor();
@@ -918,7 +1007,19 @@ impl ApplicationHandler<UiEvent> for Viewer {
         self.notices
             .retain(|(_, at)| at.elapsed() < Duration::from_secs(5));
         // Refresh statistics and expire notices even when no video arrives.
-        let periodic = self.show_stats || self.menu_open || !self.notices.is_empty();
+        self.poll_clipboard();
+        #[cfg(target_os = "linux")]
+        if let Some(i) = self.gfx.as_mut().and_then(|g| g.inhibitor.as_mut()) {
+            let active = i.active();
+            if active != self.shortcuts_inhibited {
+                tracing::info!(active, "compositor shortcuts passed to the host");
+                self.shortcuts_inhibited = active;
+            }
+        }
+        let periodic = self.show_stats
+            || self.menu_open
+            || !self.notices.is_empty()
+            || (self.focused && self.closed.is_none());
         event_loop.set_control_flow(if periodic {
             ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(250))
         } else {
@@ -929,6 +1030,10 @@ impl ApplicationHandler<UiEvent> for Viewer {
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
         // The surface must go before the display connection does.
         self.egui_cursors.clear();
+        #[cfg(target_os = "linux")]
+        if let Some(gfx) = &mut self.gfx {
+            gfx.inhibitor = None;
+        }
         self.gfx = None;
     }
 
