@@ -2586,10 +2586,12 @@ name = "oriel-media"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "ash",
  "ffmpeg-sys-next",
  "libloading",
  "oriel-proto",
  "tracing",
+ "windows",
 ]
 
 [[package]]

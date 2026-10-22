@@ -10,3 +10,13 @@ anyhow.workspace = true
 tracing.workspace = true
 ffmpeg-sys-next.workspace = true
 libloading = "0.8"
+ash = { version = "0.38", default-features = false, features = ["std"] }
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = [
+  "Win32_Foundation",
+  "Win32_Graphics_Direct3D11",
+  "Win32_Graphics_Dxgi",
+  "Win32_Graphics_Dxgi_Common",
+  "Win32_Security",
+] }

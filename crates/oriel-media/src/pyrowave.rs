@@ -76,6 +76,37 @@ struct Api {
     decoder_decode_is_ready: unsafe extern "C" fn(Handle, bool) -> bool,
     decoder_decode_cpu_buffer_synchronous: unsafe extern "C" fn(Handle, *const CpuBuffer) -> c_int,
     decoder_destroy: unsafe extern "C" fn(Handle),
+    // GPU interop (used by the Windows zero-copy path).
+    #[allow(dead_code)]
+    create_device_by_compat: unsafe extern "C" fn(
+        u32,
+        u32,
+        *const [u8; 16],
+        *const [u8; 16],
+        *const [u8; 8],
+        i32,
+        *mut Handle,
+    ) -> c_int,
+    #[allow(dead_code)]
+    image_create: unsafe extern "C" fn(*const gpu::ImageCreateInfo, *mut Handle) -> c_int,
+    #[allow(dead_code)]
+    image_destroy: unsafe extern "C" fn(Handle),
+    #[allow(dead_code)]
+    image_get_image_view: unsafe extern "C" fn(Handle, u32, u32, *mut gpu::ImageView) -> c_int,
+    #[allow(dead_code)]
+    sync_object_create: unsafe extern "C" fn(*const gpu::SyncCreateInfo, *mut Handle) -> c_int,
+    #[allow(dead_code)]
+    sync_object_get_semaphore: unsafe extern "C" fn(Handle) -> u64,
+    #[allow(dead_code)]
+    sync_object_destroy: unsafe extern "C" fn(Handle),
+    #[allow(dead_code)]
+    encoder_encode_gpu_scaled: unsafe extern "C" fn(
+        Handle,
+        *const gpu::SyncOp,
+        *const gpu::SyncOp,
+        *const gpu::ScaledEncodeInfo,
+        *const RateControl,
+    ) -> c_int,
 }
 
 fn library_candidates() -> Vec<PathBuf> {
@@ -132,6 +163,14 @@ fn load() -> Result<Api, String> {
                 "pyrowave_decoder_decode_cpu_buffer_synchronous"
             ),
             decoder_destroy: sym!("pyrowave_decoder_destroy"),
+            create_device_by_compat: sym!("pyrowave_create_device_by_compat"),
+            image_create: sym!("pyrowave_image_create"),
+            image_destroy: sym!("pyrowave_image_destroy"),
+            image_get_image_view: sym!("pyrowave_image_get_image_view"),
+            sync_object_create: sym!("pyrowave_sync_object_create"),
+            sync_object_get_semaphore: sym!("pyrowave_sync_object_get_semaphore"),
+            sync_object_destroy: sym!("pyrowave_sync_object_destroy"),
+            encoder_encode_gpu_scaled: sym!("pyrowave_encoder_encode_gpu_scaled"),
             _lib: lib,
             path,
         });
@@ -179,6 +218,26 @@ impl Device {
             "create PyroWave Vulkan device",
         )?;
         Ok(Self(device))
+    }
+}
+
+impl Device {
+    /// A device on the GPU with this adapter LUID (for sharing textures).
+    #[cfg_attr(not(windows), allow(dead_code))]
+    fn on_adapter(luid: [u8; 8]) -> Result<Self> {
+        let api = api()?;
+        let mut device = ptr::null_mut();
+        // HIGH priority puts encoding on an async compute queue, so it does
+        // not wait behind a game's rendering.
+        for priority in [gpu::QUEUE_GLOBAL_PRIORITY_HIGH, gpu::QUEUE_GLOBAL_PRIORITY_MEDIUM] {
+            let r = unsafe {
+                (api.create_device_by_compat)(0, 0, ptr::null(), ptr::null(), &luid, priority, &mut device)
+            };
+            if r == SUCCESS {
+                return Ok(Self(device));
+            }
+        }
+        bail!("cannot create a PyroWave device on the capture GPU")
     }
 }
 
@@ -239,6 +298,9 @@ const PACKET_BOUNDARY: usize = 64 * 1024;
 
 pub struct PyroEncoder {
     encoder: Handle,
+    /// Zero-copy input from a shared D3D11 texture.
+    #[cfg(windows)]
+    gpu: Option<d3d11::GpuInput>,
     _device: Device,
     sws: *mut ff::SwsContext,
     frame: *mut ff::AVFrame,
@@ -270,6 +332,8 @@ impl PyroEncoder {
         )?;
         let mut enc = Self {
             encoder,
+            #[cfg(windows)]
+            gpu: None,
             _device: device,
             sws: ptr::null_mut(),
             frame: ptr::null_mut(),
@@ -334,6 +398,14 @@ impl PyroEncoder {
                 (api.encoder_encode_cpu)(self.encoder, &buffers, &rate),
                 "PyroWave encode",
             )?;
+        }
+        self.finish(started)
+    }
+
+    /// Packetize the frame just encoded.
+    fn finish(&mut self, started: Instant) -> Result<EncodedFrame> {
+        let api = api()?;
+        unsafe {
             let mut count = 0usize;
             pw(
                 (api.encoder_compute_num_packets)(self.encoder, PACKET_BOUNDARY, &mut count),
@@ -368,6 +440,8 @@ impl PyroEncoder {
 
 impl Drop for PyroEncoder {
     fn drop(&mut self) {
+        #[cfg(windows)]
+        drop(self.gpu.take());
         unsafe {
             if let Ok(api) = api() {
                 (api.encoder_destroy)(self.encoder);
@@ -445,5 +519,346 @@ impl Drop for PyroDecoder {
         if let Ok(api) = api() {
             unsafe { (api.decoder_destroy)(self.decoder) };
         }
+    }
+}
+
+/// C API types for GPU interop.
+mod gpu {
+    #![allow(dead_code)]
+    use super::Handle;
+
+    pub const QUEUE_GLOBAL_PRIORITY_MEDIUM: i32 = 256;
+    pub const QUEUE_GLOBAL_PRIORITY_HIGH: i32 = 512;
+    pub const QUEUE_FAMILY_EXTERNAL: u32 = !1;
+    pub const ASPECT_COLOR: u32 = 1;
+    pub const USAGE_SAMPLED: u32 = 4;
+    pub const COLOR_SPACE_SRGB_NONLINEAR: i32 = 0;
+    pub const FORMAT_R8_UNORM: i32 = 9;
+    pub const FORMAT_B8G8R8A8_UNORM: i32 = 44;
+    pub const EXTERNAL_MEMORY_D3D11_TEXTURE: u32 = 0x8;
+    pub const EXTERNAL_SEMAPHORE_D3D12_FENCE: u32 = 0x8;
+    pub const SEMAPHORE_TYPE_TIMELINE: i32 = 1;
+
+    #[repr(C)]
+    pub struct ImageCreateInfo {
+        pub device: Handle,
+        pub external_handle: usize,
+        pub handle_type: u32,
+        pub image_create_info: *const ash::vk::ImageCreateInfo<'static>,
+    }
+
+    #[repr(C)]
+    pub struct SyncCreateInfo {
+        pub device: Handle,
+        pub external_handle: usize,
+        pub handle_type: u32,
+        pub semaphore_type: i32,
+        pub import_flags: u32,
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct ImageView {
+        pub image: u64,
+        pub width: u32,
+        pub height: u32,
+        pub image_format: i32,
+        pub view_format: i32,
+        pub mip_level: u32,
+        pub layer: u32,
+        pub aspect: u32,
+        pub swizzle: i32,
+        pub layout: i32,
+    }
+
+    #[repr(C)]
+    pub struct ExternalRef {
+        pub image: Handle,
+        pub queue_family_index: u32,
+    }
+
+    #[repr(C)]
+    pub struct SyncPoint {
+        pub semaphore: u64,
+        pub value: u64,
+    }
+
+    #[repr(C)]
+    pub struct SyncOp {
+        pub images: *const ExternalRef,
+        pub num_images: usize,
+        pub sync: SyncPoint,
+    }
+
+    #[repr(C)]
+    pub struct ScaledEncodeInfo {
+        pub view: ImageView,
+        pub input_color_space: i32,
+        pub output_color_space: i32,
+        pub intermediate_plane_format: i32,
+        pub ycbcr_chroma_midpoint: f32,
+        pub force_linear_filtering: bool,
+        pub skip_dither: bool,
+        pub crop_rect: *const ash::vk::Rect2D,
+        pub ycbcr_range: i32,
+        pub ycbcr_range_bit_depth: u32,
+    }
+}
+
+/// Windows zero-copy input: the captured frame is copied (on the GPU) into
+/// a texture shared with PyroWave's Vulkan device, which converts and
+/// encodes it without touching the CPU.
+#[cfg(windows)]
+mod d3d11 {
+    use std::ffi::c_void;
+
+    use anyhow::{Context, Result};
+    use windows::{
+        Win32::{
+            Foundation::GENERIC_ALL,
+            Graphics::{
+                Direct3D11::{
+                    D3D11_BIND_RENDER_TARGET, D3D11_BIND_SHADER_RESOURCE, D3D11_FENCE_FLAG_SHARED,
+                    D3D11_RESOURCE_MISC_SHARED, D3D11_RESOURCE_MISC_SHARED_NTHANDLE,
+                    D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT, ID3D11Device, ID3D11Device5,
+                    ID3D11DeviceContext4, ID3D11Fence, ID3D11Texture2D,
+                },
+                Dxgi::{
+                    Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC},
+                    IDXGIDevice, IDXGIResource1,
+                },
+            },
+        },
+        core::Interface,
+    };
+
+    use super::{Handle, api, gpu, pw};
+
+    pub struct GpuInput {
+        pub texture: ID3D11Texture2D,
+        context: ID3D11DeviceContext4,
+        fence: ID3D11Fence,
+        fence_value: u64,
+        image: Handle,
+        sync: Handle,
+    }
+
+    // D3D11 devices with multithread protection and PyroWave objects are
+    // used from the pipeline thread only.
+    unsafe impl Send for GpuInput {}
+
+    /// The adapter LUID of a D3D11 device.
+    pub fn adapter_luid(device: &ID3D11Device) -> Result<[u8; 8]> {
+        let desc = unsafe { device.cast::<IDXGIDevice>()?.GetAdapter()?.GetDesc()? };
+        let luid = desc.AdapterLuid;
+        let mut out = [0u8; 8];
+        out[..4].copy_from_slice(&luid.LowPart.to_le_bytes());
+        out[4..].copy_from_slice(&luid.HighPart.to_le_bytes());
+        Ok(out)
+    }
+
+    impl GpuInput {
+        pub fn new(device: &ID3D11Device, pyro_device: Handle, (w, h): (u32, u32)) -> Result<Self> {
+            let api = api()?;
+            unsafe {
+                let device5: ID3D11Device5 = device.cast()?;
+                let context: ID3D11DeviceContext4 = device.GetImmediateContext()?.cast()?;
+
+                let desc = D3D11_TEXTURE2D_DESC {
+                    Width: w,
+                    Height: h,
+                    MipLevels: 1,
+                    ArraySize: 1,
+                    Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                    SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+                    Usage: D3D11_USAGE_DEFAULT,
+                    BindFlags: (D3D11_BIND_RENDER_TARGET.0 | D3D11_BIND_SHADER_RESOURCE.0) as u32,
+                    CPUAccessFlags: 0,
+                    MiscFlags: (D3D11_RESOURCE_MISC_SHARED.0 | D3D11_RESOURCE_MISC_SHARED_NTHANDLE.0) as u32,
+                };
+                let mut texture = None;
+                device.CreateTexture2D(&desc, None, Some(&mut texture))?;
+                let texture = texture.context("CreateTexture2D returned nothing")?;
+                let handle = texture
+                    .cast::<IDXGIResource1>()?
+                    .CreateSharedHandle(None, GENERIC_ALL.0, None)?;
+
+                let image_info = ash::vk::ImageCreateInfo::default()
+                    .image_type(ash::vk::ImageType::TYPE_2D)
+                    .format(ash::vk::Format::B8G8R8A8_UNORM)
+                    .extent(ash::vk::Extent3D { width: w, height: h, depth: 1 })
+                    .mip_levels(1)
+                    .array_layers(1)
+                    .samples(ash::vk::SampleCountFlags::TYPE_1)
+                    .tiling(ash::vk::ImageTiling::OPTIMAL)
+                    .usage(ash::vk::ImageUsageFlags::SAMPLED | ash::vk::ImageUsageFlags::TRANSFER_SRC)
+                    .sharing_mode(ash::vk::SharingMode::EXCLUSIVE);
+                let info = gpu::ImageCreateInfo {
+                    device: pyro_device,
+                    // PyroWave takes ownership of the handle.
+                    external_handle: handle.0 as usize,
+                    handle_type: gpu::EXTERNAL_MEMORY_D3D11_TEXTURE,
+                    image_create_info: &image_info as *const _ as *const _,
+                };
+                let mut image = std::ptr::null_mut();
+                pw((api.image_create)(&info, &mut image), "import the shared texture into Vulkan")?;
+
+                let fence: ID3D11Fence = {
+                    let mut f: Option<ID3D11Fence> = None;
+                    device5.CreateFence(0, D3D11_FENCE_FLAG_SHARED, &mut f)?;
+                    f.context("CreateFence returned nothing")?
+                };
+                let fence_handle = fence.CreateSharedHandle(None, GENERIC_ALL.0, None)?;
+                let sync_info = gpu::SyncCreateInfo {
+                    device: pyro_device,
+                    external_handle: fence_handle.0 as usize,
+                    handle_type: gpu::EXTERNAL_SEMAPHORE_D3D12_FENCE,
+                    semaphore_type: gpu::SEMAPHORE_TYPE_TIMELINE,
+                    import_flags: 0,
+                };
+                let mut sync = std::ptr::null_mut();
+                let r = (api.sync_object_create)(&sync_info, &mut sync);
+                if let Err(e) = pw(r, "import the D3D11 fence into Vulkan") {
+                    (api.image_destroy)(image);
+                    return Err(e);
+                }
+                Ok(Self {
+                    texture,
+                    context,
+                    fence,
+                    fence_value: 0,
+                    image,
+                    sync,
+
+                })
+            }
+        }
+
+        /// The texture is filled: have Vulkan wait for the copy on the GPU
+        /// and encode.
+        pub fn encode(&mut self, encoder: Handle, rate: &super::RateControl) -> Result<()> {
+            let api = api()?;
+            unsafe {
+                self.fence_value += 1;
+                self.context.Signal(&self.fence, self.fence_value)?;
+                self.context.Flush();
+                let refs = [gpu::ExternalRef {
+                    image: self.image,
+                    queue_family_index: gpu::QUEUE_FAMILY_EXTERNAL,
+                }];
+                let acquire = gpu::SyncOp {
+                    images: refs.as_ptr(),
+                    num_images: 1,
+                    sync: gpu::SyncPoint {
+                        semaphore: (api.sync_object_get_semaphore)(self.sync),
+                        value: self.fence_value,
+                    },
+                };
+                // Released when the encoder is done; packetizing waits for
+                // that before the next frame is copied in.
+                let release = gpu::SyncOp {
+                    images: refs.as_ptr(),
+                    num_images: 1,
+                    sync: gpu::SyncPoint { semaphore: 0, value: 0 },
+                };
+                let mut view = gpu::ImageView::default();
+                pw(
+                    (api.image_get_image_view)(self.image, gpu::ASPECT_COLOR, gpu::USAGE_SAMPLED, &mut view),
+                    "PyroWave image view",
+                )?;
+                let info = gpu::ScaledEncodeInfo {
+                    view,
+                    input_color_space: gpu::COLOR_SPACE_SRGB_NONLINEAR,
+                    output_color_space: gpu::COLOR_SPACE_SRGB_NONLINEAR,
+                    intermediate_plane_format: gpu::FORMAT_R8_UNORM,
+                    ycbcr_chroma_midpoint: 0.5,
+                    // Same size in and out: no filtering needed.
+                    force_linear_filtering: true,
+                    skip_dither: false,
+                    crop_rect: std::ptr::null(),
+                    ycbcr_range: 0, // full range, BT.709
+                    ycbcr_range_bit_depth: 0,
+                };
+                pw(
+                    (api.encoder_encode_gpu_scaled)(encoder, &acquire, &release, &info, rate),
+                    "PyroWave GPU encode",
+                )
+            }
+        }
+
+        pub fn texture_ptr(&self) -> *mut c_void {
+            self.texture.as_raw()
+        }
+    }
+
+    impl Drop for GpuInput {
+        fn drop(&mut self) {
+            if let Ok(api) = api() {
+                unsafe {
+                    (api.sync_object_destroy)(self.sync);
+                    (api.image_destroy)(self.image);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+impl PyroEncoder {
+    /// Zero-copy encoder for frames on `device` (an `ID3D11Device*`).
+    pub fn new_d3d11(
+        device: *mut c_void,
+        width: u32,
+        height: u32,
+        fps: u32,
+        bitrate_kbps: u32,
+    ) -> Result<Self> {
+        use windows::{Win32::Graphics::Direct3D11::ID3D11Device, core::Interface};
+        let d3d = unsafe { ID3D11Device::from_raw_borrowed(&device) }
+            .ok_or_else(|| anyhow!("null D3D11 device"))?;
+        let luid = d3d11::adapter_luid(d3d)?;
+        let api = api()?;
+        let device = Device::on_adapter(luid)?;
+        let gpu = d3d11::GpuInput::new(d3d, device.0, (width, height))?;
+        let mut encoder = ptr::null_mut();
+        let info = CreateInfo {
+            device: device.0,
+            width: width as c_int,
+            height: height as c_int,
+            chroma: CHROMA_420,
+        };
+        pw(unsafe { (api.encoder_create)(&info, &mut encoder) }, "create PyroWave encoder")?;
+        let mut enc = Self {
+            encoder,
+            gpu: Some(gpu),
+            _device: device,
+            sws: ptr::null_mut(),
+            frame: ptr::null_mut(),
+            max_bytes: 0,
+            fps: fps.max(1),
+            bitstream: Vec::new(),
+            packets: Vec::new(),
+        };
+        enc.set_bitrate(bitrate_kbps);
+        Ok(enc)
+    }
+
+    pub fn is_zero_copy(&self) -> bool {
+        self.gpu.is_some()
+    }
+
+    /// `copy` fills the shared texture (an `ID3D11Texture2D*`, slice 0).
+    pub fn encode_d3d11(
+        &mut self,
+        copy: &mut dyn FnMut(*mut c_void, u32) -> Result<()>,
+    ) -> Result<EncodedFrame> {
+        let started = Instant::now();
+        let gpu = self.gpu.as_mut().ok_or_else(|| anyhow!("not a D3D11 encoder"))?;
+        copy(gpu.texture_ptr(), 0)?;
+        let rate = RateControl {
+            maximum_bitstream_size: self.max_bytes,
+        };
+        gpu.encode(self.encoder, &rate)?;
+        self.finish(started)
     }
 }

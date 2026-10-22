@@ -24,5 +24,6 @@ cp "target/$target/$profile/oriel.exe" "$out/"
 cp "$ORIEL_FFMPEG_WIN64"/bin/{avcodec,avutil,swscale,swresample}-*.dll "$out/"
 cp "$ORIEL_MINGW_PTHREADS"/bin/libwinpthread-1.dll "$out/" 2>/dev/null || true
 cp "$ORIEL_PYROWAVE_WIN64"/bin/libpyrowave-shared-1.dll "$out/"
+cp scripts/run-host-dev.bat "$out/run-host.bat"
 chmod -R u+w,+x "$out"
 echo "built $out/oriel.exe"

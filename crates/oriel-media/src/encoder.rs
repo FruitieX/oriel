@@ -654,6 +654,28 @@ impl Encoder {
     /// Open the best available encoder for `config.codec`.
     pub fn open(config: &EncoderConfig) -> Result<Self> {
         if config.codec == Codec::PyroWave {
+            #[cfg(windows)]
+            if let HwDevice::D3D11(device) = config.device {
+                match crate::pyrowave::PyroEncoder::new_d3d11(
+                    device,
+                    config.width,
+                    config.height,
+                    config.fps,
+                    config.bitrate_kbps,
+                ) {
+                    Ok(enc) => {
+                        tracing::info!(
+                            width = config.width,
+                            height = config.height,
+                            kbps = config.bitrate_kbps,
+                            zero_copy = true,
+                            "opened PyroWave encoder"
+                        );
+                        return Ok(Self(EncoderInner::Pyro(enc)));
+                    }
+                    Err(e) => tracing::warn!("PyroWave zero-copy unavailable, using CPU input: {e:#}"),
+                }
+            }
             let enc = crate::pyrowave::PyroEncoder::new(
                 config.width,
                 config.height,
@@ -682,6 +704,9 @@ impl Encoder {
     pub fn wants_cpu_input(&self) -> bool {
         match &self.0 {
             EncoderInner::Ff(e) => e.wants_cpu_input(),
+            #[cfg(windows)]
+            EncoderInner::Pyro(e) => !e.is_zero_copy(),
+            #[cfg(not(windows))]
             EncoderInner::Pyro(_) => true,
         }
     }
@@ -698,7 +723,7 @@ impl Encoder {
             EncoderInner::Pyro(e) => match input {
                 EncoderInput::Bgra { data, stride } => e.encode_bgra(data, stride).map(Some),
                 #[cfg(windows)]
-                EncoderInput::D3D11 { .. } => bail!("PyroWave takes CPU frames"),
+                EncoderInput::D3D11 { copy } => e.encode_d3d11(copy).map(Some),
             },
         }
     }

@@ -76,6 +76,10 @@ enum Command {
         /// Bitrate when the client does not ask for one (kbit/s).
         #[arg(long, default_value_t = 30_000)]
         bitrate: u32,
+        /// Development: exit with code 75 when this file changes (a wrapper
+        /// script then installs the new build and restarts).
+        #[arg(long, hide = true)]
+        restart_when_changed: Option<PathBuf>,
     },
     /// Pair with a host that runs `oriel host --pair`.
     Pair {
@@ -215,7 +219,11 @@ fn main() -> Result<()> {
             encoder,
             codec,
             bitrate,
+            restart_when_changed,
         } => {
+            if let Some(path) = restart_when_changed {
+                watch_for_update(path);
+            }
             let pair_pin = match (pair, pin) {
                 (_, Some(pin)) => Some(pin),
                 (true, None) => Some(oriel_net::pairing::generate_pin()),
@@ -516,4 +524,22 @@ impl oriel_client::launcher::HostControl for LocalHost {
             "Linux hosting streams a test pattern for now.".into()
         }
     }
+}
+
+/// Exit with code 75 once `path` is modified and has stopped changing.
+fn watch_for_update(path: PathBuf) {
+    let mtime = |p: &std::path::Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+    let initial = mtime(&path);
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(Duration::from_secs(2));
+            let now = mtime(&path);
+            if now.is_some() && now != initial {
+                // Let the copy finish.
+                std::thread::sleep(Duration::from_secs(3));
+                tracing::info!("new build found at {}, restarting", path.display());
+                std::process::exit(75);
+            }
+        }
+    });
 }
