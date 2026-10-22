@@ -54,6 +54,8 @@ pub trait HostControl {
     /// Accept pairing requests with a fresh PIN, which is returned.
     fn allow_pairing(&mut self) -> Option<String>;
     fn pairing_pin(&self) -> Option<String>;
+    /// Stop accepting pairing requests.
+    fn stop_pairing(&mut self);
     /// Whether hosting ends when the app quits (not for a service).
     fn stops_with_app(&self) -> bool {
         true
@@ -346,6 +348,7 @@ enum Action {
     StartHosting,
     StopHosting,
     AllowPairing,
+    StopPairing,
     Kick(usize),
     CancelReconnect,
 }
@@ -492,6 +495,11 @@ impl Launcher {
                     host.allow_pairing();
                 }
             }
+            Action::StopPairing => {
+                if let Some(host) = &mut self.host {
+                    host.stop_pairing();
+                }
+            }
             Action::Kick(id) => {
                 if let Some(host) = &self.host {
                     host.kick(id);
@@ -590,8 +598,16 @@ impl Launcher {
             match action {
                 TrayAction::Open => self.open_window(event_loop),
                 TrayAction::Kick(id) => self.apply(Action::Kick(id)),
-                TrayAction::AllowPairing => {
-                    self.apply(Action::AllowPairing);
+                TrayAction::TogglePairing => {
+                    let pairing = self
+                        .host
+                        .as_ref()
+                        .is_some_and(|h| h.pairing_pin().is_some());
+                    self.apply(if pairing {
+                        Action::StopPairing
+                    } else {
+                        Action::AllowPairing
+                    });
                     // The PIN is shown in the window's sharing section.
                     self.open_window(event_loop);
                 }
@@ -931,6 +947,9 @@ impl Launcher {
                                     .monospace()
                                     .color(AMBER),
                             );
+                            if ui.button("Stop pairing").clicked() {
+                                actions.push(Action::StopPairing);
+                            }
                         });
                         ui.label(
                             egui::RichText::new(

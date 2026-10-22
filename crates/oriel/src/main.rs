@@ -186,6 +186,9 @@ enum ServiceCommand {
         /// administrator rights to run this).
         #[arg(long)]
         pin_out: Option<PathBuf>,
+        /// Stop allowing pairing instead.
+        #[arg(long)]
+        stop: bool,
     },
     /// Start the installed service (as Administrator).
     Start,
@@ -602,7 +605,8 @@ fn service(cmd: ServiceCommand) -> Result<()> {
         ServiceCommand::Uninstall => service::uninstall(),
         ServiceCommand::Start => service::set_running(true),
         ServiceCommand::Stop => service::set_running(false),
-        ServiceCommand::Pair { pin_out } => {
+        ServiceCommand::Pair { stop: true, .. } => service::stop_pairing(),
+        ServiceCommand::Pair { pin_out, .. } => {
             let pin = service::allow_pairing()?;
             if let Some(path) = pin_out {
                 std::fs::write(&path, &pin).with_context(|| format!("write {}", path.display()))?;
@@ -726,6 +730,10 @@ impl oriel_client::launcher::HostControl for LocalHost {
 
     fn pairing_pin(&self) -> Option<String> {
         self.control.pairing_pin()
+    }
+
+    fn stop_pairing(&mut self) {
+        self.control.stop_pairing();
     }
 }
 
@@ -851,11 +859,22 @@ impl oriel_client::launcher::HostControl for ServiceHost {
     }
 
     fn pairing_pin(&self) -> Option<String> {
-        // The service accepts the PIN for ten minutes.
+        // The service accepts the PIN for ten minutes, until a device pairs
+        // (which removes the PIN file).
         self.pin
             .as_ref()
             .filter(|(_, at)| at.elapsed() < std::time::Duration::from_secs(600))
+            .filter(|_| oriel_host::service::pairing_allowed() != Some(false))
             .map(|(pin, _)| pin.clone())
+    }
+
+    fn stop_pairing(&mut self) {
+        self.pin = None;
+        if oriel_host::service::stop_pairing().is_err()
+            && let Err(e) = Self::elevated("service pair --stop")
+        {
+            tracing::warn!("cannot stop pairing: {e:#}");
+        }
     }
 }
 

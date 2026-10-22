@@ -13,7 +13,8 @@ use crate::launcher::{HostControl, SharedClient, icon_rgba};
 pub enum TrayAction {
     Open,
     Kick(usize),
-    AllowPairing,
+    /// Allow pairing, or stop allowing it.
+    TogglePairing,
     ToggleSharing,
     OpenLog,
     Quit,
@@ -93,7 +94,7 @@ impl Tray {
             } else if id == self.share.id() {
                 out.push(TrayAction::ToggleSharing);
             } else if id == self.pair.id() {
-                out.push(TrayAction::AllowPairing);
+                out.push(TrayAction::TogglePairing);
             } else if id == self.log.id() {
                 out.push(TrayAction::OpenLog);
             } else if id == self.quit.id() {
@@ -126,6 +127,11 @@ impl Tray {
             "Share this computer"
         });
         self.pair.set_enabled(sharing);
+        self.pair.set_text(if pin.is_some() {
+            "Stop pairing"
+        } else {
+            "Allow pairing…"
+        });
         self.pin
             .set_text(pin.map(|p| format!("Pairing PIN: {p}")).unwrap_or_default());
         if clients != self.shown_clients {

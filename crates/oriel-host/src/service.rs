@@ -566,6 +566,28 @@ pub fn allow_pairing() -> Result<String> {
     Ok(pin)
 }
 
+pub fn stop_pairing() -> Result<()> {
+    match std::fs::remove_file(crate::server::pin_file(&data_dir())) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            Err(e).context("remove the pairing PIN (run this as Administrator)")
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Whether a pairing PIN is set; `None` when this user cannot tell.
+pub fn pairing_allowed() -> Option<bool> {
+    let path = crate::server::pin_file(&data_dir());
+    match std::fs::metadata(&path) {
+        Ok(_) => Some(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // Not found also when the directory is not ours to read.
+            std::fs::read_dir(path.parent()?).ok().map(|_| false)
+        }
+        Err(_) => None,
+    }
+}
+
 /// Ask the service (if any) to send Ctrl+Alt+Del. Returns false when no
 /// service is listening.
 pub fn request_secure_attention() -> bool {
