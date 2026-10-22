@@ -288,7 +288,9 @@ impl Pipeline {
     ) -> Result<Flow> {
         let interval = Duration::from_secs(1) / self.config.max_fps.max(1);
         let (width, height) = cap.size();
-        let mut last_encode = Instant::now() - interval;
+        // When the next frame is due. Frames may go up to a quarter interval
+        // early (capture jitter) without raising the average rate.
+        let mut next_due = Instant::now();
         let mut capture_time = Instant::now();
         let mut has_frame = false;
         let mut dirty = false;
@@ -330,9 +332,7 @@ impl Pipeline {
             }
 
             let now = Instant::now();
-            // Some slack so a frame arriving slightly early (capture jitter)
-            // does not wait for the next slot.
-            let next_slot = last_encode + interval * 3 / 4;
+            let next_slot = next_due.checked_sub(interval / 4).unwrap_or(next_due);
             let timeout = if blocked {
                 Duration::from_millis(1)
             } else if has_frame && (dirty || force_key) {
@@ -438,7 +438,12 @@ impl Pipeline {
                 continue;
             }
 
-            last_encode = Instant::now();
+            let now = Instant::now();
+            next_due = if now > next_due + interval {
+                now + interval
+            } else {
+                next_due + interval
+            };
             let result = if enc.wants_cpu_input() {
                 match cap.cpu_frame() {
                     Ok((data, stride)) => {
