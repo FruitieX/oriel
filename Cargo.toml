@@ -14,6 +14,7 @@ oriel-net = { path = "crates/oriel-net" }
 oriel-media = { path = "crates/oriel-media" }
 oriel-host = { path = "crates/oriel-host" }
 oriel-client = { path = "crates/oriel-client" }
+oriel-audio = { path = "crates/oriel-audio" }
 
 anyhow = "1"
 thiserror = "2"

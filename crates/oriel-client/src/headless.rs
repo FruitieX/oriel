@@ -82,6 +82,13 @@ pub async fn run(
                 summary.decode_ms,
                 s.rtt().as_secs_f32() * 1000.0
             );
+            if let Some(a) = &s.audio {
+                let a = *a.lock();
+                println!(
+                    "audio: buffered {:.1} ms, lost {}, underruns {}",
+                    a.buffered_ms, a.lost, a.underruns
+                );
+            }
             last_report = Instant::now();
         }
     }

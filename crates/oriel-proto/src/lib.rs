@@ -65,6 +65,8 @@ pub struct StreamSettings {
     pub bitrate_kbps: u32,
     /// Maximum frame rate.
     pub max_fps: u32,
+    /// Stream the host's sound.
+    pub audio: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -207,13 +209,15 @@ pub enum InputEvent {
     SecureAttention,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Datagram {
     /// Host → client: where the host's cursor is.
     CursorPosition { surface: SurfaceId, x: i32, y: i32 },
     /// Client → host: every frame up to `seq` has been decoded. Paces the
     /// host's encoder (QUIC acknowledgements can be delayed by up to 25 ms).
     FrameAck { surface: SurfaceId, seq: u64 },
+    /// Host → client: one 10 ms Opus packet (48 kHz stereo).
+    Audio { seq: u32, data: Vec<u8> },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -269,6 +273,7 @@ mod tests {
             codecs: vec![Codec::Hevc, Codec::H264],
             bitrate_kbps: 50_000,
             max_fps: 120,
+            audio: true,
         });
         let bytes = encode_framed(&msg).unwrap();
         let len = u32::from_le_bytes(bytes[..4].try_into().unwrap()) as usize;

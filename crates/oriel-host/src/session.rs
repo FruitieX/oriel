@@ -36,6 +36,7 @@ pub async fn run(
     let shared = Arc::new(Shared::default());
     let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded();
     let (ev_tx, mut ev_rx) = tmpsc::unbounded_channel();
+    let ev_tx_audio = ev_tx.clone();
     let mut codecs = settings.codecs.clone();
     if let Some(codec) = options.codec {
         codecs.retain(|c| *c == codec);
@@ -59,6 +60,12 @@ pub async fn run(
         cmd_rx,
         ev_tx,
     );
+
+    let _audio = if settings.audio {
+        start_audio(&conn, options.source, &ev_tx_audio)
+    } else {
+        None
+    };
 
     // Input: a dedicated thread owns the injector (Windows wants input
     // injected from a thread attached to the input desktop).
@@ -222,4 +229,35 @@ async fn send_frame(
         }
         shared.ack(header.seq);
     });
+}
+
+fn start_audio(
+    conn: &quinn::Connection,
+    source: crate::capture::SourceKind,
+    events: &tmpsc::UnboundedSender<Event>,
+) -> Option<oriel_audio::Capture> {
+    use crate::capture::SourceKind;
+    let source = match source {
+        SourceKind::TestPattern => oriel_audio::CaptureSource::TestTone,
+        SourceKind::Auto if cfg!(windows) => oriel_audio::CaptureSource::SystemOutput,
+        SourceKind::Auto => {
+            let _ = events.send(Event::Notice("Audio capture is not supported on this host yet".into()));
+            return None;
+        }
+    };
+    let conn = conn.clone();
+    let mut seq = 0u32;
+    match oriel_audio::start_capture(source, 128_000, move |data| {
+        if let Ok(bytes) = oriel_proto::encode(&Datagram::Audio { seq, data }) {
+            let _ = conn.send_datagram(bytes.into());
+        }
+        seq = seq.wrapping_add(1);
+    }) {
+        Ok(c) => Some(c),
+        Err(e) => {
+            tracing::warn!("audio capture unavailable: {e:#}");
+            let _ = events.send(Event::Notice(format!("No audio: {e:#}")));
+            None
+        }
+    }
 }

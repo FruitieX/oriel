@@ -17,6 +17,7 @@ pub struct ClientConfig {
     pub codecs: Vec<String>,
     /// "auto", "desktop" or "captured".
     pub mouse: String,
+    pub audio: bool,
 }
 
 impl Default for ClientConfig {
@@ -27,6 +28,7 @@ impl Default for ClientConfig {
             max_fps: 120,
             codecs: vec!["hevc".into(), "h264".into()],
             mouse: "auto".into(),
+            audio: true,
         }
     }
 }

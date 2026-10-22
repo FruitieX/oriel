@@ -32,6 +32,7 @@ pub struct Session {
     input: mpsc::UnboundedSender<InputEvent>,
     pub frames: decode::FrameSlot,
     pub stats: Arc<Mutex<Stats>>,
+    pub audio: Option<Arc<Mutex<oriel_audio::PlayerStats>>>,
     rt: tokio::runtime::Handle,
 }
 
@@ -79,6 +80,19 @@ pub fn start(
         hardware_decode,
         sink.clone(),
     );
+
+    let player = if settings.audio {
+        match oriel_audio::Player::start() {
+            Ok(p) => Some(p),
+            Err(e) => {
+                tracing::warn!("no audio output: {e:#}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let audio_stats = player.as_ref().map(|p| p.stats.clone());
 
     let ControlStream { mut send, mut recv } = ctl;
     let _ = ctl_tx.send(ClientMsg::StartStream(settings));
@@ -144,8 +158,16 @@ pub fn start(
     let dg_sink = sink.clone();
     tokio::spawn(async move {
         while let Ok(bytes) = dg_conn.read_datagram().await {
-            if let Ok(Datagram::CursorPosition { x, y, .. }) = oriel_proto::decode(&bytes) {
-                dg_sink(UiEvent::CursorPosition { x, y });
+            match oriel_proto::decode(&bytes) {
+                Ok(Datagram::CursorPosition { x, y, .. }) => {
+                    dg_sink(UiEvent::CursorPosition { x, y })
+                }
+                Ok(Datagram::Audio { seq, data }) => {
+                    if let Some(p) = &player {
+                        p.push(seq, data);
+                    }
+                }
+                _ => {}
             }
         }
     });
@@ -170,6 +192,7 @@ pub fn start(
         input: input_tx,
         frames,
         stats,
+        audio: audio_stats,
         rt: rt.clone(),
     }
 }

@@ -98,6 +98,9 @@ enum Command {
         /// Decode on the CPU.
         #[arg(long)]
         software_decode: bool,
+        /// Do not stream sound.
+        #[arg(long)]
+        no_audio: bool,
         #[arg(long)]
         fullscreen: bool,
         #[arg(long, value_enum)]
@@ -185,6 +188,7 @@ fn main() -> Result<()> {
             bitrate,
             codec,
             software_decode,
+            no_audio,
             fullscreen,
             mouse,
             stats,
@@ -204,6 +208,7 @@ fn main() -> Result<()> {
                 codecs,
                 bitrate_kbps: bitrate.unwrap_or(file.bitrate_kbps),
                 max_fps: fps.unwrap_or(file.max_fps),
+                audio: file.audio && !no_audio,
             };
             let rt = runtime()?;
             if let Some(secs) = headless {
