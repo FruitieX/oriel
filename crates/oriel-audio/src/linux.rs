@@ -61,7 +61,9 @@ pub fn capture_output(tx: crossbeam_channel::Sender<Vec<f32>>) -> Result<SinkCap
                         let size = data.chunk().size() as usize;
                         if let Some(bytes) = data.data() {
                             let samples: Vec<f32> = bytes[..size.min(bytes.len())]
-                                .chunks_exact(4)
+                                .as_chunks::<4>()
+                                .0
+                                .iter()
                                 .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
                                 .collect();
                             let _ = tx.try_send(samples);

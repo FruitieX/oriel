@@ -219,7 +219,7 @@ fn run_stream(node_id: u32, shared: Shared, quit: pw::channel::Receiver<()>) -> 
                 properties: vec![spa::pod::Property::new(
                     spa::sys::SPA_PARAM_BUFFERS_dataType,
                     spa::pod::Value::Int(
-                        ((1 << spa::sys::SPA_DATA_MemFd) | (1 << spa::sys::SPA_DATA_MemPtr)) as i32,
+                        ((1 << spa::sys::SPA_DATA_MemFd) | (1 << spa::sys::SPA_DATA_MemPtr)),
                     ),
                 )],
             }));
@@ -356,7 +356,7 @@ unsafe fn read_buffer(
                                 pixels.add(y * b.stride as usize),
                                 w as usize * 4,
                             );
-                            for px in row.chunks_exact(4) {
+                            for px in row.as_chunks::<4>().0 {
                                 if bgra {
                                     rgba.extend_from_slice(&[px[2], px[1], px[0], px[3]]);
                                 } else {
