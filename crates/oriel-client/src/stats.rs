@@ -107,7 +107,7 @@ impl ClockSync {
         let rtt = received - sent;
         self.samples += 1;
         // Let the best sample age out slowly in case clocks drift.
-        if self.samples % 30 == 0 {
+        if self.samples.is_multiple_of(30) {
             self.best_rtt = self.best_rtt.saturating_mul(2);
         }
         if rtt <= self.best_rtt {

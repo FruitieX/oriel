@@ -225,10 +225,10 @@ unsafe fn cpu_buffer(frame: *mut ff::AVFrame) -> CpuBuffer {
             height: h,
             format: FORMAT_YUV420P,
         };
-        for i in 0..3 {
+        for (i, rows) in rows.into_iter().enumerate() {
             b.data[i] = (*frame).data[i].cast();
             b.row_stride_in_bytes[i] = (*frame).linesize[i] as usize;
-            b.plane_size_in_bytes[i] = (*frame).linesize[i] as usize * rows[i];
+            b.plane_size_in_bytes[i] = (*frame).linesize[i] as usize * rows;
         }
         b
     }
@@ -252,7 +252,7 @@ unsafe impl Send for PyroEncoder {}
 
 impl PyroEncoder {
     pub fn new(width: u32, height: u32, fps: u32, bitrate_kbps: u32) -> Result<Self> {
-        if width % 2 != 0 || height % 2 != 0 {
+        if !width.is_multiple_of(2) || !height.is_multiple_of(2) {
             bail!("PyroWave 4:2:0 needs an even size ({width}x{height})");
         }
         let api = api()?;
