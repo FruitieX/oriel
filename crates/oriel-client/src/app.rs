@@ -290,9 +290,28 @@ impl Viewer {
         }
     }
 
-    /// Is input currently going to the host?
+    /// Is input currently going to the host? The menu does not stop it:
+    /// the pointer goes to the host when not over the menu, and keys (see
+    /// `keys_to_host`).
     fn forwarding(&self) -> bool {
-        !self.menu_open && self.closed.is_none() && self.focused
+        self.closed.is_none() && self.focused
+    }
+
+    /// Keys go to the host except while the menu records a shortcut (it
+    /// has no text fields).
+    fn keys_to_host(&self) -> bool {
+        self.forwarding() && !(self.menu_open && self.panel.is_recording())
+    }
+
+    /// The pointer is over the menu or the menu button.
+    fn over_ui(&self) -> bool {
+        self.egui_ctx.is_pointer_over_egui()
+    }
+
+    /// Capture the pointer and shortcuts for the host (not while the menu
+    /// is open, so it can be used).
+    fn captured(&self) -> bool {
+        self.forwarding() && !self.menu_open
     }
 
     fn relative(&self) -> bool {
@@ -301,7 +320,7 @@ impl Viewer {
             MouseMode::Absolute => false,
             MouseMode::Relative => true,
         };
-        wanted && self.forwarding()
+        wanted && self.captured()
     }
 
     fn viewport(&self) -> Option<Viewport> {
@@ -350,11 +369,11 @@ impl Viewer {
     fn update_cursor(&mut self) {
         #[cfg(windows)]
         if let Some(hook) = &self.key_hook {
-            hook.set_active(self.forwarding());
+            hook.set_active(self.captured());
         }
         #[cfg(target_os = "linux")]
         {
-            let forwarding = self.forwarding();
+            let forwarding = self.captured();
             if let Some(i) = self.gfx.as_mut().and_then(|g| g.inhibitor.as_mut()) {
                 i.set(forwarding);
             }
@@ -380,7 +399,7 @@ impl Viewer {
         let host_visible = self.host_cursor.is_none_or(|c| c.visible);
         let wanted = if relative {
             AppliedCursor::Hidden
-        } else if self.menu_open || self.pointer_over_ui || self.closed.is_some() {
+        } else if self.pointer_over_ui || self.closed.is_some() {
             AppliedCursor::Default
         } else if !host_visible {
             AppliedCursor::Hidden
@@ -494,7 +513,7 @@ impl Viewer {
             }
             return;
         }
-        if !self.forwarding() || event.repeat {
+        if !self.keys_to_host() || event.repeat {
             return;
         }
         let Some(usage) = hid_usage(code) else {
@@ -527,7 +546,7 @@ impl Viewer {
                 }
                 continue;
             }
-            if !self.forwarding() {
+            if !self.keys_to_host() {
                 continue;
             }
             if down {
@@ -605,7 +624,7 @@ impl Viewer {
             self.pointer_over_ui = over_ui;
             self.update_cursor();
         }
-        if !self.forwarding() || self.relative() {
+        if !self.forwarding() || self.relative() || over_ui {
             return;
         }
         if let Some((x, y)) = self.to_surface(position)
@@ -631,7 +650,7 @@ impl Viewer {
         };
         let down = state == ElementState::Pressed;
         if down {
-            if !self.forwarding() {
+            if !self.forwarding() || (!self.relative() && self.over_ui()) {
                 return;
             }
             // Make sure the host's pointer is where the click happens.
@@ -649,7 +668,7 @@ impl Viewer {
     }
 
     fn handle_wheel(&mut self, delta: MouseScrollDelta) {
-        if !self.forwarding() {
+        if !self.forwarding() || (!self.relative() && self.over_ui()) {
             return;
         }
         let (dx, dy) = match delta {
@@ -1101,12 +1120,12 @@ fn overlay(ctx: &egui::Context, s: &OverlayState, settings: &mut MenuSettings) -
         return actions;
     }
 
-    // The always-available way back out: a button with the shortcut that
-    // can be dragged anywhere (or hidden, leaving the shortcut).
+    // The always-available way in and out: a button with the shortcut
+    // that can be dragged anywhere (or hidden, leaving the shortcut).
+    if s.menu_button != "hidden" {
+        menu_button(ctx, s, &mut actions);
+    }
     if !s.menu_open {
-        if s.menu_button != "hidden" {
-            menu_button(ctx, s, &mut actions);
-        }
         return actions;
     }
 
@@ -1134,7 +1153,10 @@ fn overlay(ctx: &egui::Context, s: &OverlayState, settings: &mut MenuSettings) -
         if theme::title_bar(
             ui,
             &s.host_name,
-            Some(&format!("Connected · {} returns", s.shortcut)),
+            Some(&format!(
+                "Connected · {} shows or hides this menu",
+                s.shortcut
+            )),
         ) {
             actions.push(Action::CloseMenu);
         }
@@ -1181,9 +1203,6 @@ fn overlay(ctx: &egui::Context, s: &OverlayState, settings: &mut MenuSettings) -
             actions.push(Action::SettingsChanged);
         }
     });
-    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-        actions.push(Action::CloseMenu);
-    }
     // Remember where it was dragged (the frame does the dragging, so
     // compare with where it was put instead of asking for a drag).
     if let Some(shown) = shown
@@ -1268,7 +1287,11 @@ fn menu_button(ctx: &egui::Context, s: &OverlayState, actions: &mut Vec<Action>)
             let fy = (c.y - screen.min.y) / screen.height().max(1.0);
             actions.push(Action::MoveMenuButton([fx, fy]));
         } else if response.clicked() {
-            actions.push(Action::OpenMenu);
+            actions.push(if s.menu_open {
+                Action::CloseMenu
+            } else {
+                Action::OpenMenu
+            });
         }
     });
 }

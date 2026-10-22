@@ -73,6 +73,11 @@ impl Panel {
         }
     }
 
+    /// Waiting for the keys of a new shortcut.
+    pub fn is_recording(&self) -> bool {
+        self.recording.is_some()
+    }
+
     /// Forget listed devices (they are listed again when shown).
     pub fn refresh_devices(&mut self) {
         self.devices = None;
