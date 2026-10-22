@@ -219,7 +219,7 @@ fn run_stream(node_id: u32, shared: Shared, quit: pw::channel::Receiver<()>) -> 
                 properties: vec![spa::pod::Property::new(
                     spa::sys::SPA_PARAM_BUFFERS_dataType,
                     spa::pod::Value::Int(
-                        ((1 << spa::sys::SPA_DATA_MemFd) | (1 << spa::sys::SPA_DATA_MemPtr)),
+                        (1 << spa::sys::SPA_DATA_MemFd) | (1 << spa::sys::SPA_DATA_MemPtr),
                     ),
                 )],
             }));
