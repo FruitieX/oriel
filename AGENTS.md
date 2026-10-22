@@ -34,7 +34,9 @@ Read [docs/architecture.md](docs/architecture.md) first.
   would otherwise keep the screen changing.
 - The window can be tested under a headless Weston
   (`weston --backend=headless --renderer=gl --socket=...`) with
-  `--screenshot path.png`; `ORIEL_DEBUG_MENU=1` opens the menu at start.
+  `--screenshot path.png`; `ORIEL_DEBUG_MENU=1` opens the menu at start;
+  `ORIEL_DEBUG_DIALOG=settings[-input|-sound|-window]` opens the settings
+  and `ORIEL_DEBUG_LAUNCHER_SIZE=420x400` sizes the start window.
 - Machines without a sound card: point `HOME` at a directory whose
   `.asoundrc` sets `pcm.!default { type null }`.
 - Headless GNOME host: run `gnome-shell --headless --wayland

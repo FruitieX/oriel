@@ -2,7 +2,6 @@
 //! client, and injects the client's input.
 
 pub mod capture;
-mod clipboard;
 mod cursor;
 mod gamepad;
 #[cfg(target_os = "linux")]

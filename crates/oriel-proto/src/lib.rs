@@ -18,10 +18,10 @@ use serde::{Deserialize, Serialize};
 pub mod keys;
 
 pub const ALPN: &[u8] = b"oriel/1";
-pub const PROTOCOL_VERSION: u32 = 6;
+pub const PROTOCOL_VERSION: u32 = 7;
 pub const DEFAULT_PORT: u16 = 48600;
 /// Upper bound for a single control/input message.
-pub const MAX_MESSAGE_LEN: usize = 4 * 1024 * 1024;
+pub const MAX_MESSAGE_LEN: usize = 32 * 1024 * 1024;
 
 pub type SurfaceId = u32;
 
@@ -165,6 +165,10 @@ pub enum ClientMsg {
     GamepadRemoved {
         pad: u8,
     },
+    /// The client's clipboard now holds this image (PNG).
+    ClipboardImage {
+        png: Vec<u8>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -210,6 +214,10 @@ pub enum HostMsg {
     /// Human-readable notice, e.g. "secure desktop active".
     Notice {
         text: String,
+    },
+    /// The host's clipboard now holds this image (PNG).
+    ClipboardImage {
+        png: Vec<u8>,
     },
     /// Set a gamepad's rumble motors (0 stops them) until the next update.
     Rumble {

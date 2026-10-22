@@ -240,6 +240,14 @@ pub fn run(
             launcher.settings_open = true;
             launcher.settings_tab = SettingsTab::Input;
         }
+        Ok("settings-sound") => {
+            launcher.settings_open = true;
+            launcher.settings_tab = SettingsTab::Sound;
+        }
+        Ok("settings-window") => {
+            launcher.settings_open = true;
+            launcher.settings_tab = SettingsTab::Window;
+        }
         _ => {}
     }
     if options.start_sharing
@@ -592,6 +600,16 @@ impl Launcher {
             .with_window_icon(icon())
             .with_inner_size(winit::dpi::LogicalSize::new(760.0, 600.0))
             .with_min_inner_size(winit::dpi::LogicalSize::new(420.0, 360.0));
+        // Debugging aid: ORIEL_DEBUG_LAUNCHER_SIZE=WIDTHxHEIGHT.
+        let attrs = match std::env::var("ORIEL_DEBUG_LAUNCHER_SIZE")
+            .ok()
+            .and_then(|s| crate::config::parse_resolution(&s))
+        {
+            Some((w, h)) => attrs
+                .with_min_inner_size(winit::dpi::LogicalSize::new(w as f64, h as f64))
+                .with_inner_size(winit::dpi::LogicalSize::new(w as f64, h as f64)),
+            None => attrs,
+        };
         let window = match event_loop.create_window(attrs) {
             Ok(w) => Arc::new(w),
             Err(e) => {
@@ -1108,7 +1126,13 @@ impl Launcher {
         let modal = egui::Modal::new(egui::Id::unique("settings"))
             .frame(dialog_frame())
             .show(ctx, |ui| {
-                ui.set_width(480.0);
+                let screen = ui.ctx().content_rect();
+                // Dialog padding and the title, tabs and buttons around
+                // the scrolling part.
+                let width = (screen.width() - 92.0).clamp(220.0, 500.0);
+                let height = (screen.height() - 230.0).clamp(120.0, 350.0);
+                let field = (width - 170.0).clamp(150.0, 280.0);
+                ui.set_width(width);
                 if let Some(command) = self.recording {
                     self.record_shortcut(ui, command);
                 }
@@ -1124,197 +1148,225 @@ impl Launcher {
                     }
                 });
                 ui.separator();
-                let c = &mut self.config;
-                egui::Grid::new("settings-grid")
-                    .num_columns(2)
-                    .spacing([16.0, 12.0])
-                    .show(ui, |ui| match self.settings_tab {
-                        SettingsTab::Video => {
-                            ui.label("Codec");
-                            let current = c.codec_key();
-                            egui::ComboBox::from_id_salt("codec")
-                                .selected_text(codec_label(&current))
-                                .show_ui(ui, |ui| {
-                                    for (key, _) in CODEC_CHOICES {
-                                        if ui
-                                            .selectable_label(current == key, codec_label(key))
-                                            .clicked()
-                                        {
-                                            c.codecs = codec_choice_strings(key);
+                // The same size on every tab, within the window; content
+                // that does not fit scrolls.
+                egui::ScrollArea::both()
+                    .id_salt("settings-scroll")
+                    .max_width(width)
+                    .max_height(height)
+                    .auto_shrink(false)
+                    .show(ui, |ui| {
+                        let c = &mut self.config;
+                        egui::Grid::new("settings-grid")
+                            .num_columns(2)
+                            .spacing([16.0, 12.0])
+                            .show(ui, |ui| match self.settings_tab {
+                                SettingsTab::Video => {
+                                    ui.label("Codec");
+                                    let current = c.codec_key();
+                                    egui::ComboBox::from_id_salt("codec")
+                                        .width(field)
+                                        .selected_text(codec_label(&current))
+                                        .show_ui(ui, |ui| {
+                                            for (key, _) in CODEC_CHOICES {
+                                                if ui
+                                                    .selectable_label(
+                                                        current == key,
+                                                        codec_label(key),
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    c.codecs = codec_choice_strings(key);
+                                                }
+                                            }
+                                        });
+                                    ui.end_row();
+                                    ui.label("Bitrate (HEVC, H.264, AV1)");
+                                    let mut mbps = c.bitrate_kbps / 1000;
+                                    ui.add(
+                                        egui::Slider::new(&mut mbps, 2..=200)
+                                            .suffix(" Mbit/s")
+                                            .logarithmic(true),
+                                    );
+                                    c.bitrate_kbps = mbps * 1000;
+                                    ui.end_row();
+                                    ui.label("Bitrate (PyroWave)");
+                                    let mut mbps = c.pyrowave_kbps / 1000;
+                                    ui.add(
+                                        egui::Slider::new(&mut mbps, 50..=1500)
+                                            .suffix(" Mbit/s")
+                                            .logarithmic(true),
+                                    );
+                                    c.pyrowave_kbps = mbps * 1000;
+                                    ui.end_row();
+                                    ui.label("Frame rate");
+                                    egui::ComboBox::from_id_salt("fps")
+                                        .width(field)
+                                        .selected_text(format!("{} fps", c.max_fps))
+                                        .show_ui(ui, |ui| {
+                                            for fps in [30, 60, 90, 120, 144, 165, 240] {
+                                                ui.selectable_value(
+                                                    &mut c.max_fps,
+                                                    fps,
+                                                    format!("{fps} fps"),
+                                                );
+                                            }
+                                        });
+                                    ui.end_row();
+                                }
+                                SettingsTab::Input => {
+                                    ui.label("Mouse");
+                                    egui::ComboBox::from_id_salt("mouse")
+                                        .width(field)
+                                        .selected_text(match c.mouse.as_str() {
+                                            "desktop" => "Desktop",
+                                            "captured" => "Captured (games)",
+                                            _ => "Automatic",
+                                        })
+                                        .show_ui(ui, |ui| {
+                                            for (v, l) in [
+                                                ("auto", "Automatic"),
+                                                ("desktop", "Desktop"),
+                                                ("captured", "Captured (games)"),
+                                            ] {
+                                                if ui.selectable_label(c.mouse == v, l).clicked() {
+                                                    c.mouse = v.into();
+                                                }
+                                            }
+                                        });
+                                    ui.end_row();
+                                    ui.label("Gamepads");
+                                    ui.checkbox(&mut c.gamepads, "Forward controllers");
+                                    ui.end_row();
+                                    for command in Command::ALL {
+                                        ui.label(command.label());
+                                        ui.horizontal(|ui| {
+                                            let recording = self.recording == Some(command);
+                                            let current = self.bindings.get(command);
+                                            let text = if recording {
+                                                "Press the new shortcut...".to_string()
+                                            } else {
+                                                current.map_or_else(
+                                                    || "None".into(),
+                                                    |s| s.to_string(),
+                                                )
+                                            };
+                                            let button = egui::Button::new(text)
+                                                .min_size(egui::vec2(field.min(210.0), 0.0))
+                                                .selected(recording);
+                                            let response = ui.add(button).on_hover_text(
+                                                "Click, then press the keys (Esc cancels)",
+                                            );
+                                            if response.clicked() {
+                                                // Keep Space/Enter from clicking it again.
+                                                response.surrender_focus();
+                                                self.recording = (!recording).then_some(command);
+                                                self.shortcut_hint.clear();
+                                            }
+                                            if command != Command::Menu
+                                                && current.is_some()
+                                                && ui.small_button("Clear").clicked()
+                                            {
+                                                self.bindings.set(command, None);
+                                            }
+                                            let default =
+                                                Shortcut::parse(command.default_shortcut());
+                                            if current != default
+                                                && ui.small_button("Reset").clicked()
+                                            {
+                                                self.bindings.set(command, default);
+                                            }
+                                        });
+                                        ui.end_row();
+                                    }
+                                    if !self.shortcut_hint.is_empty() {
+                                        ui.label("");
+                                        ui.colored_label(AMBER, &self.shortcut_hint);
+                                        ui.end_row();
+                                    }
+                                }
+                                SettingsTab::Window => {
+                                    ui.label("Fullscreen");
+                                    ui.checkbox(&mut c.fullscreen, "Start in fullscreen");
+                                    ui.end_row();
+                                    ui.label("Statistics");
+                                    ui.checkbox(&mut c.show_stats, "Show statistics");
+                                    ui.end_row();
+                                }
+                                SettingsTab::Sound => {
+                                    ui.label("Sound");
+                                    ui.checkbox(&mut c.audio, "Play remote sound");
+                                    ui.end_row();
+                                    ui.label("Play on");
+                                    let devices = &self.playback_devices;
+                                    let name = |id: &Option<String>| match id {
+                                        None => "Default output".to_string(),
+                                        Some(id) => {
+                                            devices.iter().find(|d| &d.id == id).map_or_else(
+                                                || format!("{id} (not found)"),
+                                                |d| d.name.clone(),
+                                            )
                                         }
-                                    }
-                                });
-                            ui.end_row();
-                            ui.label("Bitrate (HEVC, H.264, AV1)");
-                            let mut mbps = c.bitrate_kbps / 1000;
-                            ui.add(
-                                egui::Slider::new(&mut mbps, 2..=200)
-                                    .suffix(" Mbit/s")
-                                    .logarithmic(true),
-                            );
-                            c.bitrate_kbps = mbps * 1000;
-                            ui.end_row();
-                            ui.label("Bitrate (PyroWave)");
-                            let mut mbps = c.pyrowave_kbps / 1000;
-                            ui.add(
-                                egui::Slider::new(&mut mbps, 50..=1500)
-                                    .suffix(" Mbit/s")
-                                    .logarithmic(true),
-                            );
-                            c.pyrowave_kbps = mbps * 1000;
-                            ui.end_row();
-                            ui.label("Frame rate");
-                            egui::ComboBox::from_id_salt("fps")
-                                .selected_text(format!("{} fps", c.max_fps))
-                                .show_ui(ui, |ui| {
-                                    for fps in [30, 60, 90, 120, 144, 165, 240] {
-                                        ui.selectable_value(
-                                            &mut c.max_fps,
-                                            fps,
-                                            format!("{fps} fps"),
-                                        );
-                                    }
-                                });
-                            ui.end_row();
-                        }
-                        SettingsTab::Input => {
-                            ui.label("Mouse");
-                            egui::ComboBox::from_id_salt("mouse")
-                                .selected_text(match c.mouse.as_str() {
-                                    "desktop" => "Desktop",
-                                    "captured" => "Captured (games)",
-                                    _ => "Automatic",
-                                })
-                                .show_ui(ui, |ui| {
-                                    for (v, l) in [
-                                        ("auto", "Automatic"),
-                                        ("desktop", "Desktop"),
-                                        ("captured", "Captured (games)"),
-                                    ] {
-                                        if ui.selectable_label(c.mouse == v, l).clicked() {
-                                            c.mouse = v.into();
-                                        }
-                                    }
-                                });
-                            ui.end_row();
-                            ui.label("Gamepads");
-                            ui.checkbox(&mut c.gamepads, "Use controllers on the remote computer");
-                            ui.end_row();
-                            for command in Command::ALL {
-                                ui.label(command.label());
-                                ui.horizontal(|ui| {
-                                    let recording = self.recording == Some(command);
-                                    let current = self.bindings.get(command);
-                                    let text = if recording {
-                                        "Press the new shortcut...".to_string()
-                                    } else {
-                                        current.map_or_else(|| "None".into(), |s| s.to_string())
                                     };
-                                    let button = egui::Button::new(text)
-                                        .min_size(egui::vec2(210.0, 0.0))
-                                        .selected(recording);
-                                    let response = ui
-                                        .add(button)
-                                        .on_hover_text("Click, then press the keys (Esc cancels)");
-                                    if response.clicked() {
-                                        // Keep Space/Enter from clicking it again.
-                                        response.surrender_focus();
-                                        self.recording = (!recording).then_some(command);
-                                        self.shortcut_hint.clear();
-                                    }
-                                    if command != Command::Menu
-                                        && current.is_some()
-                                        && ui.small_button("Clear").clicked()
-                                    {
-                                        self.bindings.set(command, None);
-                                    }
-                                    let default = Shortcut::parse(command.default_shortcut());
-                                    if current != default && ui.small_button("Reset").clicked() {
-                                        self.bindings.set(command, default);
-                                    }
-                                });
-                                ui.end_row();
-                            }
-                            if !self.shortcut_hint.is_empty() {
-                                ui.label("");
-                                ui.colored_label(AMBER, &self.shortcut_hint);
-                                ui.end_row();
-                            }
-                        }
-                        SettingsTab::Window => {
-                            ui.label("Fullscreen");
-                            ui.checkbox(&mut c.fullscreen, "Open new computers in fullscreen");
-                            ui.end_row();
-                            ui.label("Statistics");
-                            ui.checkbox(&mut c.show_stats, "Show the statistics overlay");
-                            ui.end_row();
-                        }
-                        SettingsTab::Sound => {
-                            ui.label("Sound");
-                            ui.checkbox(&mut c.audio, "Play the remote computer's sound");
-                            ui.end_row();
-                            ui.label("Play on");
-                            let devices = &self.playback_devices;
-                            let name = |id: &Option<String>| match id {
-                                None => "Default output".to_string(),
-                                Some(id) => devices.iter().find(|d| &d.id == id).map_or_else(
-                                    || format!("{id} (not found)"),
-                                    |d| d.name.clone(),
-                                ),
-                            };
-                            egui::ComboBox::from_id_salt("playback-device")
-                                .selected_text(name(&c.playback_device))
-                                .width(260.0)
-                                .show_ui(ui, |ui| {
-                                    let choices = std::iter::once(None)
-                                        .chain(devices.iter().map(|d| Some(d.id.clone())));
-                                    for choice in choices {
-                                        let label = name(&choice);
-                                        ui.selectable_value(&mut c.playback_device, choice, label);
-                                    }
-                                });
-                            ui.end_row();
-                            ui.label("Microphone");
-                            ui.checkbox(
-                                &mut c.microphone,
-                                "Send my microphone to the remote computer",
-                            );
-                            ui.end_row();
-                            ui.label("");
-                            let mics = &self.microphones;
-                            let mic_name = |id: &Option<String>| match id {
-                                None => "Default microphone".to_string(),
-                                Some(id) => mics.iter().find(|d| &d.id == id).map_or_else(
-                                    || format!("{id} (not found)"),
-                                    |d| d.name.clone(),
-                                ),
-                            };
-                            egui::ComboBox::from_id_salt("microphone-device")
-                                .selected_text(mic_name(&c.microphone_device))
-                                .width(260.0)
-                                .show_ui(ui, |ui| {
-                                    let choices = std::iter::once(None)
-                                        .chain(mics.iter().map(|d| Some(d.id.clone())));
-                                    for choice in choices {
-                                        let label = mic_name(&choice);
-                                        ui.selectable_value(
-                                            &mut c.microphone_device,
-                                            choice,
-                                            label,
-                                        );
-                                    }
-                                });
-                            ui.end_row();
-                            ui.label("");
-                            ui.label(
-                                egui::RichText::new(
-                                    "Which of the remote computer's outputs you hear, and the \
-                                     microphone, can be changed in the menu while connected.",
+                                    egui::ComboBox::from_id_salt("playback-device")
+                                        .selected_text(name(&c.playback_device))
+                                        .width(field)
+                                        .show_ui(ui, |ui| {
+                                            let choices = std::iter::once(None)
+                                                .chain(devices.iter().map(|d| Some(d.id.clone())));
+                                            for choice in choices {
+                                                let label = name(&choice);
+                                                ui.selectable_value(
+                                                    &mut c.playback_device,
+                                                    choice,
+                                                    label,
+                                                );
+                                            }
+                                        });
+                                    ui.end_row();
+                                    ui.label("Microphone");
+                                    ui.checkbox(&mut c.microphone, "Send my microphone");
+                                    ui.end_row();
+                                    ui.label("");
+                                    let mics = &self.microphones;
+                                    let mic_name = |id: &Option<String>| match id {
+                                        None => "Default microphone".to_string(),
+                                        Some(id) => mics.iter().find(|d| &d.id == id).map_or_else(
+                                            || format!("{id} (not found)"),
+                                            |d| d.name.clone(),
+                                        ),
+                                    };
+                                    egui::ComboBox::from_id_salt("microphone-device")
+                                        .selected_text(mic_name(&c.microphone_device))
+                                        .width(field)
+                                        .show_ui(ui, |ui| {
+                                            let choices = std::iter::once(None)
+                                                .chain(mics.iter().map(|d| Some(d.id.clone())));
+                                            for choice in choices {
+                                                let label = mic_name(&choice);
+                                                ui.selectable_value(
+                                                    &mut c.microphone_device,
+                                                    choice,
+                                                    label,
+                                                );
+                                            }
+                                        });
+                                    ui.end_row();
+                                }
+                            });
+                        if self.settings_tab == SettingsTab::Sound {
+                            ui.add_space(12.0);
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(
+                                        "Which of the remote computer's outputs you hear, and the \
+                                 microphone, can also be changed in the menu while connected.",
+                                    )
+                                    .color(MUTED)
+                                    .size(12.0),
                                 )
-                                .color(MUTED)
-                                .size(12.0),
+                                .wrap(),
                             );
-                            ui.end_row();
                         }
                     });
                 ui.add_space(10.0);

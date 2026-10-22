@@ -50,7 +50,7 @@ pub enum Event {
         y: i32,
     },
     Notice(String),
-    Clipboard(String),
+    Clipboard(oriel_clipboard::Content),
     /// A game set a virtual gamepad's motors.
     Rumble {
         pad: u8,

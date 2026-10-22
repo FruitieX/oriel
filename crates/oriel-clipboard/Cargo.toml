@@ -1,0 +1,13 @@
+[package]
+name = "oriel-clipboard"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+arboard = { workspace = true, features = ["image-data"] }
+png = "0.18"
+tracing.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = ["Win32_System_DataExchange"] }

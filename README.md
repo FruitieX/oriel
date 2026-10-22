@@ -17,6 +17,7 @@ display) and the client (connects to hosts).
 - System audio (Opus) from the host output you pick in the menu, played on
   the local output chosen in Settings; text clipboard sync; display
   selection.
+- Clipboard sync of text and images (images as PNG, up to 24 MB).
 - Microphone (off by default; Settings → Sound, or the menu): the host
   sees it as "oriel microphone" on Linux, and on Windows as the recording
   end of Steam Streaming Microphone or VB-Audio Virtual Cable.

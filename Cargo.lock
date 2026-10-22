@@ -3270,6 +3270,7 @@ dependencies = [
  "evdev",
  "gilrs",
  "oriel-audio",
+ "oriel-clipboard",
  "oriel-media",
  "oriel-net",
  "oriel-proto",
@@ -3291,17 +3292,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "oriel-clipboard"
+version = "0.1.0"
+dependencies = [
+ "arboard",
+ "png",
+ "tracing",
+ "windows",
+]
+
+[[package]]
 name = "oriel-host"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "arboard",
  "bytes",
  "crossbeam-channel",
  "evdev",
  "futures-util",
  "libc",
  "oriel-audio",
+ "oriel-clipboard",
  "oriel-media",
  "oriel-net",
  "oriel-proto",

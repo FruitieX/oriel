@@ -83,9 +83,15 @@ pub async fn run(
     );
 
     let clip_events = ev_tx_audio.clone();
-    let clipboard = crate::clipboard::start(move |text| {
-        let _ = clip_events.send(Event::Clipboard(text));
-    });
+    let clipboard = oriel_clipboard::start(
+        oriel_clipboard::Options {
+            text: true,
+            active: None,
+        },
+        move |content| {
+            let _ = clip_events.send(Event::Clipboard(content));
+        },
+    );
 
     // The display mode chosen by the client, restored when dropped.
     let mut mode_guard: Option<crate::capture::ModeGuard> = None;
@@ -254,8 +260,11 @@ pub async fn run(
                     Some(Event::Notice(text)) => {
                         write_msg(&mut ctl_send, &HostMsg::Notice { text }).await?
                     }
-                    Some(Event::Clipboard(text)) => {
+                    Some(Event::Clipboard(oriel_clipboard::Content::Text(text))) => {
                         write_msg(&mut ctl_send, &HostMsg::Clipboard { text }).await?
+                    }
+                    Some(Event::Clipboard(oriel_clipboard::Content::Image(png))) => {
+                        write_msg(&mut ctl_send, &HostMsg::ClipboardImage { png }).await?
                     }
                     Some(Event::Failed(text)) => {
                         write_msg(&mut ctl_send, &HostMsg::Notice { text }).await?;
@@ -311,6 +320,11 @@ pub async fn run(
                         }
                     }
                     Some(ClientMsg::SetBitrate { kbps }) => { let _ = cmd_tx.send(Cmd::Bitrate(kbps)); }
+                    Some(ClientMsg::ClipboardImage { png }) => {
+                        if png.len() <= oriel_clipboard::MAX_IMAGE {
+                            let _ = clipboard.set.send(oriel_clipboard::Content::Image(png));
+                        }
+                    }
                     Some(ClientMsg::GamepadRemoved { pad }) => {
                         let _ = pad_tx.send(crate::gamepad::Cmd::Remove { pad });
                     }
@@ -325,8 +339,8 @@ pub async fn run(
                         write_msg(&mut ctl_send, &HostMsg::Pong { id, host_us: crate::host_us() }).await?
                     }
                     Some(ClientMsg::Clipboard { text }) => {
-                        if text.len() <= crate::clipboard::MAX_TEXT {
-                            let _ = clipboard.set.send(text);
+                        if text.len() <= oriel_clipboard::MAX_TEXT {
+                            let _ = clipboard.set.send(oriel_clipboard::Content::Text(text));
                         }
                     }
                     Some(other) => tracing::debug!(?other, "ignoring message"),

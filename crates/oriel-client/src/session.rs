@@ -210,6 +210,20 @@ pub fn start(
     let rumble =
         gamepads.then(|| crate::gamepad::spawn(conn.clone(), ctl_tx.clone(), focused.clone()));
 
+    // Images on the clipboard (text goes through the window system).
+    let image_tx = ctl_tx.clone();
+    let clipboard = oriel_clipboard::start(
+        oriel_clipboard::Options {
+            text: false,
+            active: Some(focused.clone()),
+        },
+        move |content| {
+            if let oriel_clipboard::Content::Image(png) = content {
+                let _ = image_tx.send(ClientMsg::ClipboardImage { png });
+            }
+        },
+    );
+
     let reader_sink = sink.clone();
     let reader_clock = clock.clone();
     tokio::spawn(async move {
@@ -217,6 +231,12 @@ pub fn start(
             if let HostMsg::Pong { id, host_us } = msg {
                 if let Some(sent) = pings.lock().remove(&id) {
                     reader_clock.lock().sample(sent, Instant::now(), host_us);
+                }
+                continue;
+            }
+            if let HostMsg::ClipboardImage { png } = msg {
+                if png.len() <= oriel_clipboard::MAX_IMAGE {
+                    let _ = clipboard.set.send(oriel_clipboard::Content::Image(png));
                 }
                 continue;
             }
