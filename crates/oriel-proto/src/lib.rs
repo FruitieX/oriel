@@ -148,6 +148,8 @@ pub enum HostMsg {
     CursorState(CursorState),
     Pong {
         id: u64,
+        /// Host clock (the same clock as `FrameHeader::capture_us`).
+        host_us: u64,
     },
     /// The host's clipboard changed (text only).
     Clipboard {

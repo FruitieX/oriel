@@ -63,22 +63,23 @@ pub fn spawn(
                     .as_ref()
                     .is_none_or(|(_, codec, s)| *codec != header.codec || *s != size)
                 {
-                    decoder = match Decoder::open(header.codec, header.width, header.height, hardware) {
-                        Ok(d) => {
-                            let mut s = stats.lock();
-                            s.decoder = d.description().to_string();
-                            s.codec = header.codec.name().to_string();
-                            s.resolution = size;
-                            Some((d, header.codec, size))
-                        }
-                        Err(e) => {
-                            sink(UiEvent::Closed(format!(
-                                "cannot decode {}: {e:#}",
-                                header.codec.name()
-                            )));
-                            return;
-                        }
-                    };
+                    decoder =
+                        match Decoder::open(header.codec, header.width, header.height, hardware) {
+                            Ok(d) => {
+                                let mut s = stats.lock();
+                                s.decoder = d.description().to_string();
+                                s.codec = header.codec.name().to_string();
+                                s.resolution = size;
+                                Some((d, header.codec, size))
+                            }
+                            Err(e) => {
+                                sink(UiEvent::Closed(format!(
+                                    "cannot decode {}: {e:#}",
+                                    header.codec.name()
+                                )));
+                                return;
+                            }
+                        };
                     need_keyframe = !header.keyframe;
                 }
                 if need_keyframe && !header.keyframe {

@@ -101,7 +101,10 @@ pub fn install(host_args: &[String]) -> Result<()> {
     std::fs::create_dir_all(&target)?;
     for entry in std::fs::read_dir(&source)? {
         let path = entry?.path();
-        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or_default();
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or_default();
         if ext.eq_ignore_ascii_case("exe") || ext.eq_ignore_ascii_case("dll") {
             let dest = target.join(path.file_name().unwrap());
             std::fs::copy(&path, &dest)
@@ -179,7 +182,8 @@ pub fn install(host_args: &[String]) -> Result<()> {
         account_name: None, // LocalSystem
         account_password: None,
     };
-    let service = manager.create_service(&info, ServiceAccess::START | ServiceAccess::CHANGE_CONFIG)?;
+    let service =
+        manager.create_service(&info, ServiceAccess::START | ServiceAccess::CHANGE_CONFIG)?;
     service.set_description("Shares this computer's display with paired oriel clients")?;
     service.start::<&str>(&[])?;
     println!("Service started. Pair a client with: oriel service pair");
@@ -267,7 +271,9 @@ fn supervise(args: Vec<OsString>) -> Result<()> {
     })?;
     handle.set_service_status(status(
         ServiceState::Running,
-        ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN | ServiceControlAccept::SESSION_CHANGE,
+        ServiceControlAccept::STOP
+            | ServiceControlAccept::SHUTDOWN
+            | ServiceControlAccept::SESSION_CHANGE,
     ))?;
 
     // Everything after "--" in the service's arguments goes to the host.
@@ -324,7 +330,11 @@ fn supervise(args: Vec<OsString>) -> Result<()> {
                 if let Some((process, s)) = child
                     && s != active
                 {
-                    tracing::info!(from = s, to = active, "console session changed; moving host");
+                    tracing::info!(
+                        from = s,
+                        to = active,
+                        "console session changed; moving host"
+                    );
                     stop_child(process);
                     child = None;
                     failures = 0;
@@ -333,7 +343,8 @@ fn supervise(args: Vec<OsString>) -> Result<()> {
             }
             Err(mpsc::TryRecvError::Empty) => {}
         }
-        if child.is_some() && failures > 0 && next_start + Duration::from_secs(60) < Instant::now() {
+        if child.is_some() && failures > 0 && next_start + Duration::from_secs(60) < Instant::now()
+        {
             failures = 0;
         }
     }

@@ -43,6 +43,7 @@ pub async fn run(
     let mut frames = 0u64;
     let mut last_report = Instant::now();
     let mut wiggle = 0i32;
+    let mut latency_ms = 0f32;
     while start.elapsed() < duration {
         let ev = match tokio::time::timeout(Duration::from_millis(100), rx.recv()).await {
             Ok(Some(ev)) => Some(ev),
@@ -51,8 +52,15 @@ pub async fn run(
         };
         match ev {
             Some(UiEvent::FrameReady) => {
-                if s.frames.take().is_some() {
+                if let Some(ready) = s.frames.take() {
                     frames += 1;
+                    if let Some(l) = s
+                        .clock
+                        .lock()
+                        .since_capture(ready.header.capture_us, Instant::now())
+                    {
+                        latency_ms = latency_ms * 0.9 + l.as_secs_f32() * 1000.0 * 0.1;
+                    }
                 }
             }
             Some(UiEvent::Host(HostMsg::SurfaceStarted(info))) => println!("surface: {info:?}"),
@@ -71,7 +79,7 @@ pub async fn run(
             let summary = s.stats.lock().summary();
             let st = s.stats.lock();
             println!(
-                "{} {}x{} via {}: {:.0} fps, {:.1} Mbit/s, encode {:.2} ms, decode {:.2} ms, rtt {:.2} ms, presented {frames}",
+                "{} {}x{} via {}: {:.0} fps, {:.1} Mbit/s, encode {:.2} ms, decode {:.2} ms, rtt {:.2} ms, capture→decoded {:.2} ms, presented {frames}",
                 st.codec,
                 st.resolution.0,
                 st.resolution.1,
@@ -80,7 +88,8 @@ pub async fn run(
                 summary.mbps,
                 summary.encode_ms,
                 summary.decode_ms,
-                s.rtt().as_secs_f32() * 1000.0
+                s.rtt().as_secs_f32() * 1000.0,
+                latency_ms
             );
             if let Some(a) = &s.audio {
                 let a = *a.lock();

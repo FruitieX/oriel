@@ -13,12 +13,7 @@ use std::{
 
 use anyhow::{Result, anyhow, bail};
 
-use crate::{
-    DecodedFrame, EncodedFrame, PlaneFormat,
-    decoder::ColorMatrix,
-    ff,
-    util::check,
-};
+use crate::{DecodedFrame, EncodedFrame, PlaneFormat, decoder::ColorMatrix, ff, util::check};
 
 type Handle = *mut c_void;
 
@@ -73,7 +68,8 @@ struct Api {
     encoder_create: unsafe extern "C" fn(*const CreateInfo, *mut Handle) -> c_int,
     encoder_encode_cpu: unsafe extern "C" fn(Handle, *const CpuBuffer, *const RateControl) -> c_int,
     encoder_compute_num_packets: unsafe extern "C" fn(Handle, usize, *mut usize) -> c_int,
-    encoder_packetize: unsafe extern "C" fn(Handle, *mut Packet, usize, *mut usize, *mut c_void, usize) -> c_int,
+    encoder_packetize:
+        unsafe extern "C" fn(Handle, *mut Packet, usize, *mut usize, *mut c_void, usize) -> c_int,
     encoder_destroy: unsafe extern "C" fn(Handle),
     decoder_create: unsafe extern "C" fn(*const DecoderCreateInfo, *mut Handle) -> c_int,
     decoder_push_packet: unsafe extern "C" fn(Handle, *const c_void, usize) -> c_int,
@@ -94,7 +90,10 @@ fn library_candidates() -> Vec<PathBuf> {
     if let Some(p) = std::env::var_os("ORIEL_PYROWAVE_LIB") {
         out.push(PathBuf::from(p));
     }
-    if let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(|p| p.to_path_buf())) {
+    if let Some(dir) = std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(|p| p.to_path_buf()))
+    {
         out.push(dir.join(name));
     }
     // Let the system loader search (LD_LIBRARY_PATH etc.).
@@ -114,7 +113,8 @@ fn load() -> Result<Api, String> {
         };
         macro_rules! sym {
             ($name:literal) => {
-                *unsafe { lib.get(concat!($name, "\0").as_bytes()) }.map_err(|e| format!("{}: {e}", $name))?
+                *unsafe { lib.get(concat!($name, "\0").as_bytes()) }
+                    .map_err(|e| format!("{}: {e}", $name))?
             };
         }
         return Ok(Api {
@@ -128,13 +128,18 @@ fn load() -> Result<Api, String> {
             decoder_create: sym!("pyrowave_decoder_create"),
             decoder_push_packet: sym!("pyrowave_decoder_push_packet"),
             decoder_decode_is_ready: sym!("pyrowave_decoder_decode_is_ready"),
-            decoder_decode_cpu_buffer_synchronous: sym!("pyrowave_decoder_decode_cpu_buffer_synchronous"),
+            decoder_decode_cpu_buffer_synchronous: sym!(
+                "pyrowave_decoder_decode_cpu_buffer_synchronous"
+            ),
             decoder_destroy: sym!("pyrowave_decoder_destroy"),
             _lib: lib,
             path,
         });
     }
-    Err(format!("PyroWave library not found ({})", errors.join("; ")))
+    Err(format!(
+        "PyroWave library not found ({})",
+        errors.join("; ")
+    ))
 }
 
 fn api() -> Result<&'static Api> {
@@ -169,7 +174,10 @@ impl Device {
     fn new() -> Result<Self> {
         let api = api()?;
         let mut device = ptr::null_mut();
-        pw(unsafe { (api.create_default_device)(&mut device) }, "create PyroWave Vulkan device")?;
+        pw(
+            unsafe { (api.create_default_device)(&mut device) },
+            "create PyroWave Vulkan device",
+        )?;
         Ok(Self(device))
     }
 }
@@ -204,7 +212,11 @@ unsafe fn yuv_frame(w: c_int, h: c_int) -> Result<*mut ff::AVFrame> {
 unsafe fn cpu_buffer(frame: *mut ff::AVFrame) -> CpuBuffer {
     unsafe {
         let (w, h) = ((*frame).width, (*frame).height);
-        let rows = [h as usize, (h as usize).div_ceil(2), (h as usize).div_ceil(2)];
+        let rows = [
+            h as usize,
+            (h as usize).div_ceil(2),
+            (h as usize).div_ceil(2),
+        ];
         let mut b = CpuBuffer {
             data: [ptr::null_mut(); 3],
             row_stride_in_bytes: [0; 3],
@@ -252,7 +264,10 @@ impl PyroEncoder {
             height: height as c_int,
             chroma: CHROMA_420,
         };
-        pw(unsafe { (api.encoder_create)(&info, &mut encoder) }, "create PyroWave encoder")?;
+        pw(
+            unsafe { (api.encoder_create)(&info, &mut encoder) },
+            "create PyroWave encoder",
+        )?;
         let mut enc = Self {
             encoder,
             _device: device,
@@ -315,7 +330,10 @@ impl PyroEncoder {
             let rate = RateControl {
                 maximum_bitstream_size: self.max_bytes,
             };
-            pw((api.encoder_encode_cpu)(self.encoder, &buffers, &rate), "PyroWave encode")?;
+            pw(
+                (api.encoder_encode_cpu)(self.encoder, &buffers, &rate),
+                "PyroWave encode",
+            )?;
             let mut count = 0usize;
             pw(
                 (api.encoder_compute_num_packets)(self.encoder, PACKET_BOUNDARY, &mut count),
@@ -380,7 +398,10 @@ impl PyroDecoder {
             chroma: CHROMA_420,
             fragment_path: false,
         };
-        pw(unsafe { (api.decoder_create)(&info, &mut decoder) }, "create PyroWave decoder")?;
+        pw(
+            unsafe { (api.decoder_create)(&info, &mut decoder) },
+            "create PyroWave decoder",
+        )?;
         Ok(Self {
             decoder,
             _device: device,
@@ -407,7 +428,8 @@ impl PyroDecoder {
         }
         unsafe {
             let frame = yuv_frame(self.size.0 as c_int, self.size.1 as c_int)?;
-            let decoded = DecodedFrame::from_raw(frame, PlaneFormat::Yuv420p, ColorMatrix::Bt709, true);
+            let decoded =
+                DecodedFrame::from_raw(frame, PlaneFormat::Yuv420p, ColorMatrix::Bt709, true);
             let buffers = cpu_buffer(frame);
             pw(
                 (api.decoder_decode_cpu_buffer_synchronous)(self.decoder, &buffers),

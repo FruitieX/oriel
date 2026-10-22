@@ -181,7 +181,9 @@ fn main() -> Result<()> {
     let paths = Paths::discover()?;
     let default_log = match cli.command {
         Command::Host { .. } if cfg!(windows) => Some(paths.config_dir.join("oriel-host.log")),
-        Command::Service(ServiceCommand::Run { .. }) => Some(paths.config_dir.join("oriel-service.log")),
+        Command::Service(ServiceCommand::Run { .. }) => {
+            Some(paths.config_dir.join("oriel-service.log"))
+        }
         _ => None,
     };
     init_logging(cli.log_file.clone().or(default_log))?;
@@ -409,7 +411,9 @@ fn service(cmd: ServiceCommand) -> Result<()> {
         ServiceCommand::Uninstall => service::uninstall(),
         ServiceCommand::Pair => {
             let pin = service::allow_pairing()?;
-            println!("Pairing allowed for ten minutes. On the client run:\n  oriel pair <this-host-address> --pin {pin}");
+            println!(
+                "Pairing allowed for ten minutes. On the client run:\n  oriel pair <this-host-address> --pin {pin}"
+            );
             Ok(())
         }
         ServiceCommand::Run { .. } => service::run_dispatcher(),

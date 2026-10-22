@@ -404,11 +404,7 @@ impl FfEncoder {
 
     /// Encode one frame. Returns `None` if the encoder produced no output
     /// for it (which low-delay encoders should not do).
-    fn encode(
-        &mut self,
-        input: EncoderInput<'_>,
-        keyframe: bool,
-    ) -> Result<Option<EncodedFrame>> {
+    fn encode(&mut self, input: EncoderInput<'_>, keyframe: bool) -> Result<Option<EncodedFrame>> {
         let started = Instant::now();
         // Strictly increasing microsecond timestamps.
         let pts = (self.start.elapsed().as_micros() as i64).max(self.last_pts + 1);
@@ -692,7 +688,11 @@ impl Encoder {
 
     /// Encode one frame. Returns `None` if the encoder produced no output
     /// for it (which low-delay encoders should not do).
-    pub fn encode(&mut self, input: EncoderInput<'_>, keyframe: bool) -> Result<Option<EncodedFrame>> {
+    pub fn encode(
+        &mut self,
+        input: EncoderInput<'_>,
+        keyframe: bool,
+    ) -> Result<Option<EncodedFrame>> {
         match &mut self.0 {
             EncoderInner::Ff(e) => e.encode(input, keyframe),
             EncoderInner::Pyro(e) => match input {

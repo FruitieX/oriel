@@ -104,7 +104,10 @@ impl Shared {
         let next = self.next_seq.load(Ordering::Relaxed);
         let decoded = self.decoded_below.load(Ordering::Relaxed);
         let since_ack = self.epoch.elapsed().as_micros() as u64
-            - self.last_decoded_us.load(Ordering::Relaxed).min(self.epoch.elapsed().as_micros() as u64);
+            - self
+                .last_decoded_us
+                .load(Ordering::Relaxed)
+                .min(self.epoch.elapsed().as_micros() as u64);
         let acked = if since_ack > 1_000_000 {
             decoded.max(self.delivered_below.load(Ordering::Relaxed))
         } else {
@@ -136,7 +139,6 @@ pub fn spawn(
                 test,
                 cmds,
                 events,
-                clock: Instant::now(),
             };
             if let Err(e) = p.run() {
                 if p.events.is_closed() {
@@ -155,7 +157,6 @@ struct Pipeline {
     test: TestState,
     cmds: Receiver<Cmd>,
     events: UnboundedSender<Event>,
-    clock: Instant,
     auto: AutoCodec,
 }
 
@@ -387,9 +388,12 @@ impl Pipeline {
             if auto && window_start.elapsed() >= Duration::from_secs(1) {
                 // Slow: the screen changed more often than we managed to
                 // send, because frames were waiting on the network.
-                let wanted = window_captured
-                    .min((self.config.max_fps as f64 * window_start.elapsed().as_secs_f64()) as u32);
-                let slow = window_blocked && wanted >= 10 && (window_encoded as f64) < wanted as f64 * 0.75;
+                let wanted = window_captured.min(
+                    (self.config.max_fps as f64 * window_start.elapsed().as_secs_f64()) as u32,
+                );
+                let slow = window_blocked
+                    && wanted >= 10
+                    && (window_encoded as f64) < wanted as f64 * 0.75;
                 let ratio = window_encoded as f64 / wanted.max(1) as f64;
                 window_start = Instant::now();
                 window_captured = 0;
@@ -409,7 +413,8 @@ impl Pipeline {
                                 "Link too slow for PyroWave; trying again in {} s",
                                 self.auto.backoff.as_secs()
                             )))?;
-                            self.auto.backoff = (self.auto.backoff * 2).min(Duration::from_secs(600));
+                            self.auto.backoff =
+                                (self.auto.backoff * 2).min(Duration::from_secs(600));
                             return Ok(Flow::Reencode);
                         }
                     } else if self.pyrowave_allowed() {
@@ -462,7 +467,8 @@ impl Pipeline {
                     let header = FrameHeader {
                         surface: self.config.surface,
                         seq,
-                        capture_us: capture_time.duration_since(self.clock).as_micros() as u64,
+                        capture_us: crate::host_us()
+                            .saturating_sub(capture_time.elapsed().as_micros() as u64),
                         encode_us: out.encode_us,
                         keyframe: out.keyframe,
                         codec,

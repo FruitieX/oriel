@@ -33,6 +33,7 @@ pub struct Session {
     pub frames: decode::FrameSlot,
     pub stats: Arc<Mutex<Stats>>,
     pub audio: Option<Arc<Mutex<oriel_audio::PlayerStats>>>,
+    pub clock: Arc<Mutex<crate::stats::ClockSync>>,
     rt: tokio::runtime::Handle,
 }
 
@@ -104,9 +105,32 @@ pub fn start(
         }
     });
 
+    // Clock sync: ping once a second, keep the tightest round trip.
+    let clock = Arc::new(Mutex::new(crate::stats::ClockSync::default()));
+    let pings: Arc<Mutex<std::collections::HashMap<u64, Instant>>> = Default::default();
+    let ping_tx = ctl_tx.clone();
+    let ping_times = pings.clone();
+    tokio::spawn(async move {
+        for id in 0u64.. {
+            ping_times.lock().insert(id, Instant::now());
+            if ping_tx.send(ClientMsg::Ping { id }).is_err() {
+                break;
+            }
+            ping_times.lock().retain(|k, _| id.saturating_sub(*k) < 10);
+            tokio::time::sleep(Duration::from_millis(if id < 5 { 100 } else { 1000 })).await;
+        }
+    });
+
     let reader_sink = sink.clone();
+    let reader_clock = clock.clone();
     tokio::spawn(async move {
         while let Ok(Some(msg)) = read_msg::<HostMsg>(&mut recv).await {
+            if let HostMsg::Pong { id, host_us } = msg {
+                if let Some(sent) = pings.lock().remove(&id) {
+                    reader_clock.lock().sample(sent, Instant::now(), host_us);
+                }
+                continue;
+            }
             reader_sink(UiEvent::Host(msg));
         }
     });
@@ -198,6 +222,7 @@ pub fn start(
         frames,
         stats,
         audio: audio_stats,
+        clock,
         rt: rt.clone(),
     }
 }

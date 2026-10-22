@@ -496,10 +496,15 @@ impl Viewer {
                 gfx.renderer.upload(&ready.frame);
             }
             let now = Instant::now();
-            // Network+decode latency of this frame, from when its first byte
-            // was received (the host clock is not comparable).
-            let local = now.duration_since(ready.received).as_secs_f32() * 1000.0;
-            self.latency_ms = self.latency_ms * 0.9 + local * 0.1;
+            // Capture on the host to drawing here (clock-synced), or from
+            // receipt when the clocks are not synced yet.
+            let latency = self
+                .session
+                .clock
+                .lock()
+                .since_capture(ready.header.capture_us, now)
+                .unwrap_or_else(|| now.duration_since(ready.received));
+            self.latency_ms = self.latency_ms * 0.9 + latency.as_secs_f32() * 1000.0 * 0.1;
             self.first_frame.get_or_insert(now);
             self.frames_presented += 1;
             let _ = ready.decoded;
@@ -613,7 +618,7 @@ impl From<&Viewer> for OverlayState {
         let summary = v.session.stats.lock().summary();
         let s = v.session.stats.lock();
         let stats_line = format!(
-            "{} {}×{} · {:.0} fps · {:.1} Mbit/s · encode {:.1} ms · decode {:.1} ms · recv→decoded {:.1} ms · RTT {:.1} ms\n{} · {}",
+            "{} {}×{} · {:.0} fps · {:.1} Mbit/s · encode {:.1} ms · decode {:.1} ms · capture→draw {:.1} ms · RTT {:.1} ms\n{} · {}",
             s.codec,
             s.resolution.0,
             s.resolution.1,

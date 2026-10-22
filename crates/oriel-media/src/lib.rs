@@ -11,11 +11,11 @@ mod encoder;
 mod pyrowave;
 mod util;
 
-pub use pyrowave::available as pyrowave_available;
 pub use decoder::{ColorMatrix, DecodedFrame, Decoder, PlaneFormat};
 pub use encoder::{
     EncodedFrame, Encoder, EncoderConfig, EncoderInput, HwDevice, available_encoders,
 };
+pub use pyrowave::available as pyrowave_available;
 
 /// Route FFmpeg's log output through `tracing` at a quiet level.
 pub fn init_logging() {

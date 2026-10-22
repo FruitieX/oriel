@@ -26,7 +26,13 @@ pub async fn run(
     let settings = loop {
         match ctl.recv().await? {
             ClientMsg::StartStream(s) => break s,
-            ClientMsg::Ping { id } => ctl.send(&HostMsg::Pong { id }).await?,
+            ClientMsg::Ping { id } => {
+                ctl.send(&HostMsg::Pong {
+                    id,
+                    host_us: crate::host_us(),
+                })
+                .await?
+            }
             ClientMsg::Bye => return Ok(()),
             other => tracing::debug!(?other, "ignoring message before stream start"),
         }
@@ -181,7 +187,9 @@ pub async fn run(
                     Some(ClientMsg::RequestKeyframe) => { let _ = cmd_tx.send(Cmd::Keyframe); }
                     Some(ClientMsg::SelectDisplay { id }) => { let _ = cmd_tx.send(Cmd::Display(id)); }
                     Some(ClientMsg::SetBitrate { kbps }) => { let _ = cmd_tx.send(Cmd::Bitrate(kbps)); }
-                    Some(ClientMsg::Ping { id }) => write_msg(&mut ctl_send, &HostMsg::Pong { id }).await?,
+                    Some(ClientMsg::Ping { id }) => {
+                        write_msg(&mut ctl_send, &HostMsg::Pong { id, host_us: crate::host_us() }).await?
+                    }
                     Some(ClientMsg::Clipboard { text }) => {
                         if text.len() <= crate::clipboard::MAX_TEXT {
                             let _ = clipboard.set.send(text);
