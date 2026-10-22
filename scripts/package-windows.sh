@@ -21,6 +21,8 @@ rm -f "$setup" "$portable"
 makensis -V2 -INPUTCHARSET UTF8 \
   "-DVERSION=$version" "-DPAYLOAD=$PWD/$stage" "-DREPO=$PWD" "-DOUTFILE=$PWD/$setup" \
   packaging/windows/installer.nsi
+# Windows runs programs from a Samba share only if they are executable here.
+chmod 755 "$setup"
 (cd target/package && zip -qr "../../$portable" oriel)
 (cd dist && sha256sum "$(basename "$setup")" "$(basename "$portable")" > SHA256SUMS.txt)
 ls -l "$setup" "$portable"
