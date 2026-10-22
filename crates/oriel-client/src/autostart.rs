@@ -14,6 +14,14 @@ pub fn set(enabled: bool, background: bool) -> Result<()> {
     imp::set(enabled, args)
 }
 
+/// Whether the installer set oriel up to start for every user (Windows).
+pub fn machine_wide() -> bool {
+    #[cfg(windows)]
+    return imp::machine_wide();
+    #[cfg(not(windows))]
+    false
+}
+
 /// The program the entry starts: on NixOS the stable `oriel` on PATH
 /// rather than a store path that changes with every update.
 #[allow(dead_code)]
@@ -115,6 +123,22 @@ mod imp {
     };
 
     const KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
+
+    pub fn machine_wide() -> bool {
+        use windows::Win32::System::Registry::{HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ, RegGetValueW};
+        unsafe {
+            RegGetValueW(
+                HKEY_LOCAL_MACHINE,
+                &HSTRING::from(KEY),
+                &HSTRING::from("oriel"),
+                RRF_RT_REG_SZ,
+                None,
+                None,
+                None,
+            )
+            .is_ok()
+        }
+    }
 
     pub fn set(enabled: bool, args: &[&str]) -> Result<()> {
         let key = HSTRING::from(KEY);

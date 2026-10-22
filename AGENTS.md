@@ -13,6 +13,10 @@ Read [docs/architecture.md](docs/architecture.md) first.
   clang's `immintrin.h`/`x86intrin.h` (AMX types break the generated
   bindings); the script handles both. If bindings look stale, `cargo clean
   -p ffmpeg-sys-next --target x86_64-pc-windows-gnu`.
+- `scripts/package-windows.sh` builds the installer (NSIS,
+  `packaging/windows/installer.nsi`) and a portable ZIP into `dist/`. The
+  installer can be tested under Wine in a scratch `WINEPREFIX` (`/S` for a
+  silent install; even the service installs and runs there).
 - Windows is tested on the owner's PC (watermelon) through the Samba
   share: `dist/windows` is `Y:\projects\oriel\dist\windows` there. Once
   the owner has started `run-host.bat`, every `build-windows.sh` run

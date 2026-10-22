@@ -99,7 +99,9 @@ pub fn install(host_args: &[String]) -> Result<()> {
         .to_path_buf();
     let target = install_dir();
     std::fs::create_dir_all(&target)?;
-    for entry in std::fs::read_dir(&source)? {
+    // The installer has already put the files there.
+    let in_place = std::fs::canonicalize(&source).ok() == std::fs::canonicalize(&target).ok();
+    for entry in std::fs::read_dir(&source)?.filter(|_| !in_place) {
         let path = entry?.path();
         let ext = path
             .extension()
@@ -426,6 +428,40 @@ fn spawn_host(exe: &Path, args: &[String], session: u32) -> Result<HANDLE> {
 }
 
 /// `oriel service pair`: allow pairing for ten minutes with a fresh PIN.
+/// Whether the service is installed, and if so whether it runs. Needs no
+/// administrator rights.
+pub fn installed_status() -> Option<bool> {
+    let manager =
+        ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT).ok()?;
+    let service = manager
+        .open_service(SERVICE_NAME, ServiceAccess::QUERY_STATUS)
+        .ok()?;
+    let state = service.query_status().ok()?.current_state;
+    Some(matches!(
+        state,
+        ServiceState::Running | ServiceState::StartPending
+    ))
+}
+
+/// Start or stop the installed service (as Administrator).
+pub fn set_running(running: bool) -> Result<()> {
+    let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
+        .context("open the service manager")?;
+    let service = manager
+        .open_service(
+            SERVICE_NAME,
+            ServiceAccess::QUERY_STATUS | ServiceAccess::START | ServiceAccess::STOP,
+        )
+        .context("open the oriel service (run this as Administrator)")?;
+    if running {
+        service.start::<&str>(&[])?;
+    } else {
+        service.stop()?;
+        wait_stopped(&service);
+    }
+    Ok(())
+}
+
 pub fn allow_pairing() -> Result<String> {
     let pin = oriel_net::pairing::generate_pin();
     let path = data_dir().join(crate::server::PIN_FILE);

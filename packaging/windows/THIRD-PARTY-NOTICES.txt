@@ -1,0 +1,20 @@
+oriel bundles these libraries as separate DLLs:
+
+FFmpeg (avcodec, avutil, swresample, swscale)
+  LGPL 2.1 or later; the build from https://github.com/BtbN/FFmpeg-Builds
+  (the "lgpl-shared" variant). Its license is in FFmpeg-LICENSE.txt; source
+  is available from https://ffmpeg.org and the build recipes from the link
+  above. The DLLs can be replaced with compatible builds.
+
+PyroWave (libpyrowave-shared-1.dll)
+  MIT license; https://github.com/Themaister/pyrowave, with Granite
+  (https://github.com/Themaister/Granite, MIT) and volk
+  (https://github.com/zeux/volk, MIT).
+
+MinGW-w64 winpthreads (libwinpthread-1.dll)
+  MIT and BSD-style licenses; https://www.mingw-w64.org.
+
+The service uses the ViGEmBus driver for virtual gamepads when installed
+separately (https://github.com/nefarius/ViGEmBus) and the SudoVDA driver
+for extra displays when installed separately
+(https://github.com/SudoMaker/SudoVDA); neither is included.

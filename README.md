@@ -52,8 +52,16 @@ oriel pair <host-address> --pin <PIN>
 oriel connect <host-name>    # --stats, --fullscreen, --codec hevc,h264, ...
 ```
 
-To reach the lock screen, UAC prompts and the login screen, run the host as
-a Windows service instead (in an Administrator terminal):
+On Windows, install with `oriel-VERSION-windows-x64-setup.exe` (from
+`scripts/package-windows.sh`, see below). It installs for every user in
+Program Files and, by default, the hosting service (shares this computer
+from startup, including the sign-in, lock and UAC screens, with a firewall
+rule for UDP 48600 on private networks) and the tray app at sign-in. The
+app then shows and controls the service; allowing pairing asks for
+administrator rights and shows the PIN. A portable ZIP is built too.
+
+Without the installer, the service can be set up by hand (in an
+Administrator terminal):
 
 ```powershell
 oriel.exe service install      # copies to Program Files, opens UDP 48600
@@ -101,6 +109,7 @@ disconnect = "Ctrl+Alt+Shift+Q"
 nix develop
 cargo build --release -p oriel          # Linux client (and test host)
 ./scripts/build-windows.sh --release    # Windows build in dist/windows
+./scripts/package-windows.sh            # installer + portable ZIP in dist/
 nix build                               # Nix package
 ```
 

@@ -147,6 +147,9 @@
                 with pkgs;
                 [
                   rust
+                  # Windows installer (scripts/package-windows.sh)
+                  nsis
+                  zip
                   pkg-config
                   clang
                   cmake

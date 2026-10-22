@@ -180,7 +180,16 @@ enum ServiceCommand {
     Uninstall,
     /// Print a PIN that pairs a client with the service host within ten
     /// minutes (as Administrator).
-    Pair,
+    Pair {
+        /// Also write the PIN to this file (for the app, which asks for
+        /// administrator rights to run this).
+        #[arg(long)]
+        pin_out: Option<PathBuf>,
+    },
+    /// Start the installed service (as Administrator).
+    Start,
+    /// Stop the installed service (as Administrator).
+    Stop,
     /// Entry point used by the service manager.
     #[command(hide = true)]
     Run {
@@ -229,15 +238,31 @@ fn run() -> Result<()> {
     let Some(command) = cli.command else {
         let config = oriel_client::config::ClientConfig::load(&paths).unwrap_or_default();
         let log_path = cli.log_file.clone();
+        // With the service installed, it does the hosting (at boot, and on
+        // the sign-in screen); the app only shows and controls it.
+        #[cfg(windows)]
+        let service = oriel_host::service::installed_status().is_some();
+        #[cfg(not(windows))]
+        let service = false;
+        let host: Box<dyn oriel_client::launcher::HostControl> = if service {
+            #[cfg(windows)]
+            {
+                Box::new(ServiceHost::default())
+            }
+            #[cfg(not(windows))]
+            unreachable!()
+        } else {
+            Box::new(LocalHost::new(
+                paths.clone(),
+                LocalHost::default_options(None),
+            )?)
+        };
         return oriel_client::launcher::run(
             runtime()?,
             paths.clone(),
-            Some(Box::new(LocalHost::new(
-                paths,
-                LocalHost::default_options(None),
-            )?)),
+            Some(host),
             oriel_client::launcher::GuiOptions {
-                start_sharing: config.share,
+                start_sharing: config.share && !service,
                 start_hidden: cli.background && cfg!(windows),
                 start_minimized: cli.background && !cfg!(windows),
                 log_path,
@@ -574,8 +599,13 @@ fn service(cmd: ServiceCommand) -> Result<()> {
     match cmd {
         ServiceCommand::Install { host_args } => service::install(&host_args),
         ServiceCommand::Uninstall => service::uninstall(),
-        ServiceCommand::Pair => {
+        ServiceCommand::Start => service::set_running(true),
+        ServiceCommand::Stop => service::set_running(false),
+        ServiceCommand::Pair { pin_out } => {
             let pin = service::allow_pairing()?;
+            if let Some(path) = pin_out {
+                std::fs::write(&path, &pin).with_context(|| format!("write {}", path.display()))?;
+            }
             println!(
                 "Pairing allowed for ten minutes. On the client run:\n  oriel pair <this-host-address> --pin {pin}"
             );
@@ -695,6 +725,126 @@ impl oriel_client::launcher::HostControl for LocalHost {
 
     fn pairing_pin(&self) -> Option<String> {
         self.control.pairing_pin()
+    }
+}
+
+/// Hosting by the installed Windows service, seen from the app. Starting,
+/// stopping and pairing need administrator rights, so they run `oriel
+/// service …` elevated (a UAC prompt).
+#[cfg(windows)]
+#[derive(Default)]
+struct ServiceHost {
+    pin: Option<(String, std::time::Instant)>,
+    /// Cached status: (running, when asked).
+    running: std::cell::Cell<Option<(bool, std::time::Instant)>>,
+}
+
+#[cfg(windows)]
+impl ServiceHost {
+    /// Run `oriel.exe <args>` as Administrator and wait for it.
+    fn elevated(args: &str) -> Result<()> {
+        use windows::{
+            Win32::{
+                Foundation::CloseHandle,
+                System::Threading::{GetExitCodeProcess, INFINITE, WaitForSingleObject},
+                UI::{
+                    Shell::{SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW, ShellExecuteExW},
+                    WindowsAndMessaging::SW_HIDE,
+                },
+            },
+            core::{HSTRING, PCWSTR},
+        };
+        let exe = HSTRING::from(std::env::current_exe()?.as_os_str());
+        let verb = HSTRING::from("runas");
+        let params = HSTRING::from(args);
+        let mut info = SHELLEXECUTEINFOW {
+            cbSize: size_of::<SHELLEXECUTEINFOW>() as u32,
+            fMask: SEE_MASK_NOCLOSEPROCESS,
+            lpVerb: PCWSTR(verb.as_ptr()),
+            lpFile: PCWSTR(exe.as_ptr()),
+            lpParameters: PCWSTR(params.as_ptr()),
+            nShow: SW_HIDE.0,
+            ..Default::default()
+        };
+        unsafe {
+            ShellExecuteExW(&mut info).context("ask for administrator rights")?;
+            let process = info.hProcess;
+            WaitForSingleObject(process, INFINITE);
+            let mut code = 1u32;
+            let _ = GetExitCodeProcess(process, &mut code);
+            let _ = CloseHandle(process);
+            if code != 0 {
+                bail!("`oriel {args}` failed (exit code {code})");
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+impl oriel_client::launcher::HostControl for ServiceHost {
+    fn start(&mut self) -> Result<()> {
+        self.running.set(None);
+        Self::elevated("service start")
+    }
+
+    fn stop(&mut self) {
+        self.running.set(None);
+        if let Err(e) = Self::elevated("service stop") {
+            tracing::warn!("cannot stop the service: {e:#}");
+        }
+    }
+
+    fn is_running(&self) -> bool {
+        // Asked every frame; the service manager is asked once a second.
+        if let Some((running, at)) = self.running.get()
+            && at.elapsed() < std::time::Duration::from_secs(1)
+        {
+            return running;
+        }
+        let running = oriel_host::service::installed_status() == Some(true);
+        self.running.set(Some((running, std::time::Instant::now())));
+        running
+    }
+
+    fn description(&self) -> String {
+        "Shared by the oriel service, also on the sign-in and lock screens.".into()
+    }
+
+    fn host_name(&self) -> String {
+        oriel_client::connection::device_name()
+    }
+
+    fn clients(&self) -> Vec<oriel_client::launcher::SharedClient> {
+        Vec::new()
+    }
+
+    fn kick(&self, _id: usize) {}
+
+    fn allow_pairing(&mut self) -> Option<String> {
+        let path = std::env::temp_dir().join(format!("oriel-pin-{}", std::process::id()));
+        let result = Self::elevated(&format!("service pair --pin-out \"{}\"", path.display()))
+            .and_then(|()| Ok(std::fs::read_to_string(&path)?));
+        let _ = std::fs::remove_file(&path);
+        match result {
+            Ok(pin) => {
+                let pin = pin.trim().to_string();
+                self.pin = Some((pin.clone(), std::time::Instant::now()));
+                Some(pin)
+            }
+            Err(e) => {
+                tracing::warn!("cannot allow pairing: {e:#}");
+                None
+            }
+        }
+    }
+
+    fn pairing_pin(&self) -> Option<String> {
+        // The service accepts the PIN for ten minutes.
+        self.pin
+            .as_ref()
+            .filter(|(_, at)| at.elapsed() < std::time::Duration::from_secs(600))
+            .map(|(pin, _)| pin.clone())
     }
 }
 
