@@ -179,7 +179,10 @@ impl Injector for SendInputInjector {
                 Ok(())
             }
             InputEvent::SecureAttention => {
-                crate::win::send_secure_attention();
+                // Only a service may send it; ask ours, or try directly.
+                if !crate::service::request_secure_attention() {
+                    crate::win::send_secure_attention();
+                }
                 Ok(())
             }
         }

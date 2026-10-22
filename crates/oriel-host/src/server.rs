@@ -42,6 +42,11 @@ struct PairingState {
 }
 
 const MAX_PAIR_FAILURES: u32 = 5;
+/// A PIN in this file (in the config directory) allows pairing for
+/// [`PIN_FILE_VALIDITY`] after it was written; used by unattended hosts
+/// (`oriel service pair`).
+pub const PIN_FILE: &str = "pairing-pin";
+const PIN_FILE_VALIDITY: Duration = Duration::from_secs(600);
 
 pub async fn run(paths: Paths, options: HostOptions) -> Result<()> {
     crate::init_process();
@@ -159,9 +164,17 @@ impl Host {
         name: String,
         client_fp: Fingerprint,
     ) -> Result<()> {
+        let pin_file = self.paths.config_dir.join(PIN_FILE);
+        let file_pin = std::fs::metadata(&pin_file)
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .filter(|t| t.elapsed().is_ok_and(|age| age < PIN_FILE_VALIDITY))
+            .and_then(|_| std::fs::read_to_string(&pin_file).ok())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
         let pin = {
             let state = self.pairing.lock();
-            state.pin.clone()
+            state.pin.clone().or(file_pin.clone())
         };
         let Some(pin) = pin else {
             return reject(
@@ -199,6 +212,9 @@ impl Host {
             address: None,
         });
         trusted.save(&self.paths.trusted_clients())?;
+        if file_pin.is_some() {
+            let _ = std::fs::remove_file(&pin_file);
+        }
         ctl.send(&HostMsg::PairResult {
             ok: true,
             message: format!("paired with {}", self.options.name),

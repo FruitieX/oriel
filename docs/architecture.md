@@ -68,3 +68,27 @@ The decoder thread prefers VAAPI (Linux), D3D11VA (Windows) or VideoToolbox
 renderer uploads the planes and converts with the frame's own matrix and
 range. The window cursor is set to the host's cursor image; in relative mode
 the pointer is locked and raw motion is sent.
+
+## PyroWave and automatic codec switching
+
+PyroWave is loaded at runtime from its C API library (built by
+`nix/pyrowave.nix`; `ORIEL_PYROWAVE_LIB` overrides the path). Frames go
+through the CPU for now: BGRA → YUV420P (BT.709 full range) → `encode_cpu`,
+and decoding into YUV420P. A frame's payload is its PyroWave packets, each
+prefixed with a little-endian `u32` length.
+
+With `auto_codec`, the host uses PyroWave while the RTT is below 3 ms and
+falls back to the next listed codec when fewer than 75% of the captured
+frames could be sent for two seconds in a row because frames were waiting on
+the client. It retries PyroWave after 30 s, doubling up to 10 min.
+
+## Windows service
+
+`oriel service install` registers `oriel service run` as a LocalSystem
+service. The service (session 0) starts `oriel host` in the active console
+session with a duplicate of its SYSTEM token, restarts it when it exits or
+the console session changes, and calls `SendSAS` when the host signals the
+`Global\oriel-secure-attention` event. As SYSTEM the host can open the
+Winlogon desktop, so capture and input follow the lock screen and UAC
+prompts. Pairing is allowed for ten minutes after `oriel service pair`
+writes a PIN to `pairing-pin` in the data directory.

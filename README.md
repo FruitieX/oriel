@@ -15,6 +15,10 @@ display) and the client (connects to hosts).
   (default **Ctrl+Alt+Shift+M**) that opens the menu and releases keyboard
   and mouse.
 - System audio (Opus), text clipboard sync, display selection.
+- Codecs: HEVC/H.264/AV1 through FFmpeg, and
+  [PyroWave](https://github.com/Themaister/pyrowave) for fast LANs
+  (`--codec pyrowave`, or `--codec auto` to switch between PyroWave and HEVC
+  as the link allows).
 - Only paired devices can connect: pairing uses a PIN shown on the host and
   pins both devices' certificates.
 
@@ -28,6 +32,17 @@ oriel host --pair            # prints a PIN; allow UDP 48600 in the firewall
 oriel pair <host-address> --pin <PIN>
 oriel connect <host-name>    # --stats, --fullscreen, --codec hevc,h264, ...
 ```
+
+To reach the lock screen, UAC prompts and the login screen, run the host as
+a Windows service instead (in an Administrator terminal):
+
+```powershell
+oriel.exe service install      # copies to Program Files, opens UDP 48600
+oriel.exe service pair         # prints a PIN valid for ten minutes
+```
+
+The service keeps its own identity and pairings in `C:\ProgramData\oriel`
+(logs: `oriel-service.log`, `oriel-host.log`).
 
 Without `--pair`, the host only accepts already paired clients. `oriel hosts`,
 `oriel clients`, `oriel forget`, `oriel unpair` manage pairings; `oriel info`

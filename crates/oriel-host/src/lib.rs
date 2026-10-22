@@ -7,6 +7,8 @@ mod cursor;
 pub mod input;
 mod pipeline;
 mod server;
+#[cfg(windows)]
+pub mod service;
 mod session;
 #[cfg(windows)]
 pub mod win;

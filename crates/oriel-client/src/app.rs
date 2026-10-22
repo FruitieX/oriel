@@ -142,6 +142,7 @@ struct Viewer {
     clipboard_polled: Instant,
     displays: Vec<oriel_proto::DisplayInfo>,
     display: Option<u32>,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     shortcuts_inhibited: bool,
 }
 

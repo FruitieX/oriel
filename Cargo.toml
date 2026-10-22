@@ -44,6 +44,7 @@ pollster = "0.4"
 crossbeam-channel = "0.5"
 parking_lot = "0.12"
 arboard = { version = "3", default-features = false }
+windows-service = "0.8"
 hex = "0.4"
 windows = "0.62"
 [profile.release]

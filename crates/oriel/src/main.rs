@@ -143,14 +143,47 @@ enum Command {
     Unpair { name: String },
     /// Show this device's identity and media capabilities.
     Info,
+    /// Run the host as a Windows service (lock screen, UAC, login screen).
+    #[command(subcommand)]
+    Service(ServiceCommand),
+}
+
+#[derive(Subcommand)]
+enum ServiceCommand {
+    /// Install to Program Files and start the service (as Administrator).
+    /// Arguments after `--` are passed to `oriel host`.
+    Install {
+        #[arg(last = true)]
+        host_args: Vec<String>,
+    },
+    /// Stop and remove the service (as Administrator).
+    Uninstall,
+    /// Print a PIN that pairs a client with the service host within ten
+    /// minutes (as Administrator).
+    Pair,
+    /// Entry point used by the service manager.
+    #[command(hide = true)]
+    Run {
+        #[arg(last = true)]
+        host_args: Vec<String>,
+    },
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    #[cfg(windows)]
+    if matches!(cli.command, Command::Service(ServiceCommand::Run { .. })) {
+        // The service and the host it starts share the service's data
+        // directory, not SYSTEM's profile.
+        // SAFETY: still single-threaded.
+        unsafe { std::env::set_var("ORIEL_CONFIG_DIR", oriel_host::service::data_dir()) };
+    }
     let paths = Paths::discover()?;
-    let default_log = matches!(cli.command, Command::Host { .. })
-        .then(|| cfg!(windows).then(|| paths.config_dir.join("oriel-host.log")))
-        .flatten();
+    let default_log = match cli.command {
+        Command::Host { .. } if cfg!(windows) => Some(paths.config_dir.join("oriel-host.log")),
+        Command::Service(ServiceCommand::Run { .. }) => Some(paths.config_dir.join("oriel-service.log")),
+        _ => None,
+    };
     init_logging(cli.log_file.clone().or(default_log))?;
     oriel_media::init_logging();
 
@@ -302,6 +335,7 @@ fn main() -> Result<()> {
             }
             store.save(&paths.trusted_clients())
         }
+        Command::Service(cmd) => service(cmd),
         Command::Info => {
             let identity = Identity::load_or_create(&paths.config_dir)?;
             println!("config:      {}", paths.config_dir.display());
@@ -365,4 +399,24 @@ fn init_logging(file: Option<PathBuf>) -> Result<()> {
         .with(file_layer)
         .init();
     Ok(())
+}
+
+#[cfg(windows)]
+fn service(cmd: ServiceCommand) -> Result<()> {
+    use oriel_host::service;
+    match cmd {
+        ServiceCommand::Install { host_args } => service::install(&host_args),
+        ServiceCommand::Uninstall => service::uninstall(),
+        ServiceCommand::Pair => {
+            let pin = service::allow_pairing()?;
+            println!("Pairing allowed for ten minutes. On the client run:\n  oriel pair <this-host-address> --pin {pin}");
+            Ok(())
+        }
+        ServiceCommand::Run { .. } => service::run_dispatcher(),
+    }
+}
+
+#[cfg(not(windows))]
+fn service(_cmd: ServiceCommand) -> Result<()> {
+    bail!("the host service is only available on Windows; run `oriel host` instead")
 }
