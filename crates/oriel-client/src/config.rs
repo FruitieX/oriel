@@ -27,6 +27,52 @@ pub struct ClientConfig {
     pub show_stats: bool,
     /// Share this computer when oriel starts.
     pub share: bool,
+    /// Remembered per-host choices, by host name.
+    pub hosts: std::collections::BTreeMap<String, HostPrefs>,
+}
+
+/// Choices remembered for one host; unset fields use the global settings.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HostPrefs {
+    pub fullscreen: Option<bool>,
+    /// A codec choice key (see [`codec_choice`]).
+    pub codec: Option<String>,
+    /// "native" or "WIDTHxHEIGHT".
+    pub resolution: Option<String>,
+}
+
+/// The codec choices offered in the UI, as (key, label).
+pub const CODEC_CHOICES: [(&str, &str); 5] = [
+    ("auto", "Automatic"),
+    ("hevc", "HEVC"),
+    ("h264", "H.264"),
+    ("av1", "AV1"),
+    ("pyrowave", "PyroWave"),
+];
+
+/// The preference list for a codec choice key, and whether the host may
+/// switch automatically.
+pub fn codec_choice(key: &str) -> (Vec<Codec>, bool) {
+    match key {
+        "auto" => (AUTO_CODECS.to_vec(), true),
+        "h264" => (vec![Codec::H264], false),
+        "av1" => (vec![Codec::Av1, Codec::Hevc, Codec::H264], false),
+        "pyrowave" => (vec![Codec::PyroWave, Codec::Hevc, Codec::H264], false),
+        _ => (vec![Codec::Hevc, Codec::H264], false),
+    }
+}
+
+pub fn parse_resolution(s: &str) -> Option<(u32, u32)> {
+    let (w, h) = s.split_once(['x', '×'])?;
+    Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
+}
+
+pub fn format_resolution(r: Option<(u32, u32)>) -> String {
+    match r {
+        Some((w, h)) => format!("{w}x{h}"),
+        None => "native".into(),
+    }
 }
 
 impl Default for ClientConfig {
@@ -42,6 +88,7 @@ impl Default for ClientConfig {
             fullscreen: false,
             show_stats: false,
             share: false,
+            hosts: Default::default(),
         }
     }
 }
@@ -85,6 +132,18 @@ impl ClientConfig {
             })
             .collect::<Result<_>>()?;
         Ok((list, false))
+    }
+
+    /// The global codec choice key.
+    pub fn codec_key(&self) -> String {
+        if self.codecs.iter().any(|c| c.eq_ignore_ascii_case("auto")) {
+            return "auto".into();
+        }
+        self.codecs
+            .first()
+            .map(|c| c.to_ascii_lowercase())
+            .filter(|c| CODEC_CHOICES.iter().any(|(k, _)| k == c))
+            .unwrap_or_else(|| "hevc".into())
     }
 
     pub fn mouse_mode(&self) -> Result<MouseMode> {

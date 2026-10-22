@@ -34,6 +34,7 @@ pub struct Config {
 pub enum Cmd {
     Keyframe,
     Display(u32),
+    Codecs(Vec<Codec>, bool),
     Bitrate(u32),
     Stop,
 }
@@ -318,6 +319,14 @@ impl Pipeline {
                         force_key = true;
                     }
                     Cmd::Bitrate(_) => {}
+                    Cmd::Codecs(codecs, auto) => {
+                        if !codecs.is_empty() {
+                            self.config.codecs = codecs;
+                            self.config.auto_codec = auto;
+                            self.auto.retry_at = Instant::now();
+                            return Ok(Flow::Reencode);
+                        }
+                    }
                     Cmd::Display(id) => {
                         if self.config.display != Some(id) {
                             self.config.display = Some(id);

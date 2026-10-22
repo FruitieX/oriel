@@ -75,6 +75,20 @@ pub async fn run(
         let _ = clip_events.send(Event::Clipboard(text));
     });
 
+    // The display mode chosen by the client, restored when dropped.
+    let mut mode_guard: Option<crate::capture::ModeGuard> = None;
+    if let Some(res) = settings.resolution {
+        match crate::capture::set_display_mode(options.source, settings.display, res) {
+            Ok(g) => mode_guard = Some(g),
+            Err(e) => {
+                let _ = ev_tx_audio.send(Event::Notice(format!(
+                    "Cannot change the resolution: {e:#}"
+                )));
+            }
+        }
+    }
+    let mut display = settings.display;
+
     let _audio = if settings.audio {
         start_audio(&conn, options.source, &ev_tx_audio)
     } else {
@@ -187,7 +201,26 @@ pub async fn run(
                 msg = ctl_rx.recv() => match msg {
                     None | Some(ClientMsg::Bye) => break,
                     Some(ClientMsg::RequestKeyframe) => { let _ = cmd_tx.send(Cmd::Keyframe); }
-                    Some(ClientMsg::SelectDisplay { id }) => { let _ = cmd_tx.send(Cmd::Display(id)); }
+                    Some(ClientMsg::SelectDisplay { id }) => {
+                        // A resolution change belongs to the previous display.
+                        mode_guard = None;
+                        display = Some(id);
+                        let _ = cmd_tx.send(Cmd::Display(id));
+                    }
+                    Some(ClientMsg::SetCodecs { codecs, auto_codec }) => {
+                        let _ = cmd_tx.send(Cmd::Codecs(codecs, auto_codec));
+                    }
+                    Some(ClientMsg::SetResolution { resolution }) => {
+                        mode_guard = None;
+                        if let Some(res) = resolution {
+                            match crate::capture::set_display_mode(options.source, display, res) {
+                                Ok(g) => mode_guard = Some(g),
+                                Err(e) => write_msg(&mut ctl_send, &HostMsg::Notice {
+                                    text: format!("Cannot change the resolution: {e:#}"),
+                                }).await?,
+                            }
+                        }
+                    }
                     Some(ClientMsg::SetBitrate { kbps }) => { let _ = cmd_tx.send(Cmd::Bitrate(kbps)); }
                     Some(ClientMsg::Ping { id }) => {
                         write_msg(&mut ctl_send, &HostMsg::Pong { id, host_us: crate::host_us() }).await?
@@ -207,6 +240,7 @@ pub async fn run(
     .await;
 
     let _ = cmd_tx.send(Cmd::Stop);
+    drop(mode_guard);
     drop(ev_rx);
     input_task.abort();
     ctl_task.abort();

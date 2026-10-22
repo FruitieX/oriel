@@ -51,6 +51,17 @@ pub struct ViewerOptions {
     pub show_stats: bool,
     /// Debugging: save a screenshot after this long, then exit.
     pub screenshot: Option<(PathBuf, Duration)>,
+    /// The codec choice key the settings came from (see
+    /// [`crate::config::codec_choice`]).
+    pub codec_key: String,
+}
+
+/// Choices made during a session, remembered for the next one.
+#[derive(Debug, Clone)]
+pub struct ViewerPrefs {
+    pub fullscreen: bool,
+    pub codec_key: String,
+    pub resolution: Option<(u32, u32)>,
 }
 
 /// Why the viewer window went away.
@@ -71,7 +82,7 @@ pub fn run(
     rt: &tokio::runtime::Runtime,
     connected: connection::Connected,
     options: ViewerOptions,
-) -> Result<ViewerExit> {
+) -> Result<(ViewerExit, ViewerPrefs)> {
     use winit::platform::run_on_demand::EventLoopExtRunOnDemand;
     tracing::info!(host = %connected.host_name, "connected");
     let proxy = Mutex::new(event_loop.create_proxy());
@@ -89,13 +100,19 @@ pub fn run(
     let mut viewer = Viewer::new(session.clone(), connected.host_name, options);
     viewer.sink = Some(sink.clone());
     viewer.displays = connected.displays;
+    viewer.host_codecs = connected.codecs;
     event_loop.run_app_on_demand(&mut viewer)?;
     session.close();
     rt.block_on(async {
         tokio::time::sleep(Duration::from_millis(150)).await;
         let _ = tokio::time::timeout(Duration::from_secs(1), connected.endpoint.wait_idle()).await;
     });
-    Ok(viewer.exit.take().unwrap_or(ViewerExit::Closed))
+    let prefs = ViewerPrefs {
+        fullscreen: viewer.fullscreen,
+        codec_key: viewer.codec_key.clone(),
+        resolution: viewer.resolution,
+    };
+    Ok((viewer.exit.take().unwrap_or(ViewerExit::Closed), prefs))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -157,6 +174,10 @@ struct Viewer {
     display: Option<u32>,
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     shortcuts_inhibited: bool,
+    host_codecs: Vec<oriel_proto::Codec>,
+    codec_key: String,
+    resolution: Option<(u32, u32)>,
+    fullscreen: bool,
     sink: Option<session::Sink>,
     #[cfg(windows)]
     key_hook: Option<crate::winkeys::KeyboardHook>,
@@ -165,7 +186,7 @@ struct Viewer {
 impl Viewer {
     fn new(session: Session, host_name: String, options: ViewerOptions) -> Self {
         let egui_ctx = egui::Context::default();
-        egui_ctx.set_visuals(egui::Visuals::dark());
+        crate::launcher::style(&egui_ctx);
         Self {
             session,
             host_name,
@@ -205,6 +226,10 @@ impl Viewer {
             displays: Vec::new(),
             display: options.settings.display,
             shortcuts_inhibited: false,
+            host_codecs: Vec::new(),
+            codec_key: options.codec_key.clone(),
+            resolution: options.settings.resolution,
+            fullscreen: options.fullscreen,
             sink: None,
             #[cfg(windows)]
             key_hook: None,
@@ -612,12 +637,21 @@ impl Viewer {
             }
             Action::ToggleStats => self.show_stats = !self.show_stats,
             Action::ToggleFullscreen => {
+                self.fullscreen = !self.fullscreen;
                 if let Some(w) = self.window() {
-                    w.set_fullscreen(match w.fullscreen() {
-                        Some(_) => None,
-                        None => Some(Fullscreen::Borderless(None)),
-                    });
+                    w.set_fullscreen(self.fullscreen.then_some(Fullscreen::Borderless(None)));
                 }
+            }
+            Action::SetCodec(key) => {
+                let (codecs, auto_codec) = crate::config::codec_choice(&key);
+                self.codec_key = key;
+                self.session
+                    .send(ClientMsg::SetCodecs { codecs, auto_codec });
+            }
+            Action::SetResolution(resolution) => {
+                self.resolution = resolution;
+                self.sized_window = false;
+                self.session.send(ClientMsg::SetResolution { resolution });
             }
             Action::SetBitrate(mbps) => {
                 self.bitrate_mbps = mbps;
@@ -648,6 +682,8 @@ enum Action {
     SetBitrate(u32),
     SecureAttention,
     SelectDisplay(u32),
+    SetCodec(String),
+    SetResolution(Option<(u32, u32)>),
     Disconnect,
 }
 
@@ -666,6 +702,10 @@ struct OverlayState {
     remote_cursor: Option<(egui::TextureId, egui::Vec2, egui::Pos2)>,
     displays: Vec<(u32, String)>,
     display: Option<u32>,
+    codec_choices: Vec<(&'static str, &'static str)>,
+    codec_key: String,
+    modes: Vec<(u32, u32)>,
+    resolution: Option<(u32, u32)>,
 }
 
 impl From<&Viewer> for OverlayState {
@@ -742,6 +782,32 @@ impl From<&Viewer> for OverlayState {
             display: v
                 .display
                 .or_else(|| v.displays.iter().find(|d| d.primary).map(|d| d.id)),
+            codec_choices: crate::config::CODEC_CHOICES
+                .iter()
+                .copied()
+                .filter(|(key, _)| {
+                    use oriel_proto::Codec;
+                    let has = |c| v.host_codecs.contains(&c);
+                    match *key {
+                        "auto" | "pyrowave" => has(Codec::PyroWave),
+                        "h264" => has(Codec::H264),
+                        "av1" => has(Codec::Av1),
+                        _ => has(Codec::Hevc),
+                    }
+                })
+                .collect(),
+            codec_key: v.codec_key.clone(),
+            modes: {
+                let id = v
+                    .display
+                    .or_else(|| v.displays.iter().find(|d| d.primary).map(|d| d.id));
+                v.displays
+                    .iter()
+                    .find(|d| Some(d.id) == id)
+                    .map(|d| d.modes.clone())
+                    .unwrap_or_default()
+            },
+            resolution: v.resolution,
         }
     }
 }
@@ -808,9 +874,14 @@ fn overlay(ctx: &egui::Context, s: &OverlayState, viewport: Option<Viewport>) ->
         egui::Area::new(egui::Id::unique("menu-button"))
             .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-8.0, -8.0))
             .show(ctx, |ui| {
-                let hint = format!("Menu  {}", s.shortcut);
-                let button = egui::Button::new(egui::RichText::new(hint).size(11.0))
-                    .fill(egui::Color32::from_black_alpha(140));
+                let button = egui::Button::new(
+                    egui::RichText::new(format!("Menu  ·  {}", s.shortcut))
+                        .size(13.0)
+                        .color(egui::Color32::WHITE),
+                )
+                .min_size(egui::vec2(0.0, 30.0))
+                .corner_radius(15.0)
+                .fill(egui::Color32::from_rgba_unmultiplied(42, 47, 69, 200));
                 if ui.add(button).clicked() {
                     actions.push(Action::OpenMenu);
                 }
@@ -845,6 +916,39 @@ fn overlay(ctx: &egui::Context, s: &OverlayState, viewport: Option<Viewport>) ->
                             actions.push(Action::SelectDisplay(*id));
                         }
                     }
+                });
+            }
+            if s.codec_choices.len() > 1 {
+                ui.horizontal(|ui| {
+                    ui.label("Codec:");
+                    for (key, label) in &s.codec_choices {
+                        if ui.selectable_label(s.codec_key == *key, *label).clicked()
+                            && s.codec_key != *key
+                        {
+                            actions.push(Action::SetCodec(key.to_string()));
+                        }
+                    }
+                });
+            }
+            if !s.modes.is_empty() {
+                ui.horizontal(|ui| {
+                    ui.label("Resolution:");
+                    let label = |r: Option<(u32, u32)>| match r {
+                        Some((w, h)) => format!("{w}×{h}"),
+                        None => "Host's own".to_string(),
+                    };
+                    egui::ComboBox::from_id_salt("resolution")
+                        .selected_text(label(s.resolution))
+                        .show_ui(ui, |ui| {
+                            for r in std::iter::once(None).chain(s.modes.iter().copied().map(Some))
+                            {
+                                if ui.selectable_label(s.resolution == r, label(r)).clicked()
+                                    && s.resolution != r
+                                {
+                                    actions.push(Action::SetResolution(r));
+                                }
+                            }
+                        });
                 });
             }
             ui.horizontal(|ui| {

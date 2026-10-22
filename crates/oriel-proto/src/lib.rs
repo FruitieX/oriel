@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 pub mod keys;
 
 pub const ALPN: &[u8] = b"oriel/1";
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 pub const DEFAULT_PORT: u16 = 48600;
 /// Upper bound for a single control/input message.
 pub const MAX_MESSAGE_LEN: usize = 4 * 1024 * 1024;
@@ -53,6 +53,8 @@ pub struct DisplayInfo {
     pub height: u32,
     pub refresh_hz: u32,
     pub primary: bool,
+    /// Resolutions the host can switch this display to (empty: cannot).
+    pub modes: Vec<(u32, u32)>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -72,6 +74,8 @@ pub struct StreamSettings {
     pub auto_codec: bool,
     /// Bitrate for PyroWave in kbit/s (it needs far more than H.26x).
     pub pyrowave_kbps: u32,
+    /// Switch the host display to this resolution for the session.
+    pub resolution: Option<(u32, u32)>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -110,6 +114,15 @@ pub enum ClientMsg {
     SetBitrate {
         kbps: u32,
     },
+    /// Change the codec preference (as in `StreamSettings`).
+    SetCodecs {
+        codecs: Vec<Codec>,
+        auto_codec: bool,
+    },
+    /// Change (or with `None` restore) the host display resolution.
+    SetResolution {
+        resolution: Option<(u32, u32)>,
+    },
     Ping {
         id: u64,
     },
@@ -127,6 +140,8 @@ pub enum HostMsg {
         protocol: u32,
         name: String,
         displays: Vec<DisplayInfo>,
+        /// Codecs the host can encode.
+        codecs: Vec<Codec>,
     },
     Pair(PairMsg),
     PairResult {
@@ -295,6 +310,7 @@ mod tests {
             audio: true,
             auto_codec: false,
             pyrowave_kbps: 400_000,
+            resolution: None,
         });
         let bytes = encode_framed(&msg).unwrap();
         let len = u32::from_le_bytes(bytes[..4].try_into().unwrap()) as usize;

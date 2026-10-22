@@ -379,6 +379,18 @@ fn run() -> Result<()> {
                 audio: file.audio && !no_audio,
                 auto_codec,
                 pyrowave_kbps: pyrowave_bitrate.unwrap_or(file.pyrowave_kbps),
+                resolution: None,
+            };
+            let codec_key = if auto_codec {
+                "auto".to_string()
+            } else {
+                match settings.codecs.first() {
+                    Some(Codec::H264) => "h264",
+                    Some(Codec::Av1) => "av1",
+                    Some(Codec::PyroWave) => "pyrowave",
+                    _ => "hevc",
+                }
+                .to_string()
             };
             let rt = runtime()?;
             if let Some(secs) = headless {
@@ -414,6 +426,7 @@ fn run() -> Result<()> {
                         mouse_mode,
                         fullscreen,
                         show_stats: stats,
+                        codec_key,
                         screenshot: screenshot
                             .map(|p| (p, Duration::from_secs_f64(screenshot_after))),
                     }),

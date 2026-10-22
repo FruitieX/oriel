@@ -74,6 +74,7 @@ pub fn display() -> DisplayInfo {
         height: HEIGHT,
         refresh_hz: FPS,
         primary: true,
+        modes: Vec::new(),
     }
 }
 

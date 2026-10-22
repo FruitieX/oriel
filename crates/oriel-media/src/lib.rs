@@ -13,7 +13,8 @@ mod util;
 
 pub use decoder::{ColorMatrix, DecodedFrame, Decoder, PlaneFormat};
 pub use encoder::{
-    EncodedFrame, Encoder, EncoderConfig, EncoderInput, HwDevice, available_encoders,
+    EncodedFrame, Encoder, EncoderConfig, EncoderInput, HwDevice, available_codecs,
+    available_encoders,
 };
 pub use pyrowave::{
     EXTERNAL_MEMORY_HANDLE as PYROWAVE_EXTERNAL_MEMORY, ExternalPlane, PyroDecoder,

@@ -357,6 +357,8 @@ fn list_displays_blocking() -> Result<Vec<DisplayInfo>> {
                 height: m.height,
                 refresh_hz: m.refresh.round() as u32,
                 primary: m.primary,
+                // Switching modes through Mutter is not implemented yet.
+                modes: Vec::new(),
             })
             .collect())
     })

@@ -84,6 +84,25 @@ pub fn list_displays(source: SourceKind) -> Vec<DisplayInfo> {
     }
 }
 
+/// Something that restores the display mode when dropped.
+pub type ModeGuard = Box<dyn std::any::Any + Send>;
+
+/// Switch the host display's resolution for the session.
+pub fn set_display_mode(
+    source: SourceKind,
+    display: Option<u32>,
+    (width, height): (u32, u32),
+) -> Result<ModeGuard> {
+    match source {
+        #[cfg(windows)]
+        SourceKind::Auto => Ok(Box::new(dxgi::set_display_mode(display, width, height)?)),
+        _ => {
+            let _ = (display, width, height);
+            anyhow::bail!("this host cannot change its resolution")
+        }
+    }
+}
+
 pub fn open(
     source: SourceKind,
     display: Option<u32>,

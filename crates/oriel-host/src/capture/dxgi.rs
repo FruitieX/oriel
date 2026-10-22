@@ -32,7 +32,10 @@ use windows::{
                 IDXGIResource,
             },
             Gdi::{
-                DEVMODEW, ENUM_CURRENT_SETTINGS, EnumDisplaySettingsW, GetMonitorInfoW, MONITORINFO,
+                CDS_FULLSCREEN, CDS_TYPE, ChangeDisplaySettingsExW, DEVMODEW,
+                DISP_CHANGE_SUCCESSFUL, DM_BITSPERPEL, DM_DISPLAYFREQUENCY, DM_PELSHEIGHT,
+                DM_PELSWIDTH, ENUM_CURRENT_SETTINGS, ENUM_DISPLAY_SETTINGS_MODE,
+                EnumDisplaySettingsW, GetMonitorInfoW, MONITORINFO,
             },
         },
         UI::WindowsAndMessaging::{
@@ -120,6 +123,114 @@ fn rect_size(r: &RECT) -> (u32, u32) {
     ((r.right - r.left) as u32, (r.bottom - r.top) as u32)
 }
 
+/// Resolutions a display supports (32-bit colour, 800×600 and up), largest
+/// first.
+fn display_modes(device_name: &[u16; 32]) -> Vec<(u32, u32)> {
+    let mut modes = Vec::new();
+    for i in 0.. {
+        let mut mode = DEVMODEW {
+            dmSize: size_of::<DEVMODEW>() as u16,
+            ..Default::default()
+        };
+        let ok = unsafe {
+            EnumDisplaySettingsW(
+                PCWSTR(device_name.as_ptr()),
+                ENUM_DISPLAY_SETTINGS_MODE(i),
+                &mut mode,
+            )
+        };
+        if !ok.as_bool() {
+            break;
+        }
+        let size = (mode.dmPelsWidth, mode.dmPelsHeight);
+        if mode.dmBitsPerPel == 32 && size.0 >= 800 && size.1 >= 600 && !modes.contains(&size) {
+            modes.push(size);
+        }
+    }
+    modes.sort_by(|a, b| (b.0 * b.1).cmp(&(a.0 * a.1)).then(b.0.cmp(&a.0)));
+    modes
+}
+
+/// A temporary display mode, restored when dropped.
+pub struct ModeGuard {
+    device: [u16; 32],
+}
+
+impl Drop for ModeGuard {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = ChangeDisplaySettingsExW(
+                PCWSTR(self.device.as_ptr()),
+                None,
+                None,
+                CDS_TYPE(0),
+                None,
+            );
+        }
+        tracing::info!("restored the display mode");
+    }
+}
+
+/// Switch `display` to `width`×`height` (highest refresh rate available)
+/// until the guard is dropped.
+pub fn set_display_mode(display: Option<u32>, width: u32, height: u32) -> Result<ModeGuard> {
+    crate::win::follow_input_desktop();
+    let outputs = outputs()?;
+    let entry = match display {
+        Some(i) => outputs
+            .into_iter()
+            .nth(i as usize)
+            .with_context(|| format!("no display {i}"))?,
+        None => outputs.into_iter().next().context("no displays attached")?,
+    };
+    let device = entry.desc.DeviceName;
+    let mut best: Option<DEVMODEW> = None;
+    for i in 0.. {
+        let mut mode = DEVMODEW {
+            dmSize: size_of::<DEVMODEW>() as u16,
+            ..Default::default()
+        };
+        let ok = unsafe {
+            EnumDisplaySettingsW(
+                PCWSTR(device.as_ptr()),
+                ENUM_DISPLAY_SETTINGS_MODE(i),
+                &mut mode,
+            )
+        };
+        if !ok.as_bool() {
+            break;
+        }
+        if (mode.dmPelsWidth, mode.dmPelsHeight) == (width, height)
+            && mode.dmBitsPerPel == 32
+            && best.is_none_or(|b| mode.dmDisplayFrequency > b.dmDisplayFrequency)
+        {
+            best = Some(mode);
+        }
+    }
+    let mut mode =
+        best.with_context(|| format!("{width}×{height} is not supported by this display"))?;
+    mode.dmFields = DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYFREQUENCY | DM_BITSPERPEL;
+    let result = unsafe {
+        ChangeDisplaySettingsExW(
+            PCWSTR(device.as_ptr()),
+            Some(&mode),
+            None,
+            CDS_FULLSCREEN,
+            None,
+        )
+    };
+    if result != DISP_CHANGE_SUCCESSFUL {
+        bail!("Windows refused {width}×{height} ({result:?})");
+    }
+    tracing::info!(
+        width,
+        height,
+        hz = mode.dmDisplayFrequency,
+        "changed the display mode"
+    );
+    Ok(ModeGuard { device })
+}
+
 pub fn list_displays() -> Result<Vec<DisplayInfo>> {
     Ok(outputs()?
         .iter()
@@ -133,6 +244,7 @@ pub fn list_displays() -> Result<Vec<DisplayInfo>> {
                 height,
                 refresh_hz: refresh_hz(&o.desc.DeviceName),
                 primary: o.primary,
+                modes: display_modes(&o.desc.DeviceName),
             }
         })
         .collect())

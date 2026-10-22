@@ -228,6 +228,7 @@ impl Host {
             protocol: PROTOCOL_VERSION,
             name: self.options.name.clone(),
             displays: capture::list_displays(self.options.source),
+            codecs: oriel_media::available_codecs(),
         })
         .await?;
 
@@ -296,6 +297,7 @@ impl Host {
             protocol: PROTOCOL_VERSION,
             name: self.options.name.clone(),
             displays: Vec::new(),
+            codecs: Vec::new(),
         })
         .await?;
         if !pairing::pair_as_host(&mut ctl, &pin, &client_fp, &self.identity.fingerprint).await? {

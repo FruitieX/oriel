@@ -731,6 +731,23 @@ impl Encoder {
     }
 }
 
+/// Codecs this machine can encode.
+pub fn available_codecs() -> Vec<Codec> {
+    let mut out: Vec<Codec> = [Codec::Hevc, Codec::H264, Codec::Av1]
+        .into_iter()
+        .filter(|&c| {
+            candidates(c).iter().any(|(name, _)| {
+                let n = CString::new(*name).unwrap();
+                !unsafe { ff::avcodec_find_encoder_by_name(n.as_ptr()) }.is_null()
+            })
+        })
+        .collect();
+    if crate::pyrowave::available() {
+        out.push(Codec::PyroWave);
+    }
+    out
+}
+
 /// Names of encoders built into this FFmpeg that oriel knows how to drive.
 pub fn available_encoders() -> Vec<&'static str> {
     [Codec::H264, Codec::Hevc, Codec::Av1]

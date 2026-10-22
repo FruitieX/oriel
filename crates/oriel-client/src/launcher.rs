@@ -1,5 +1,6 @@
-//! The start window: paired hosts, pairing, settings and sharing this
-//! computer. Connections run in their own viewer window; when one ends the
+//! The start window: a tile per paired host (click to connect, right-click
+//! for per-host options), sharing this computer, and dialogs for pairing and
+//! settings. Connections run in their own viewer window; when one ends the
 //! launcher comes back (and reconnects if the connection was lost).
 
 use std::{
@@ -21,8 +22,10 @@ use winit::{
 
 use crate::{
     ViewerOptions,
-    app::{self, ViewerExit},
-    config::ClientConfig,
+    app::{self, ViewerExit, ViewerPrefs},
+    config::{
+        CODEC_CHOICES, ClientConfig, HostPrefs, codec_choice, format_resolution, parse_resolution,
+    },
     connection::{self, Connected},
     keymap::Shortcut,
     render::Renderer,
@@ -91,6 +94,17 @@ impl Default for GuiOptions {
     }
 }
 
+// Palette, matching the icon.
+const BG: egui::Color32 = egui::Color32::from_rgb(0x17, 0x1a, 0x26);
+const CARD: egui::Color32 = egui::Color32::from_rgb(0x22, 0x27, 0x38);
+const CARD_HOVER: egui::Color32 = egui::Color32::from_rgb(0x2c, 0x33, 0x4a);
+const FRAME: egui::Color32 = egui::Color32::from_rgb(0x2a, 0x2f, 0x45);
+const AMBER: egui::Color32 = egui::Color32::from_rgb(0xff, 0xc4, 0x4d);
+const BLUE: egui::Color32 = egui::Color32::from_rgb(0x6c, 0x9c, 0xf0);
+const DEEP_BLUE: egui::Color32 = egui::Color32::from_rgb(0x3d, 0x5a, 0x99);
+const MUTED: egui::Color32 = egui::Color32::from_rgb(0x9a, 0xa3, 0xb8);
+const GREEN: egui::Color32 = egui::Color32::from_rgb(0x5f, 0xd0, 0x7f);
+
 /// A small window icon: a frame with a lit pane.
 pub fn icon() -> Option<Icon> {
     let (rgba, n) = icon_rgba();
@@ -118,6 +132,51 @@ pub fn icon_rgba() -> (Vec<u8>, u32) {
     (rgba, n)
 }
 
+/// The app's look: dark, rounded, a little roomier than egui's default.
+pub(crate) fn style(ctx: &egui::Context) {
+    let mut visuals = egui::Visuals::dark();
+    visuals.panel_fill = BG;
+    visuals.window_fill = CARD;
+    visuals.extreme_bg_color = egui::Color32::from_rgb(0x12, 0x14, 0x1d);
+    visuals.selection.bg_fill = DEEP_BLUE;
+    visuals.hyperlink_color = BLUE;
+    visuals.window_corner_radius = egui::CornerRadius::same(12);
+    for w in [
+        &mut visuals.widgets.inactive,
+        &mut visuals.widgets.hovered,
+        &mut visuals.widgets.active,
+        &mut visuals.widgets.noninteractive,
+        &mut visuals.widgets.open,
+    ] {
+        w.corner_radius = egui::CornerRadius::same(8);
+    }
+    visuals.widgets.inactive.weak_bg_fill = CARD_HOVER;
+    visuals.widgets.inactive.bg_fill = CARD_HOVER;
+    visuals.widgets.hovered.weak_bg_fill = egui::Color32::from_rgb(0x38, 0x41, 0x5e);
+    visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(0x38, 0x41, 0x5e);
+    visuals.widgets.active.weak_bg_fill = DEEP_BLUE;
+    ctx.set_visuals(visuals);
+    ctx.all_styles_mut(|s| {
+        s.spacing.item_spacing = egui::vec2(10.0, 8.0);
+        s.spacing.button_padding = egui::vec2(12.0, 6.0);
+        s.spacing.interact_size.y = 28.0;
+        for (text_style, size) in [
+            (egui::TextStyle::Body, 15.0),
+            (egui::TextStyle::Button, 15.0),
+            (egui::TextStyle::Heading, 24.0),
+            (egui::TextStyle::Small, 12.0),
+        ] {
+            if let Some(f) = s.text_styles.get_mut(&text_style) {
+                f.size = size;
+            }
+        }
+    });
+}
+
+fn primary_button(text: &str) -> egui::Button<'static> {
+    egui::Button::new(egui::RichText::new(text.to_string()).color(egui::Color32::BLACK)).fill(AMBER)
+}
+
 pub fn run(
     rt: tokio::runtime::Runtime,
     paths: Paths,
@@ -139,6 +198,7 @@ pub fn run(
     };
     #[cfg(not(windows))]
     let tray: Option<()> = None;
+    let config = ClientConfig::load(&paths).unwrap_or_default();
     let mut launcher = Launcher {
         has_tray: tray.is_some(),
         #[cfg(windows)]
@@ -148,7 +208,8 @@ pub fn run(
         quit_flag: options.quit_flag.clone(),
         quit: false,
         tray_updated: Instant::now(),
-        config: ClientConfig::load(&paths).unwrap_or_default(),
+        shortcut_text: config.menu_shortcut.clone(),
+        config,
         paths,
         host,
         rt: Arc::new(rt),
@@ -157,19 +218,22 @@ pub fn run(
         hosts: Vec::new(),
         connecting: None,
         pairing: None,
-        pair_address: String::new(),
-        pair_pin: String::new(),
-        pair_name: String::new(),
+        pair_dialog: None,
+        settings_open: false,
+        settings_tab: SettingsTab::Video,
         status: String::new(),
         reconnect: None,
         result: None,
-        shortcut_text: String::new(),
         opened: Instant::now(),
         screenshot_taken: false,
     };
-    launcher.egui_ctx.set_visuals(egui::Visuals::dark());
-    launcher.shortcut_text = launcher.config.menu_shortcut.clone();
     launcher.reload_hosts();
+    // Debugging aid for screenshots.
+    match std::env::var("ORIEL_DEBUG_DIALOG").as_deref() {
+        Ok("pair") => launcher.pair_dialog = Some(PairDialog::default()),
+        Ok("settings") => launcher.settings_open = true,
+        _ => {}
+    }
     if options.start_sharing
         && let Some(host) = &mut launcher.host
         && let Err(e) = host.start()
@@ -191,6 +255,7 @@ pub fn run(
             continue;
         };
         launcher.window_wanted = true;
+        let explicit = options.viewer.is_some();
         let viewer_options = match &options.viewer {
             Some(v) => ViewerOptions {
                 target: target.clone(),
@@ -198,8 +263,11 @@ pub fn run(
             },
             None => launcher.viewer_options(&target)?,
         };
-        let exit = app::run(&mut event_loop, &launcher.rt, connected, viewer_options)?;
+        let (exit, prefs) = app::run(&mut event_loop, &launcher.rt, connected, viewer_options)?;
         tracing::info!(?exit, "viewer ended");
+        if !explicit {
+            launcher.remember(&target, prefs);
+        }
         let quit = options.quit_with_viewer && first_viewer && !launcher.has_tray;
         first_viewer = false;
         match exit {
@@ -242,6 +310,21 @@ struct Reconnect {
 
 type Pending<T> = Arc<Mutex<Option<Result<T>>>>;
 
+#[derive(Default)]
+struct PairDialog {
+    address: String,
+    pin: String,
+    name: String,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SettingsTab {
+    Video,
+    Input,
+    Window,
+    Sound,
+}
+
 struct Launcher {
     #[cfg(windows)]
     tray: Option<crate::tray::Tray>,
@@ -263,9 +346,9 @@ struct Launcher {
     hosts: Vec<oriel_net::TrustedPeer>,
     connecting: Option<(String, Pending<Connected>)>,
     pairing: Option<Pending<String>>,
-    pair_address: String,
-    pair_pin: String,
-    pair_name: String,
+    pair_dialog: Option<PairDialog>,
+    settings_open: bool,
+    settings_tab: SettingsTab,
     status: String,
     reconnect: Option<Reconnect>,
     result: Option<LauncherResult>,
@@ -277,13 +360,19 @@ struct Launcher {
 enum Action {
     Connect(String),
     Forget(String),
+    OpenPair,
+    ClosePair,
     Pair,
+    OpenSettings,
+    CloseSettings,
+    SaveSettings,
     StartHosting,
     StopHosting,
     AllowPairing,
     Kick(usize),
     CancelReconnect,
-    SaveSettings,
+    SetHostFullscreen(String, bool),
+    SetHostCodec(String, Option<String>),
 }
 
 impl Launcher {
@@ -306,9 +395,35 @@ impl Launcher {
         self.connecting = Some((target, pending));
     }
 
+    fn prefs(&self, host: &str) -> HostPrefs {
+        self.config.hosts.get(host).cloned().unwrap_or_default()
+    }
+
+    fn save_config(&mut self) {
+        if let Err(e) = self.config.save(&self.paths) {
+            self.status = format!("Cannot save settings: {e:#}");
+        }
+    }
+
+    /// Remember the choices made during a session with `host`.
+    fn remember(&mut self, host: &str, prefs: ViewerPrefs) {
+        let new = HostPrefs {
+            fullscreen: Some(prefs.fullscreen),
+            codec: Some(prefs.codec_key),
+            resolution: Some(format_resolution(prefs.resolution)),
+        };
+        let entry = self.config.hosts.entry(host.to_string()).or_default();
+        if *entry != new {
+            *entry = new;
+            self.save_config();
+        }
+    }
+
     fn viewer_options(&self, target: &str) -> Result<ViewerOptions> {
         let c = &self.config;
-        let (codecs, auto_codec) = c.codecs()?;
+        let prefs = self.prefs(target);
+        let codec_key = prefs.codec.clone().unwrap_or_else(|| c.codec_key());
+        let (codecs, auto_codec) = codec_choice(&codec_key);
         Ok(ViewerOptions {
             target: target.to_string(),
             settings: StreamSettings {
@@ -319,14 +434,16 @@ impl Launcher {
                 audio: c.audio,
                 auto_codec,
                 pyrowave_kbps: c.pyrowave_kbps,
+                resolution: prefs.resolution.as_deref().and_then(parse_resolution),
             },
             hardware_decode: true,
             menu_shortcut: Shortcut::parse(&c.menu_shortcut)
                 .unwrap_or_else(|| Shortcut::parse("Ctrl+Alt+Shift+M").unwrap()),
             mouse_mode: c.mouse_mode()?,
-            fullscreen: c.fullscreen,
+            fullscreen: prefs.fullscreen.unwrap_or(c.fullscreen),
             show_stats: c.show_stats,
             screenshot: None,
+            codec_key,
         })
     }
 
@@ -342,23 +459,46 @@ impl Launcher {
                 if let Err(e) = store.save(&self.paths.known_hosts()) {
                     self.status = format!("Cannot forget {name}: {e:#}");
                 }
+                if self.config.hosts.remove(&name).is_some() {
+                    self.save_config();
+                }
                 self.reload_hosts();
             }
+            Action::OpenPair => self.pair_dialog = Some(PairDialog::default()),
+            Action::ClosePair => self.pair_dialog = None,
             Action::Pair => {
+                let Some(d) = &self.pair_dialog else { return };
                 let pending: Pending<String> = Default::default();
                 let out = pending.clone();
                 let paths = self.paths.clone();
-                let (address, pin) = (
-                    self.pair_address.trim().to_string(),
-                    self.pair_pin.trim().to_string(),
-                );
-                let name = Some(self.pair_name.trim().to_string()).filter(|n| !n.is_empty());
+                let (address, pin) = (d.address.trim().to_string(), d.pin.trim().to_string());
+                let name = Some(d.name.trim().to_string()).filter(|n| !n.is_empty());
                 self.rt.spawn(async move {
                     let result = connection::pair(&paths, &address, &pin, name.as_deref()).await;
                     *out.lock() = Some(result);
                 });
-                self.status = "Pairing…".into();
                 self.pairing = Some(pending);
+            }
+            Action::OpenSettings => {
+                self.shortcut_text = self.config.menu_shortcut.clone();
+                self.settings_open = true;
+            }
+            Action::CloseSettings => {
+                // Discard unsaved edits.
+                self.config = ClientConfig::load(&self.paths).unwrap_or_default();
+                self.settings_open = false;
+            }
+            Action::SaveSettings => {
+                match Shortcut::parse(&self.shortcut_text) {
+                    Some(s) => self.config.menu_shortcut = s.to_string(),
+                    None => {
+                        self.status =
+                            format!("Cannot understand the shortcut {:?}", self.shortcut_text);
+                        return;
+                    }
+                }
+                self.save_config();
+                self.settings_open = false;
             }
             Action::StartHosting => {
                 if let Some(host) = &mut self.host {
@@ -388,18 +528,13 @@ impl Launcher {
                 self.reconnect = None;
                 self.status.clear();
             }
-            Action::SaveSettings => {
-                match Shortcut::parse(&self.shortcut_text) {
-                    Some(s) => self.config.menu_shortcut = s.to_string(),
-                    None => {
-                        self.status =
-                            format!("Cannot understand the shortcut {:?}", self.shortcut_text);
-                        return;
-                    }
-                }
-                if let Err(e) = self.config.save(&self.paths) {
-                    self.status = format!("Cannot save settings: {e:#}");
-                }
+            Action::SetHostFullscreen(host, value) => {
+                self.config.hosts.entry(host).or_default().fullscreen = Some(value);
+                self.save_config();
+            }
+            Action::SetHostCodec(host, value) => {
+                self.config.hosts.entry(host).or_default().codec = value;
+                self.save_config();
             }
         }
     }
@@ -427,7 +562,8 @@ impl Launcher {
         let attrs = Window::default_attributes()
             .with_title("oriel")
             .with_window_icon(icon())
-            .with_inner_size(winit::dpi::LogicalSize::new(620.0, 680.0));
+            .with_inner_size(winit::dpi::LogicalSize::new(760.0, 600.0))
+            .with_min_inner_size(winit::dpi::LogicalSize::new(420.0, 360.0));
         let window = match event_loop.create_window(attrs) {
             Ok(w) => Arc::new(w),
             Err(e) => {
@@ -448,6 +584,10 @@ impl Launcher {
                 return;
             }
         };
+        // A fresh context: textures egui already sent belonged to the
+        // previous window's renderer.
+        self.egui_ctx = egui::Context::default();
+        style(&self.egui_ctx);
         let egui = egui_winit::State::new(
             self.egui_ctx.clone(),
             egui::ViewportId::ROOT,
@@ -536,7 +676,7 @@ impl Launcher {
                 match result {
                     Ok(name) => {
                         self.status = format!("Paired with {name}");
-                        self.pair_pin.clear();
+                        self.pair_dialog = None;
                         self.reload_hosts();
                     }
                     Err(e) => self.status = format!("Pairing failed: {e:#}"),
@@ -556,12 +696,56 @@ impl Launcher {
 
     fn ui(&mut self, root: &mut egui::Ui) -> Vec<Action> {
         let mut actions = Vec::new();
-        let busy = self.connecting.is_some() || self.pairing.is_some();
-        egui::CentralPanel::default().show(root, |ui| {
-            ui.heading("oriel");
-            if !self.status.is_empty() {
+        egui::CentralPanel::default()
+            .frame(egui::Frame::new().fill(BG).inner_margin(24))
+            .show(root, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    self.header(ui, &mut actions);
+                    self.status_banner(ui, &mut actions);
+                    ui.add_space(16.0);
+                    section_title(ui, "Computers");
+                    self.host_tiles(ui, &mut actions);
+                    if self.host.is_some() {
+                        ui.add_space(20.0);
+                        section_title(ui, "This computer");
+                        self.sharing_card(ui, &mut actions);
+                    }
+                });
+            });
+        let ctx = root.ctx().clone();
+        self.pair_modal(&ctx, &mut actions);
+        self.settings_modal(&ctx, &mut actions);
+        actions
+    }
+
+    fn header(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        ui.horizontal(|ui| {
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(30.0, 30.0), egui::Sense::hover());
+            paint_logo(ui.painter(), rect);
+            ui.label(egui::RichText::new("oriel").size(26.0).strong());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("Settings").clicked() {
+                    actions.push(Action::OpenSettings);
+                }
+                if ui.button("Pair a computer…").clicked() {
+                    actions.push(Action::OpenPair);
+                }
+            });
+        });
+    }
+
+    fn status_banner(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        if self.status.is_empty() {
+            return;
+        }
+        ui.add_space(12.0);
+        egui::Frame::new()
+            .fill(CARD)
+            .corner_radius(10)
+            .inner_margin(egui::Margin::symmetric(14, 10))
+            .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    if busy {
+                    if self.connecting.is_some() || self.pairing.is_some() {
                         ui.spinner();
                     }
                     ui.label(&self.status);
@@ -569,159 +753,430 @@ impl Launcher {
                         actions.push(Action::CancelReconnect);
                     }
                 });
-            }
-            ui.add_space(8.0);
+            });
+    }
 
-            ui.label(egui::RichText::new("Hosts").strong());
-            if self.hosts.is_empty() {
-                ui.label("No paired hosts yet. Pair one below.");
-            }
-            egui::Grid::new("hosts").num_columns(4).spacing([12.0, 6.0]).show(ui, |ui| {
-                for h in &self.hosts {
-                    ui.label(&h.name);
-                    ui.label(h.address.as_deref().unwrap_or(""));
-                    if ui.add_enabled(!busy, egui::Button::new("Connect")).clicked() {
-                        actions.push(Action::Connect(h.name.clone()));
+    fn host_tiles(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        if self.hosts.is_empty() {
+            egui::Frame::new()
+                .fill(CARD)
+                .corner_radius(12)
+                .inner_margin(20)
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.label(egui::RichText::new("No computers yet").size(17.0).strong());
+                    ui.label(
+                        egui::RichText::new(
+                            "On the computer you want to reach, open oriel and choose \
+                             \"Allow pairing\" (or run `oriel host --pair`), then pair with it here.",
+                        )
+                        .color(MUTED),
+                    );
+                    ui.add_space(6.0);
+                    if ui.add(primary_button("Pair a computer…")).clicked() {
+                        actions.push(Action::OpenPair);
                     }
-                    if ui.small_button("Forget").clicked() {
-                        actions.push(Action::Forget(h.name.clone()));
-                    }
-                    ui.end_row();
+                });
+            return;
+        }
+        let busy = self.connecting.is_some();
+        let tile = egui::vec2(210.0, 160.0);
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(14.0, 14.0);
+            for h in &self.hosts {
+                let connecting = self.connecting.as_ref().is_some_and(|(t, _)| *t == h.name);
+                let (rect, response) = ui.allocate_exact_size(tile, egui::Sense::click());
+                let hovered = response.hovered() && !busy;
+                let painter = ui.painter();
+                painter.rect_filled(rect, 14, if hovered { CARD_HOVER } else { CARD });
+                if hovered {
+                    painter.rect_stroke(
+                        rect,
+                        14,
+                        egui::Stroke::new(1.5, BLUE),
+                        egui::StrokeKind::Inside,
+                    );
                 }
-            });
-            ui.add_space(12.0);
-
-            ui.label(egui::RichText::new("Pair with a host").strong());
-            ui.label("Start the host with `oriel host --pair` (or `oriel service pair`), then enter its address and PIN.");
-            egui::Grid::new("pair").num_columns(2).show(ui, |ui| {
-                ui.label("Address");
-                ui.text_edit_singleline(&mut self.pair_address);
-                ui.end_row();
-                ui.label("PIN");
-                ui.text_edit_singleline(&mut self.pair_pin);
-                ui.end_row();
-                ui.label("Name (optional)");
-                ui.text_edit_singleline(&mut self.pair_name);
-                ui.end_row();
-            });
-            let ready = !self.pair_address.trim().is_empty() && self.pair_pin.trim().len() == 6;
-            if ui.add_enabled(ready && !busy, egui::Button::new("Pair")).clicked() {
-                actions.push(Action::Pair);
-            }
-            ui.add_space(12.0);
-
-            if let Some(host) = &self.host {
-                ui.label(egui::RichText::new("Share this computer").strong());
-                ui.label(host.description());
-                if host.is_running() {
-                    ui.horizontal(|ui| {
-                        ui.label(format!("Sharing as {}.", host.host_name()));
-                        if ui.button("Stop sharing").clicked() {
-                            actions.push(Action::StopHosting);
+                // A monitor glyph.
+                let screen = egui::Rect::from_center_size(
+                    rect.center_top() + egui::vec2(0.0, 52.0),
+                    egui::vec2(78.0, 48.0),
+                );
+                painter.rect_filled(screen, 6, FRAME);
+                painter.rect_filled(
+                    screen.shrink(5.0),
+                    3,
+                    if hovered { BLUE } else { DEEP_BLUE },
+                );
+                let stand = egui::Rect::from_center_size(
+                    screen.center_bottom() + egui::vec2(0.0, 8.0),
+                    egui::vec2(30.0, 4.0),
+                );
+                painter.rect_filled(stand, 2, FRAME);
+                painter.text(
+                    rect.center_top() + egui::vec2(0.0, 108.0),
+                    egui::Align2::CENTER_CENTER,
+                    &h.name,
+                    egui::FontId::proportional(18.0),
+                    egui::Color32::WHITE,
+                );
+                painter.text(
+                    rect.center_top() + egui::vec2(0.0, 132.0),
+                    egui::Align2::CENTER_CENTER,
+                    h.address.as_deref().unwrap_or(""),
+                    egui::FontId::proportional(12.5),
+                    MUTED,
+                );
+                if connecting {
+                    let spin =
+                        egui::Rect::from_center_size(screen.center(), egui::vec2(22.0, 22.0));
+                    ui.put(spin, egui::Spinner::new().color(egui::Color32::WHITE));
+                }
+                let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+                if response.clicked() && !busy {
+                    actions.push(Action::Connect(h.name.clone()));
+                }
+                let prefs = self.prefs(&h.name);
+                response.context_menu(|ui| {
+                    if ui.button("Connect").clicked() {
+                        actions.push(Action::Connect(h.name.clone()));
+                        ui.close();
+                    }
+                    ui.separator();
+                    let mut full = prefs.fullscreen.unwrap_or(self.config.fullscreen);
+                    if ui.checkbox(&mut full, "Open in fullscreen").changed() {
+                        actions.push(Action::SetHostFullscreen(h.name.clone(), full));
+                    }
+                    ui.menu_button("Codec", |ui| {
+                        let current = prefs.codec.clone();
+                        if ui
+                            .radio(current.is_none(), "Default (from Settings)")
+                            .clicked()
+                        {
+                            actions.push(Action::SetHostCodec(h.name.clone(), None));
+                            ui.close();
+                        }
+                        for (key, label) in CODEC_CHOICES {
+                            if ui.radio(current.as_deref() == Some(key), label).clicked() {
+                                actions
+                                    .push(Action::SetHostCodec(h.name.clone(), Some(key.into())));
+                                ui.close();
+                            }
                         }
                     });
-                    match host.pairing_pin() {
-                        Some(pin) => {
-                            ui.label(
-                                egui::RichText::new(format!("Pairing PIN: {pin}"))
-                                    .size(20.0)
-                                    .strong(),
-                            );
-                            ui.label("Enter it under \"Pair with a host\" on the other computer.");
-                        }
-                        None => {
-                            if ui.button("Allow pairing a new device").clicked() {
-                                actions.push(Action::AllowPairing);
-                            }
-                        }
+                    if let Some((w, hgt)) = prefs.resolution.as_deref().and_then(parse_resolution) {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "Resolution {w}×{hgt} (change it while connected)"
+                            ))
+                            .color(MUTED),
+                        );
                     }
-                    let clients = host.clients();
-                    if clients.is_empty() {
-                        ui.label("Nobody is connected.");
+                    ui.separator();
+                    if ui.button(format!("Forget {}", h.name)).clicked() {
+                        actions.push(Action::Forget(h.name.clone()));
+                        ui.close();
                     }
-                    for c in clients {
-                        ui.horizontal(|ui| {
-                            let codec = c.codec.as_deref().map(|c| format!(" · {c}")).unwrap_or_default();
-                            ui.label(format!("{} ({}){codec}", c.name, c.address));
-                            if ui.small_button("Disconnect").clicked() {
-                                actions.push(Action::Kick(c.id));
-                            }
-                        });
-                    }
-                } else if ui.button("Share").clicked() {
-                    actions.push(Action::StartHosting);
-                }
-                ui.add_space(12.0);
-            }
-
-            egui::CollapsingHeader::new("Settings").show(ui, |ui| {
-                let c = &mut self.config;
-                egui::Grid::new("settings").num_columns(2).show(ui, |ui| {
-                    ui.label("Codec");
-                    let current = c.codecs.first().cloned().unwrap_or_default();
-                    egui::ComboBox::from_id_salt("codec")
-                        .selected_text(codec_label(&current))
-                        .show_ui(ui, |ui| {
-                            for (value, list) in [
-                                ("auto", vec!["auto"]),
-                                ("hevc", vec!["hevc", "h264"]),
-                                ("h264", vec!["h264"]),
-                                ("av1", vec!["av1", "hevc", "h264"]),
-                                ("pyrowave", vec!["pyrowave", "hevc", "h264"]),
-                            ] {
-                                if ui.selectable_label(current == value, codec_label(value)).clicked() {
-                                    c.codecs = list.into_iter().map(String::from).collect();
-                                }
-                            }
-                        });
-                    ui.end_row();
-                    ui.label("Bitrate (HEVC/H.264)");
-                    let mut mbps = c.bitrate_kbps / 1000;
-                    ui.add(egui::Slider::new(&mut mbps, 2..=200).suffix(" Mbit/s").logarithmic(true));
-                    c.bitrate_kbps = mbps * 1000;
-                    ui.end_row();
-                    ui.label("Bitrate (PyroWave)");
-                    let mut mbps = c.pyrowave_kbps / 1000;
-                    ui.add(egui::Slider::new(&mut mbps, 50..=1500).suffix(" Mbit/s").logarithmic(true));
-                    c.pyrowave_kbps = mbps * 1000;
-                    ui.end_row();
-                    ui.label("Frame rate");
-                    egui::ComboBox::from_id_salt("fps")
-                        .selected_text(format!("{} fps", c.max_fps))
-                        .show_ui(ui, |ui| {
-                            for fps in [30, 60, 90, 120, 144, 165, 240] {
-                                ui.selectable_value(&mut c.max_fps, fps, format!("{fps} fps"));
-                            }
-                        });
-                    ui.end_row();
-                    ui.label("Mouse");
-                    egui::ComboBox::from_id_salt("mouse")
-                        .selected_text(match c.mouse.as_str() {
-                            "desktop" => "Desktop",
-                            "captured" => "Captured (games)",
-                            _ => "Auto",
-                        })
-                        .show_ui(ui, |ui| {
-                            for (v, l) in [("auto", "Auto"), ("desktop", "Desktop"), ("captured", "Captured (games)")] {
-                                if ui.selectable_label(c.mouse == v, l).clicked() {
-                                    c.mouse = v.into();
-                                }
-                            }
-                        });
-                    ui.end_row();
-                    ui.label("Menu shortcut");
-                    ui.text_edit_singleline(&mut self.shortcut_text);
-                    ui.end_row();
                 });
-                ui.checkbox(&mut c.audio, "Sound");
-                ui.checkbox(&mut c.fullscreen, "Start in fullscreen");
-                ui.checkbox(&mut c.show_stats, "Show statistics");
-                if ui.button("Save settings").clicked() {
-                    actions.push(Action::SaveSettings);
+            }
+        });
+    }
+
+    fn sharing_card(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        let Some(host) = &self.host else { return };
+        egui::Frame::new()
+            .fill(CARD)
+            .corner_radius(12)
+            .inner_margin(18)
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                let running = host.is_running();
+                ui.horizontal(|ui| {
+                    let (dot, text) = if running {
+                        (GREEN, format!("Sharing as {}", host.host_name()))
+                    } else {
+                        (MUTED, "Not sharing".to_string())
+                    };
+                    let (r, _) =
+                        ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                    ui.painter().circle_filled(r.center(), 5.0, dot);
+                    ui.label(egui::RichText::new(text).size(17.0).strong());
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if running {
+                            if ui.button("Stop sharing").clicked() {
+                                actions.push(Action::StopHosting);
+                            }
+                        } else if ui.add(primary_button("Share")).clicked() {
+                            actions.push(Action::StartHosting);
+                        }
+                    });
+                });
+                ui.label(egui::RichText::new(host.description()).color(MUTED));
+                if !running {
+                    return;
+                }
+                ui.add_space(6.0);
+                match host.pairing_pin() {
+                    Some(pin) => {
+                        ui.horizontal(|ui| {
+                            ui.label("Pairing PIN");
+                            ui.label(
+                                egui::RichText::new(pin)
+                                    .size(26.0)
+                                    .strong()
+                                    .monospace()
+                                    .color(AMBER),
+                            );
+                        });
+                        ui.label(
+                            egui::RichText::new(
+                                "Enter it under \"Pair a computer…\" on the other device.",
+                            )
+                            .color(MUTED),
+                        );
+                    }
+                    None => {
+                        if ui.button("Allow pairing a new device").clicked() {
+                            actions.push(Action::AllowPairing);
+                        }
+                    }
+                }
+                let clients = host.clients();
+                ui.add_space(6.0);
+                if clients.is_empty() {
+                    ui.label(egui::RichText::new("Nobody is connected.").color(MUTED));
+                }
+                for c in clients {
+                    ui.horizontal(|ui| {
+                        let codec = c
+                            .codec
+                            .as_deref()
+                            .map(|c| format!(" · {c}"))
+                            .unwrap_or_default();
+                        ui.label(format!("{} ({}){codec}", c.name, c.address));
+                        if ui.small_button("Disconnect").clicked() {
+                            actions.push(Action::Kick(c.id));
+                        }
+                    });
                 }
             });
-        });
-        actions
+    }
+
+    fn pair_modal(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
+        let busy = self.pairing.is_some();
+        let Some(d) = &mut self.pair_dialog else {
+            return;
+        };
+        let modal = egui::Modal::new(egui::Id::unique("pair"))
+            .frame(dialog_frame())
+            .show(ctx, |ui| {
+                ui.set_width(380.0);
+                ui.heading("Pair a computer");
+                ui.label(
+                    egui::RichText::new(
+                        "On the other computer, open oriel and choose \"Allow pairing\" \
+                     (or run `oriel host --pair`). Then enter its address and the PIN it shows.",
+                    )
+                    .color(MUTED),
+                );
+                ui.add_space(8.0);
+                egui::Grid::new("pair-fields")
+                    .num_columns(2)
+                    .spacing([12.0, 10.0])
+                    .show(ui, |ui| {
+                        ui.label("Address");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut d.address)
+                                .hint_text("192.168.1.10 or name"),
+                        );
+                        ui.end_row();
+                        ui.label("PIN");
+                        ui.add(egui::TextEdit::singleline(&mut d.pin).hint_text("6 digits"));
+                        ui.end_row();
+                        ui.label("Name");
+                        ui.add(egui::TextEdit::singleline(&mut d.name).hint_text("optional"));
+                        ui.end_row();
+                    });
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    let ready = !d.address.trim().is_empty() && d.pin.trim().len() == 6 && !busy;
+                    if ui.add_enabled(ready, primary_button("Pair")).clicked() {
+                        actions.push(Action::Pair);
+                    }
+                    if ui.button("Cancel").clicked() {
+                        actions.push(Action::ClosePair);
+                    }
+                    if busy {
+                        ui.spinner();
+                    }
+                });
+            });
+        if modal.should_close() && !busy {
+            actions.push(Action::ClosePair);
+        }
+    }
+
+    fn settings_modal(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
+        if !self.settings_open {
+            return;
+        }
+        let modal = egui::Modal::new(egui::Id::unique("settings"))
+            .frame(dialog_frame())
+            .show(ctx, |ui| {
+                ui.set_width(480.0);
+                ui.heading("Settings");
+                ui.horizontal(|ui| {
+                    for (tab, label) in [
+                        (SettingsTab::Video, "Video"),
+                        (SettingsTab::Input, "Input"),
+                        (SettingsTab::Window, "Window"),
+                        (SettingsTab::Sound, "Sound"),
+                    ] {
+                        ui.selectable_value(&mut self.settings_tab, tab, label);
+                    }
+                });
+                ui.separator();
+                let c = &mut self.config;
+                egui::Grid::new("settings-grid")
+                    .num_columns(2)
+                    .spacing([16.0, 12.0])
+                    .show(ui, |ui| match self.settings_tab {
+                        SettingsTab::Video => {
+                            ui.label("Codec");
+                            let current = c.codec_key();
+                            egui::ComboBox::from_id_salt("codec")
+                                .selected_text(codec_label(&current))
+                                .show_ui(ui, |ui| {
+                                    for (key, _) in CODEC_CHOICES {
+                                        if ui
+                                            .selectable_label(current == key, codec_label(key))
+                                            .clicked()
+                                        {
+                                            c.codecs = codec_choice_strings(key);
+                                        }
+                                    }
+                                });
+                            ui.end_row();
+                            ui.label("Bitrate (HEVC, H.264, AV1)");
+                            let mut mbps = c.bitrate_kbps / 1000;
+                            ui.add(
+                                egui::Slider::new(&mut mbps, 2..=200)
+                                    .suffix(" Mbit/s")
+                                    .logarithmic(true),
+                            );
+                            c.bitrate_kbps = mbps * 1000;
+                            ui.end_row();
+                            ui.label("Bitrate (PyroWave)");
+                            let mut mbps = c.pyrowave_kbps / 1000;
+                            ui.add(
+                                egui::Slider::new(&mut mbps, 50..=1500)
+                                    .suffix(" Mbit/s")
+                                    .logarithmic(true),
+                            );
+                            c.pyrowave_kbps = mbps * 1000;
+                            ui.end_row();
+                            ui.label("Frame rate");
+                            egui::ComboBox::from_id_salt("fps")
+                                .selected_text(format!("{} fps", c.max_fps))
+                                .show_ui(ui, |ui| {
+                                    for fps in [30, 60, 90, 120, 144, 165, 240] {
+                                        ui.selectable_value(
+                                            &mut c.max_fps,
+                                            fps,
+                                            format!("{fps} fps"),
+                                        );
+                                    }
+                                });
+                            ui.end_row();
+                        }
+                        SettingsTab::Input => {
+                            ui.label("Mouse");
+                            egui::ComboBox::from_id_salt("mouse")
+                                .selected_text(match c.mouse.as_str() {
+                                    "desktop" => "Desktop",
+                                    "captured" => "Captured (games)",
+                                    _ => "Automatic",
+                                })
+                                .show_ui(ui, |ui| {
+                                    for (v, l) in [
+                                        ("auto", "Automatic"),
+                                        ("desktop", "Desktop"),
+                                        ("captured", "Captured (games)"),
+                                    ] {
+                                        if ui.selectable_label(c.mouse == v, l).clicked() {
+                                            c.mouse = v.into();
+                                        }
+                                    }
+                                });
+                            ui.end_row();
+                            ui.label("Menu shortcut");
+                            ui.text_edit_singleline(&mut self.shortcut_text);
+                            ui.end_row();
+                        }
+                        SettingsTab::Window => {
+                            ui.label("Fullscreen");
+                            ui.checkbox(&mut c.fullscreen, "Open new computers in fullscreen");
+                            ui.end_row();
+                            ui.label("Statistics");
+                            ui.checkbox(&mut c.show_stats, "Show the statistics overlay");
+                            ui.end_row();
+                        }
+                        SettingsTab::Sound => {
+                            ui.label("Sound");
+                            ui.checkbox(&mut c.audio, "Play the remote computer's sound");
+                            ui.end_row();
+                        }
+                    });
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    if ui.add(primary_button("Save")).clicked() {
+                        actions.push(Action::SaveSettings);
+                    }
+                    if ui.button("Cancel").clicked() {
+                        actions.push(Action::CloseSettings);
+                    }
+                });
+            });
+        if modal.should_close() {
+            actions.push(Action::CloseSettings);
+        }
+    }
+}
+
+fn dialog_frame() -> egui::Frame {
+    egui::Frame::new()
+        .fill(CARD)
+        .corner_radius(14)
+        .inner_margin(22)
+        .stroke(egui::Stroke::new(1.0, CARD_HOVER))
+}
+
+fn section_title(ui: &mut egui::Ui, text: &str) {
+    ui.label(
+        egui::RichText::new(text.to_uppercase())
+            .size(12.0)
+            .strong()
+            .color(MUTED),
+    );
+    ui.add_space(4.0);
+}
+
+fn paint_logo(painter: &egui::Painter, rect: egui::Rect) {
+    painter.rect_filled(rect, 6, FRAME);
+    let inner = rect.shrink(3.0);
+    let half = inner.width() / 2.0 - 1.0;
+    let panes = [
+        (inner.left_top(), AMBER),
+        (inner.left_top() + egui::vec2(half + 2.0, 0.0), BLUE),
+        (inner.left_top() + egui::vec2(0.0, half + 2.0), BLUE),
+        (inner.left_top() + egui::vec2(half + 2.0, half + 2.0), BLUE),
+    ];
+    for (pos, color) in panes {
+        painter.rect_filled(
+            egui::Rect::from_min_size(pos, egui::vec2(half, half)),
+            2,
+            color,
+        );
     }
 }
 
@@ -732,6 +1187,17 @@ fn codec_label(value: &str) -> &'static str {
         "av1" => "AV1",
         "pyrowave" => "PyroWave",
         _ => "HEVC",
+    }
+}
+
+/// The `codecs` list stored in client.toml for a choice key.
+fn codec_choice_strings(key: &str) -> Vec<String> {
+    match key {
+        "auto" => vec!["auto".into()],
+        "h264" => vec!["h264".into()],
+        "av1" => vec!["av1".into(), "hevc".into(), "h264".into()],
+        "pyrowave" => vec!["pyrowave".into(), "hevc".into(), "h264".into()],
+        _ => vec!["hevc".into(), "h264".into()],
     }
 }
 
@@ -768,7 +1234,7 @@ impl ApplicationHandler<UiEvent> for Launcher {
                 let ctx = self.egui_ctx.clone();
                 let mut actions = Vec::new();
                 let output = ctx.run_ui(input, |ui| actions = self.ui(ui));
-                let output_repaint_now = output
+                let repaint_now = output
                     .viewport_output
                     .get(&egui::ViewportId::ROOT)
                     .is_some_and(|v| v.repaint_delay.is_zero());
@@ -779,7 +1245,7 @@ impl ApplicationHandler<UiEvent> for Launcher {
                 if let Err(e) = renderer.render(None, &ctx, output) {
                     tracing::error!("render failed: {e:#}");
                 }
-                let repaint = !actions.is_empty() || output_repaint_now;
+                let repaint = !actions.is_empty() || repaint_now;
                 for a in actions {
                     self.apply(a);
                 }
@@ -801,7 +1267,8 @@ impl ApplicationHandler<UiEvent> for Launcher {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        // Debugging aid: ORIEL_DEBUG_SCREENSHOT=path saves the launcher and quits.
+        // Debugging aid: ORIEL_DEBUG_SCREENSHOT=path saves the launcher and
+        // quits (after ORIEL_DEBUG_SCREENSHOT_AFTER seconds, default 1).
         if let Some(path) = std::env::var_os("ORIEL_DEBUG_SCREENSHOT")
             && self.opened.elapsed()
                 > Duration::from_secs_f64(
@@ -839,7 +1306,8 @@ impl ApplicationHandler<UiEvent> for Launcher {
             || (sharing && self.gfx.is_some())
             || self.connecting.is_some()
             || self.pairing.is_some()
-            || self.reconnect.is_some();
+            || self.reconnect.is_some()
+            || std::env::var_os("ORIEL_DEBUG_SCREENSHOT").is_some();
         event_loop.set_control_flow(if waiting {
             ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(100))
         } else {
