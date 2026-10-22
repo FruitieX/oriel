@@ -42,6 +42,8 @@ pub struct Session {
     pub stats: Arc<Mutex<Stats>>,
     pub audio: Option<Arc<Mutex<oriel_audio::PlayerStats>>>,
     pub clock: Arc<Mutex<crate::stats::ClockSync>>,
+    /// The renderer offers zero-copy decoding here once it exists.
+    pub interop: decode::InteropSlot,
     rt: tokio::runtime::Handle,
 }
 
@@ -81,12 +83,14 @@ pub fn start(
     let (input_tx, mut input_rx) = mpsc::unbounded_channel::<InputEvent>();
     let stats = Arc::new(Mutex::new(Stats::default()));
     let frames = decode::FrameSlot::default();
+    let interop = decode::InteropSlot::default();
     let decoder = decode::spawn(
         conn.clone(),
         ctl_tx.clone(),
         frames.clone(),
         stats.clone(),
         hardware_decode,
+        interop.clone(),
         sink.clone(),
     );
 
@@ -231,6 +235,7 @@ pub fn start(
         stats,
         audio: audio_stats,
         clock,
+        interop,
         rt: rt.clone(),
     }
 }

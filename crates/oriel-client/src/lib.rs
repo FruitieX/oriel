@@ -8,6 +8,8 @@ mod decode;
 pub mod headless;
 #[cfg(target_os = "linux")]
 mod inhibit;
+#[cfg(not(target_os = "macos"))]
+pub mod interop;
 pub mod keymap;
 pub mod launcher;
 mod render;

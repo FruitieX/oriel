@@ -76,6 +76,13 @@ struct VideoTextures {
     bind_group: wgpu::BindGroup,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Current {
+    Cpu((u32, u32)),
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    Gpu(usize, (u32, u32)),
+}
+
 /// Pixel rectangle (physical pixels) where the video is drawn.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Viewport {
@@ -96,6 +103,16 @@ pub struct Renderer {
     params: wgpu::Buffer,
     dummy: wgpu::Texture,
     video: Option<VideoTextures>,
+    /// Bind groups for zero-copy plane sets, by set identity.
+    #[cfg(not(target_os = "macos"))]
+    gpu_sets: std::collections::HashMap<
+        usize,
+        (std::sync::Weak<crate::interop::PlaneSet>, wgpu::BindGroup),
+    >,
+    /// The picture to draw: CPU-uploaded planes, or a GPU plane set.
+    current: Option<Current>,
+    #[cfg(not(target_os = "macos"))]
+    pub interop: Option<std::sync::Arc<crate::interop::VkInterop>>,
     srgb_target: bool,
     pub egui: egui_wgpu::Renderer,
     pub adapter_info: String,
@@ -124,6 +141,8 @@ impl Renderer {
                 ..Default::default()
             }))?;
 
+        #[cfg(not(target_os = "macos"))]
+        let interop = crate::interop::VkInterop::new(&adapter, &device);
         let caps = surface.get_capabilities(&adapter);
         // Plain 8-bit formats: the shader outputs gamma-encoded values.
         let preferred = [
@@ -255,6 +274,11 @@ impl Renderer {
             params,
             dummy,
             video: None,
+            #[cfg(not(target_os = "macos"))]
+            gpu_sets: Default::default(),
+            current: None,
+            #[cfg(not(target_os = "macos"))]
+            interop,
             srgb_target: format.is_srgb(),
             egui,
             adapter_info,
@@ -272,7 +296,48 @@ impl Renderer {
     }
 
     pub fn video_size(&self) -> Option<(u32, u32)> {
-        self.video.as_ref().map(|v| v.size)
+        match self.current? {
+            Current::Cpu(size) | Current::Gpu(_, size) => Some(size),
+        }
+    }
+
+    /// Show a zero-copy plane set (full-range BT.709 4:2:0 from PyroWave).
+    #[cfg(not(target_os = "macos"))]
+    pub fn show_gpu(&mut self, set: &std::sync::Arc<crate::interop::PlaneSet>) {
+        let key = std::sync::Arc::as_ptr(set) as usize;
+        self.gpu_sets.retain(|_, (weak, _)| weak.strong_count() > 0);
+        if !self.gpu_sets.contains_key(&key) {
+            let views: Vec<_> = set
+                .textures
+                .iter()
+                .map(|t| t.create_view(&Default::default()))
+                .collect();
+            let bind_group = self.bind_planes([&views[0], &views[1], &views[2]]);
+            self.gpu_sets
+                .insert(key, (std::sync::Arc::downgrade(set), bind_group));
+        }
+        self.write_params(ColorMatrix::Bt709, true, false);
+        self.current = Some(Current::Gpu(key, set.size));
+    }
+
+    fn write_params(&self, matrix: ColorMatrix, full_range: bool, nv12: bool) {
+        let (kr, kb) = match matrix {
+            ColorMatrix::Bt601 => (0.299f32, 0.114f32),
+            ColorMatrix::Bt709 => (0.2126, 0.0722),
+            ColorMatrix::Bt2020 => (0.2627, 0.0593),
+        };
+        let params: [f32; 8] = [
+            kr,
+            kb,
+            full_range as u32 as f32,
+            nv12 as u32 as f32,
+            self.srgb_target as u32 as f32,
+            0.0,
+            0.0,
+            0.0,
+        ];
+        let bytes: Vec<u8> = params.iter().flat_map(|f| f.to_le_bytes()).collect();
+        self.queue.write_buffer(&self.params, 0, &bytes);
     }
 
     /// Upload a decoded frame's planes.
@@ -309,23 +374,41 @@ impl Renderer {
                 },
             );
         }
-        let (kr, kb) = match frame.matrix {
-            ColorMatrix::Bt601 => (0.299f32, 0.114f32),
-            ColorMatrix::Bt709 => (0.2126, 0.0722),
-            ColorMatrix::Bt2020 => (0.2627, 0.0593),
-        };
-        let params: [f32; 8] = [
-            kr,
-            kb,
-            frame.full_range as u32 as f32,
-            (frame.format == PlaneFormat::Nv12) as u32 as f32,
-            self.srgb_target as u32 as f32,
-            0.0,
-            0.0,
-            0.0,
-        ];
-        let bytes: Vec<u8> = params.iter().flat_map(|f| f.to_le_bytes()).collect();
-        self.queue.write_buffer(&self.params, 0, &bytes);
+        self.write_params(
+            frame.matrix,
+            frame.full_range,
+            frame.format == PlaneFormat::Nv12,
+        );
+        self.current = Some(Current::Cpu(size));
+    }
+
+    fn bind_planes(&self, views: [&wgpu::TextureView; 3]) -> wgpu::BindGroup {
+        self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("yuv"),
+            layout: &self.layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(views[0]),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(views[1]),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(views[2]),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: self.params.as_entire_binding(),
+                },
+            ],
+        })
     }
 
     fn create_video(&self, format: PlaneFormat, (w, h): (u32, u32)) -> VideoTextures {
@@ -347,32 +430,7 @@ impl Renderer {
         let view = |t: &wgpu::Texture| t.create_view(&Default::default());
         let views: Vec<_> = planes.iter().map(view).collect();
         let dummy = view(&self.dummy);
-        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("yuv"),
-            layout: &self.layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&views[0]),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&views[1]),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(views.get(2).unwrap_or(&dummy)),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::Sampler(&self.sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: self.params.as_entire_binding(),
-                },
-            ],
-        });
+        let bind_group = self.bind_planes([&views[0], &views[1], views.get(2).unwrap_or(&dummy)]);
         VideoTextures {
             format,
             size: (w, h),
@@ -417,10 +475,16 @@ impl Renderer {
                 })],
                 ..Default::default()
             });
-            if let (Some(video), Some(vp)) = (&self.video, viewport) {
+            let bind_group = match self.current {
+                Some(Current::Cpu(_)) => self.video.as_ref().map(|v| &v.bind_group),
+                #[cfg(not(target_os = "macos"))]
+                Some(Current::Gpu(key, _)) => self.gpu_sets.get(&key).map(|(_, b)| b),
+                _ => None,
+            };
+            if let (Some(bind_group), Some(vp)) = (bind_group, viewport) {
                 pass.set_viewport(vp.x, vp.y, vp.w, vp.h, 0.0, 1.0);
                 pass.set_pipeline(&self.pipeline);
-                pass.set_bind_group(0, &video.bind_group, &[]);
+                pass.set_bind_group(0, bind_group, &[]);
                 pass.draw(0..3, 0..1);
             }
         }

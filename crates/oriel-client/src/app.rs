@@ -505,7 +505,11 @@ impl Viewer {
     fn draw(&mut self) {
         if let Some(ready) = self.session.frames.take() {
             if let Some(gfx) = &mut self.gfx {
-                gfx.renderer.upload(&ready.frame);
+                match &ready.picture {
+                    crate::decode::Picture::Cpu(frame) => gfx.renderer.upload(frame),
+                    #[cfg(not(target_os = "macos"))]
+                    crate::decode::Picture::Gpu(set) => gfx.renderer.show_gpu(set),
+                }
             }
             let now = Instant::now();
             // Capture on the host to drawing here (clock-synced), or from
@@ -889,6 +893,10 @@ impl ApplicationHandler<UiEvent> for Viewer {
         let display = window.display_handle().ok().map(|h| h.as_raw());
         // SAFETY: the display outlives the clipboard (both dropped in `exiting`).
         let clipboard = unsafe { egui_winit::clipboard::Clipboard::new(display) };
+        #[cfg(not(target_os = "macos"))]
+        if self.options.hardware_decode {
+            *self.session.interop.lock() = renderer.interop.clone();
+        }
         self.gfx = Some(Gfx {
             #[cfg(target_os = "linux")]
             inhibitor: crate::inhibit::ShortcutInhibitor::new(&window),

@@ -24,6 +24,7 @@ crossbeam-channel.workspace = true
 parking_lot.workspace = true
 serde.workspace = true
 png = "0.18"
+ash = { version = "0.38", default-features = false, features = ["std"] }
 toml.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]

@@ -8,14 +8,17 @@ pub use ffmpeg_sys_next as ff;
 
 mod decoder;
 mod encoder;
-mod pyrowave;
+pub mod pyrowave;
 mod util;
 
 pub use decoder::{ColorMatrix, DecodedFrame, Decoder, PlaneFormat};
 pub use encoder::{
     EncodedFrame, Encoder, EncoderConfig, EncoderInput, HwDevice, available_encoders,
 };
-pub use pyrowave::available as pyrowave_available;
+pub use pyrowave::{
+    EXTERNAL_MEMORY_HANDLE as PYROWAVE_EXTERNAL_MEMORY, ExternalPlane, PyroDecoder,
+    available as pyrowave_available,
+};
 
 /// Route FFmpeg's log output through `tracing` at a quiet level.
 pub fn init_logging() {

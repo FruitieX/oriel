@@ -99,6 +99,13 @@ struct Api {
     sync_object_get_semaphore: unsafe extern "C" fn(Handle) -> u64,
     #[allow(dead_code)]
     sync_object_destroy: unsafe extern "C" fn(Handle),
+    decoder_decode_gpu_buffer: unsafe extern "C" fn(
+        Handle,
+        *const gpu::SyncOp,
+        *const gpu::SyncOp,
+        *const gpu::GpuBuffers,
+    ) -> c_int,
+    sync_object_cpu_wait: unsafe extern "C" fn(Handle, u64, u64) -> c_int,
     #[allow(dead_code)]
     encoder_encode_gpu_scaled: unsafe extern "C" fn(
         Handle,
@@ -171,6 +178,8 @@ fn load() -> Result<Api, String> {
             sync_object_get_semaphore: sym!("pyrowave_sync_object_get_semaphore"),
             sync_object_destroy: sym!("pyrowave_sync_object_destroy"),
             encoder_encode_gpu_scaled: sym!("pyrowave_encoder_encode_gpu_scaled"),
+            decoder_decode_gpu_buffer: sym!("pyrowave_decoder_decode_gpu_buffer"),
+            sync_object_cpu_wait: sym!("pyrowave_sync_object_cpu_wait"),
             _lib: lib,
             path,
         });
@@ -249,6 +258,27 @@ impl Device {
             }
         }
         bail!("cannot create a PyroWave device on the capture GPU")
+    }
+}
+
+impl Device {
+    /// A device on the GPU with these Vulkan device and driver UUIDs.
+    fn on_uuid(device_uuid: [u8; 16], driver_uuid: [u8; 16]) -> Result<Self> {
+        let api = api()?;
+        let mut device = ptr::null_mut();
+        let r = unsafe {
+            (api.create_device_by_compat)(
+                0,
+                0,
+                &device_uuid,
+                &driver_uuid,
+                ptr::null(),
+                gpu::QUEUE_GLOBAL_PRIORITY_MEDIUM,
+                &mut device,
+            )
+        };
+        pw(r, "create a PyroWave device on the display GPU")?;
+        Ok(Self(device))
     }
 }
 
@@ -465,9 +495,32 @@ impl Drop for PyroEncoder {
 
 pub struct PyroDecoder {
     decoder: Handle,
+    /// Plane image sets imported for GPU decoding, and the sync object
+    /// signalled when a decode finishes.
+    gpu_sets: Vec<[Handle; 3]>,
+    gpu_sync: Handle,
+    gpu_value: u64,
     _device: Device,
     size: (u32, u32),
 }
+
+/// A plane image created by the renderer with exportable memory.
+pub struct ExternalPlane {
+    /// An fd (Linux) or NT handle (Windows); ownership passes to PyroWave.
+    pub handle: usize,
+    pub width: u32,
+    pub height: u32,
+    /// The parameters the image was created with (minus the external
+    /// memory chain).
+    pub info: ash::vk::ImageCreateInfo<'static>,
+}
+
+/// Memory handle type used for [`ExternalPlane`]s on this platform.
+pub const EXTERNAL_MEMORY_HANDLE: ash::vk::ExternalMemoryHandleTypeFlags = if cfg!(windows) {
+    ash::vk::ExternalMemoryHandleTypeFlags::OPAQUE_WIN32
+} else {
+    ash::vk::ExternalMemoryHandleTypeFlags::OPAQUE_FD
+};
 
 unsafe impl Send for PyroDecoder {}
 
@@ -489,12 +542,159 @@ impl PyroDecoder {
         )?;
         Ok(Self {
             decoder,
+            gpu_sets: Vec::new(),
+            gpu_sync: ptr::null_mut(),
+            gpu_value: 0,
             _device: device,
             size: (width, height),
         })
     }
 
-    pub fn decode(&mut self, data: &[u8]) -> Result<Option<DecodedFrame>> {
+    /// A decoder on the display GPU (by Vulkan UUIDs) that can decode
+    /// straight into the renderer's textures.
+    pub fn new_on_gpu(
+        width: u32,
+        height: u32,
+        device_uuid: [u8; 16],
+        driver_uuid: [u8; 16],
+    ) -> Result<Self> {
+        let api = api()?;
+        let device = Device::on_uuid(device_uuid, driver_uuid)?;
+        let mut decoder = ptr::null_mut();
+        let info = DecoderCreateInfo {
+            device: device.0,
+            width: width as c_int,
+            height: height as c_int,
+            chroma: CHROMA_420,
+            fragment_path: false,
+        };
+        pw(
+            unsafe { (api.decoder_create)(&info, &mut decoder) },
+            "create PyroWave decoder",
+        )?;
+        // An exportable timeline semaphore we only wait on from the CPU.
+        let sync_info = gpu::SyncCreateInfo {
+            device: device.0,
+            external_handle: if cfg!(windows) { 0 } else { usize::MAX },
+            handle_type: if cfg!(windows) {
+                gpu::EXTERNAL_SEMAPHORE_OPAQUE_WIN32
+            } else {
+                gpu::EXTERNAL_SEMAPHORE_OPAQUE_FD
+            },
+            semaphore_type: gpu::SEMAPHORE_TYPE_TIMELINE,
+            // PyroWave's validation wants this flag when creating an
+            // exportable (not imported) semaphore.
+            import_flags: gpu::SEMAPHORE_IMPORT_TEMPORARY,
+        };
+        let mut sync = ptr::null_mut();
+        let r = unsafe { (api.sync_object_create)(&sync_info, &mut sync) };
+        if let Err(e) = pw(r, "create a PyroWave sync object") {
+            unsafe { (api.decoder_destroy)(decoder) };
+            return Err(e);
+        }
+        Ok(Self {
+            decoder,
+            gpu_sets: Vec::new(),
+            gpu_sync: sync,
+            gpu_value: 0,
+            _device: device,
+            size: (width, height),
+        })
+    }
+
+    /// Import a set of Y, Cb, Cr planes to decode into; returns its index.
+    pub fn import_planes(&mut self, planes: [ExternalPlane; 3]) -> Result<usize> {
+        let api = api()?;
+        let mut set = [ptr::null_mut(); 3];
+        for (i, plane) in planes.iter().enumerate() {
+            let info = gpu::ImageCreateInfo {
+                device: self._device.0,
+                external_handle: plane.handle,
+                handle_type: EXTERNAL_MEMORY_HANDLE.as_raw(),
+                image_create_info: &plane.info,
+            };
+            let r = unsafe { (api.image_create)(&info, &mut set[i]) };
+            if let Err(e) = pw(r, "import a plane texture into PyroWave") {
+                for img in &set[..i] {
+                    unsafe { (api.image_destroy)(*img) };
+                }
+                return Err(e);
+            }
+        }
+        self.gpu_sets.push(set);
+        Ok(self.gpu_sets.len() - 1)
+    }
+
+    /// Decode a frame into plane set `set`, waiting until the GPU is done.
+    /// Returns false when the frame was incomplete.
+    pub fn decode_into(&mut self, data: &[u8], set: usize) -> Result<bool> {
+        let api = api()?;
+        self.push(data)?;
+        if !unsafe { (api.decoder_decode_is_ready)(self.decoder, false) } {
+            return Ok(false);
+        }
+        let images = self
+            .gpu_sets
+            .get(set)
+            .ok_or_else(|| anyhow!("no plane set {set}"))?;
+        // Previous contents are discarded (IGNORED: from UNDEFINED); hand
+        // the planes over to the renderer's device afterwards.
+        let refs = |family: u32| -> Vec<gpu::ExternalRef> {
+            images
+                .iter()
+                .map(|&image| gpu::ExternalRef {
+                    image,
+                    queue_family_index: family,
+                })
+                .collect()
+        };
+        let acquire_refs = refs(gpu::QUEUE_FAMILY_IGNORED);
+        let release_refs = refs(gpu::QUEUE_FAMILY_EXTERNAL);
+        self.gpu_value += 1;
+        unsafe {
+            let mut buffers = gpu::GpuBuffers {
+                planes: [gpu::ImageView::default(); 3],
+            };
+            for (i, &image) in images.iter().enumerate() {
+                pw(
+                    (api.image_get_image_view)(
+                        image,
+                        gpu::ASPECT_COLOR,
+                        gpu::USAGE_STORAGE,
+                        &mut buffers.planes[i],
+                    ),
+                    "PyroWave plane view",
+                )?;
+            }
+            let acquire = gpu::SyncOp {
+                images: acquire_refs.as_ptr(),
+                num_images: 3,
+                sync: gpu::SyncPoint {
+                    semaphore: 0,
+                    value: 0,
+                },
+            };
+            let release = gpu::SyncOp {
+                images: release_refs.as_ptr(),
+                num_images: 3,
+                sync: gpu::SyncPoint {
+                    semaphore: (api.sync_object_get_semaphore)(self.gpu_sync),
+                    value: self.gpu_value,
+                },
+            };
+            pw(
+                (api.decoder_decode_gpu_buffer)(self.decoder, &acquire, &release, &buffers),
+                "PyroWave GPU decode",
+            )?;
+            pw(
+                (api.sync_object_cpu_wait)(self.gpu_sync, self.gpu_value, 1_000_000_000),
+                "wait for PyroWave decode",
+            )?;
+        }
+        Ok(true)
+    }
+
+    fn push(&mut self, data: &[u8]) -> Result<()> {
         let api = api()?;
         let mut rest = data;
         while rest.len() >= 4 {
@@ -508,6 +708,12 @@ impl PyroDecoder {
             )?;
             rest = &rest[4 + len..];
         }
+        Ok(())
+    }
+
+    pub fn decode(&mut self, data: &[u8]) -> Result<Option<DecodedFrame>> {
+        let api = api()?;
+        self.push(data)?;
         if !unsafe { (api.decoder_decode_is_ready)(self.decoder, false) } {
             return Ok(None);
         }
@@ -528,7 +734,17 @@ impl PyroDecoder {
 impl Drop for PyroDecoder {
     fn drop(&mut self) {
         if let Ok(api) = api() {
-            unsafe { (api.decoder_destroy)(self.decoder) };
+            unsafe {
+                (api.decoder_destroy)(self.decoder);
+                for set in self.gpu_sets.drain(..) {
+                    for image in set {
+                        (api.image_destroy)(image);
+                    }
+                }
+                if !self.gpu_sync.is_null() {
+                    (api.sync_object_destroy)(self.gpu_sync);
+                }
+            }
         }
     }
 }
@@ -541,14 +757,19 @@ mod gpu {
     pub const QUEUE_GLOBAL_PRIORITY_MEDIUM: i32 = 256;
     pub const QUEUE_GLOBAL_PRIORITY_HIGH: i32 = 512;
     pub const QUEUE_FAMILY_EXTERNAL: u32 = !1;
+    pub const QUEUE_FAMILY_IGNORED: u32 = !0;
     pub const ASPECT_COLOR: u32 = 1;
     pub const USAGE_SAMPLED: u32 = 4;
+    pub const USAGE_STORAGE: u32 = 8;
+    pub const EXTERNAL_SEMAPHORE_OPAQUE_FD: u32 = 0x1;
+    pub const EXTERNAL_SEMAPHORE_OPAQUE_WIN32: u32 = 0x2;
     pub const COLOR_SPACE_SRGB_NONLINEAR: i32 = 0;
     pub const FORMAT_R8_UNORM: i32 = 9;
     pub const FORMAT_B8G8R8A8_UNORM: i32 = 44;
     pub const EXTERNAL_MEMORY_D3D11_TEXTURE: u32 = 0x8;
     pub const EXTERNAL_SEMAPHORE_D3D12_FENCE: u32 = 0x8;
     pub const SEMAPHORE_TYPE_TIMELINE: i32 = 1;
+    pub const SEMAPHORE_IMPORT_TEMPORARY: u32 = 1;
 
     #[repr(C)]
     pub struct ImageCreateInfo {
@@ -599,6 +820,11 @@ mod gpu {
         pub images: *const ExternalRef,
         pub num_images: usize,
         pub sync: SyncPoint,
+    }
+
+    #[repr(C)]
+    pub struct GpuBuffers {
+        pub planes: [ImageView; 3],
     }
 
     #[repr(C)]
