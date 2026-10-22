@@ -701,7 +701,7 @@ impl Viewer {
         self.in_force.show_stats
             || self.menu_open
             || !self.notices.is_empty()
-            || !self.diagnostics.warnings().is_empty()
+            || (self.in_force.warnings != "off" && !self.diagnostics.warnings().is_empty())
     }
 
     /// Look for problems that explain a slow stream, once a second.
@@ -750,8 +750,11 @@ impl Viewer {
             .update(now, crate::diagnostics::detect(&inputs));
         let after = self.diagnostics.warnings();
         if before != after {
-            for (issue, text) in after.iter().filter(|w| !before.iter().any(|b| b.0 == w.0)) {
-                tracing::info!(?issue, "{text}");
+            for f in after
+                .iter()
+                .filter(|w| !before.iter().any(|b| b.issue == w.issue))
+            {
+                tracing::info!(issue = ?f.issue, "{}", f.detail);
             }
             self.request_redraw();
         }
@@ -1035,7 +1038,10 @@ struct OverlayState {
     display: Option<u32>,
     stats_line: String,
     notices: Vec<String>,
+    /// Connection warnings and what to say: (issue, text).
     warnings: Vec<(crate::diagnostics::Issue, String)>,
+    /// One line each, sized to fit.
+    short_warnings: bool,
     closed: Option<String>,
     remote_cursor: Option<(egui::TextureId, egui::Vec2, egui::Pos2)>,
     menu_button: String,
@@ -1113,7 +1119,16 @@ impl From<&Viewer> for OverlayState {
                 .filter(|(_, at)| at.elapsed() < Duration::from_secs(5))
                 .map(|(t, _)| t.clone())
                 .collect(),
-            warnings: v.diagnostics.warnings(),
+            warnings: match v.in_force.warnings.as_str() {
+                "off" => Vec::new(),
+                style => v
+                    .diagnostics
+                    .warnings()
+                    .into_iter()
+                    .map(|f| (f.issue, if style == "short" { f.short } else { f.detail }))
+                    .collect(),
+            },
+            short_warnings: v.in_force.warnings == "short",
             closed: v.closed.clone(),
             remote_cursor,
             menu_button: v.in_force.menu_button.clone(),
@@ -1170,19 +1185,22 @@ fn overlay(ctx: &egui::Context, s: &OverlayState, settings: &mut MenuSettings) -
     }
 
     let screen = ctx.content_rect();
-    if (!s.notices.is_empty() || !s.warnings.is_empty()) && s.closed.is_none() {
-        egui::Area::new(egui::Id::unique("notices"))
-            .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 12.0))
-            .interactable(!s.warnings.is_empty())
-            .show(ctx, |ui| {
-                let width = (screen.width() - 32.0).clamp(200.0, 520.0);
-                for (issue, text) in &s.warnings {
+    if s.closed.is_none() {
+        // Each warning and notice in its own area, centered below the last.
+        let width = (screen.width() - 32.0).clamp(200.0, 520.0);
+        let mut y = 12.0;
+        for (n, (issue, text)) in s.warnings.iter().enumerate() {
+            let shown = egui::Area::new(egui::Id::unique("warning").with(n))
+                .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, y))
+                .show(ctx, |ui| {
                     egui::Frame::popup(ui.style())
                         .fill(egui::Color32::from_rgba_unmultiplied(34, 39, 56, 235))
                         .stroke(egui::Stroke::new(1.0, theme::AMBER.gamma_multiply(0.6)))
                         .show(ui, |ui| {
-                            ui.set_width(width);
-                            ui.horizontal_top(|ui| {
+                            if !s.short_warnings {
+                                ui.set_width(width);
+                            }
+                            let row = |ui: &mut egui::Ui| {
                                 // A warning sign: an amber disc with "!".
                                 let (icon, _) = ui.allocate_exact_size(
                                     egui::vec2(18.0, 18.0),
@@ -1196,30 +1214,46 @@ fn overlay(ctx: &egui::Context, s: &OverlayState, settings: &mut MenuSettings) -
                                     egui::FontId::proportional(13.0),
                                     egui::Color32::from_rgb(34, 39, 56),
                                 );
-                                let text_width = ui.available_width() - 34.0;
-                                ui.allocate_ui_with_layout(
-                                    egui::vec2(text_width, 0.0),
-                                    egui::Layout::top_down(egui::Align::Min),
-                                    |ui| {
-                                        ui.set_width(text_width);
-                                        ui.add(egui::Label::new(text.as_str()).wrap());
-                                    },
-                                );
+                                if s.short_warnings {
+                                    ui.add(egui::Label::new(text.as_str()).extend());
+                                } else {
+                                    let text_width = ui.available_width() - 34.0;
+                                    ui.allocate_ui_with_layout(
+                                        egui::vec2(text_width, 0.0),
+                                        egui::Layout::top_down(egui::Align::Min),
+                                        |ui| {
+                                            ui.set_width(text_width);
+                                            ui.add(egui::Label::new(text.as_str()).wrap());
+                                        },
+                                    );
+                                }
                                 if theme::close_button(ui)
                                     .on_hover_text("Hide until it happens again")
                                     .clicked()
                                 {
                                     actions.push(Action::DismissWarning(*issue));
                                 }
-                            });
+                            };
+                            if s.short_warnings {
+                                ui.horizontal(row);
+                            } else {
+                                ui.horizontal_top(row);
+                            }
                         });
-                }
-                for n in &s.notices {
+                });
+            y += shown.response.rect.height() + 6.0;
+        }
+        for (n, text) in s.notices.iter().enumerate() {
+            let shown = egui::Area::new(egui::Id::unique("notice").with(n))
+                .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, y))
+                .interactable(false)
+                .show(ctx, |ui| {
                     egui::Frame::popup(ui.style()).show(ui, |ui| {
-                        ui.label(n);
+                        ui.label(text);
                     });
-                }
-            });
+                });
+            y += shown.response.rect.height() + 6.0;
+        }
     }
 
     if let Some(reason) = &s.closed {

@@ -61,16 +61,35 @@ pub struct Inputs {
     pub software_decode: bool,
 }
 
-/// The problems `inputs` show right now, each with an explanation.
-pub fn detect(i: &Inputs) -> Vec<(Issue, String)> {
+/// A problem seen right now.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Found {
+    pub issue: Issue,
+    /// The problem and its numbers.
+    pub short: String,
+    /// The same with an explanation and what to try.
+    pub detail: String,
+}
+
+fn found(issue: Issue, short: String, detail: String) -> Found {
+    Found {
+        issue,
+        short,
+        detail,
+    }
+}
+
+/// The problems `inputs` show right now.
+pub fn detect(i: &Inputs) -> Vec<Found> {
     let mut out = Vec::new();
     if i.since_pong >= Duration::from_millis(2500) {
-        out.push((
+        let secs = i.since_pong.as_secs();
+        out.push(found(
             Issue::Stalled,
+            format!("No answer from the host for {secs} s"),
             format!(
-                "No answer from the host for {} s. The network may have dropped; \
-                 oriel reconnects if it does not come back.",
-                i.since_pong.as_secs()
+                "No answer from the host for {secs} s. The network may have dropped; \
+                 oriel reconnects if it does not come back."
             ),
         ));
         // Everything else is stale while nothing gets through.
@@ -78,20 +97,25 @@ pub fn detect(i: &Inputs) -> Vec<(Issue, String)> {
     }
     let slow_decode = i.fps >= 5.0 && i.decode_ms * i.fps > 850.0;
     if slow_decode {
-        let mut text = format!(
+        let mut detail = format!(
             "Decoding takes {:.0} ms per frame, which limits the stream to about {:.0} fps.",
             i.decode_ms,
             1000.0 / i.decode_ms.max(1.0)
         );
         if i.software_decode {
-            text.push_str(
+            detail.push_str(
                 " Hardware decoding is not in use: try another codec or turn on \
                  hardware decoding in the Video settings.",
             );
         } else {
-            text.push_str(" A lower resolution or frame rate helps.");
+            detail.push_str(" A lower resolution or frame rate helps.");
         }
-        out.push((Issue::SlowDecode, text));
+        let software = if i.software_decode { " (software)" } else { "" };
+        out.push(found(
+            Issue::SlowDecode,
+            format!("Slow decoding{software}: {:.0} ms per frame", i.decode_ms),
+            detail,
+        ));
     }
     let Some(host) = i.host else {
         return out;
@@ -101,8 +125,9 @@ pub fn detect(i: &Inputs) -> Vec<(Issue, String)> {
         && host.sent_fps < host.wanted_fps
         && i.encode_ms * host.sent_fps as f32 > 850.0;
     if slow_encode {
-        out.push((
+        out.push(found(
             Issue::SlowEncode,
+            format!("Slow encoding on the host: {:.0} ms per frame", i.encode_ms),
             format!(
                 "The host needs {:.0} ms to encode a frame, too slow for {} fps. \
                  A lower resolution or frame rate helps.",
@@ -113,7 +138,11 @@ pub fn detect(i: &Inputs) -> Vec<(Issue, String)> {
     // A client that decodes slowly holds the host back the same way a slow
     // link does; then the decoder is the one to blame.
     if host.network_limited && !slow_decode && !slow_encode {
-        let text = if i.codec == Some(Codec::PyroWave) {
+        let short = format!(
+            "Network too slow: {} of {} fps sent",
+            host.sent_fps, host.wanted_fps
+        );
+        let detail = if i.codec == Some(Codec::PyroWave) {
             format!(
                 "The network cannot carry PyroWave at {} Mbit/s: {} of {} frames per \
                  second got through. Lower the PyroWave bitrate in the Video settings.",
@@ -126,29 +155,32 @@ pub fn detect(i: &Inputs) -> Vec<(Issue, String)> {
                 host.sent_fps, host.wanted_fps, i.bitrate_mbps
             )
         };
-        out.push((Issue::NetworkLimited, text));
+        out.push(found(Issue::NetworkLimited, short, detail));
     }
     if host.loss_permille >= 20 {
-        out.push((
+        let pct = host.loss_permille as f32 / 10.0;
+        out.push(found(
             Issue::PacketLoss,
+            format!("Packet loss: {pct:.1}%"),
             format!(
-                "{:.1}% of packets are lost on the way, which causes stutter. Weak \
-                 Wi-Fi is the usual cause: a cable or the 5 GHz band helps.",
-                host.loss_permille as f32 / 10.0
+                "{pct:.1}% of packets are lost on the way, which causes stutter. Weak \
+                 Wi-Fi is the usual cause: a cable or the 5 GHz band helps."
             ),
         ));
     }
     if i.rtt_ms >= 60.0 {
-        out.push((
+        out.push(found(
             Issue::Latency,
+            format!("High latency: {:.0} ms round trip", i.rtt_ms),
             format!(
                 "High network latency: {:.0} ms round trip, so input reacts late.",
                 i.rtt_ms
             ),
         ));
     } else if i.latency_ms - i.rtt_ms / 2.0 >= 80.0 && out.is_empty() {
-        out.push((
+        out.push(found(
             Issue::LateFrames,
+            format!("Frames {:.0} ms late", i.latency_ms),
             format!(
                 "Frames reach the screen {:.0} ms after the host captured them, \
                  although the network is quick. A lower frame rate or bitrate may help.",
@@ -175,22 +207,22 @@ struct State {
 #[derive(Default)]
 pub struct Diagnostics {
     states: [State; Issue::ALL.len()],
-    texts: [String; Issue::ALL.len()],
+    found: [Option<Found>; Issue::ALL.len()],
 }
 
 const KEEP: Duration = Duration::from_secs(4);
 
 impl Diagnostics {
-    pub fn update(&mut self, now: Instant, found: Vec<(Issue, String)>) {
+    pub fn update(&mut self, now: Instant, found: Vec<Found>) {
         for (n, issue) in Issue::ALL.iter().enumerate() {
             let state = &mut self.states[n];
-            if let Some((_, text)) = found.iter().find(|(i, _)| i == issue) {
+            if let Some(f) = found.iter().find(|f| f.issue == *issue) {
                 let since = *state.since.get_or_insert(now);
                 state.seen = Some(now);
                 if now.duration_since(since) >= issue.raise_after() {
                     state.shown = true;
                 }
-                self.texts[n] = text.clone();
+                self.found[n] = Some(f.clone());
             } else {
                 state.since = None;
                 if state
@@ -210,12 +242,12 @@ impl Diagnostics {
     }
 
     /// The warnings to show, most important first.
-    pub fn warnings(&self) -> Vec<(Issue, String)> {
+    pub fn warnings(&self) -> Vec<Found> {
         Issue::ALL
             .iter()
             .enumerate()
             .filter(|(n, _)| self.states[*n].shown && !self.states[*n].dismissed)
-            .map(|(n, issue)| (*issue, self.texts[n].clone()))
+            .filter_map(|(n, _)| self.found[n].clone())
             .collect()
     }
 }
@@ -246,7 +278,7 @@ mod tests {
     }
 
     fn issues(i: &Inputs) -> Vec<Issue> {
-        detect(i).into_iter().map(|(i, _)| i).collect()
+        detect(i).into_iter().map(|f| f.issue).collect()
     }
 
     #[test]
@@ -257,14 +289,14 @@ mod tests {
         i.host.as_mut().unwrap().network_limited = true;
         i.host.as_mut().unwrap().sent_fps = 30;
         assert_eq!(issues(&i), [Issue::NetworkLimited]);
-        assert!(detect(&i)[0].1.contains("50 Mbit/s"));
+        assert!(detect(&i)[0].detail.contains("50 Mbit/s"));
 
         // A slow decoder explains the held-back host by itself.
         i.fps = 30.0;
         i.decode_ms = 32.0;
         i.software_decode = true;
         assert_eq!(issues(&i), [Issue::SlowDecode]);
-        assert!(detect(&i)[0].1.contains("Hardware decoding"));
+        assert!(detect(&i)[0].detail.contains("Hardware decoding"));
 
         let mut i = healthy();
         i.host.as_mut().unwrap().loss_permille = 45;
@@ -294,7 +326,7 @@ mod tests {
     fn warnings_need_to_last() {
         let t0 = Instant::now();
         let mut d = Diagnostics::default();
-        let loss = || vec![(Issue::PacketLoss, "loss".to_string())];
+        let loss = || vec![found(Issue::PacketLoss, "loss".into(), "loss".into())];
         d.update(t0, loss());
         assert!(d.warnings().is_empty(), "a blip is not shown");
         d.update(t0 + Duration::from_secs(3), loss());

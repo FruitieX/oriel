@@ -41,7 +41,8 @@ display) and the client (connects to hosts).
   as the link allows).
 - Warnings that explain a slow stream while it lasts: a link that cannot
   carry the bitrate, packet loss, high latency, a host that stops
-  answering, and slow encoding or decoding, each with what to try.
+  answering, and slow encoding or decoding, each with what to try
+  (Settings → Interface: detailed, short or off).
   `ORIEL_DEBUG_BAD_NETWORK=1` fakes a bad network to see them.
 - Only paired devices can connect: pairing uses a PIN shown on the host and
   pins both devices' certificates.

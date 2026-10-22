@@ -7,7 +7,7 @@ use oriel_proto::{Codec, VirtualMode};
 
 use crate::{
     config::{
-        CODEC_CHOICES, ClientConfig, HostPrefs, MENU_BUTTON_STYLES, MOUSE_MODES,
+        CODEC_CHOICES, ClientConfig, HostPrefs, MENU_BUTTON_STYLES, MOUSE_MODES, WARNING_STYLES,
         codec_choice_strings, format_resolution, format_virtual_mode,
     },
     keymap::{Command, Shortcut},
@@ -620,6 +620,15 @@ fn interface_tab(ui: &mut Ui, rows: &mut Rows) {
         });
         ui.label("");
         ui.end_row();
+        rows.choice(
+            ui,
+            "Connection warnings",
+            "Explain slow streams: the network, packet loss, latency, slow decoding",
+            |c| c.warnings.clone(),
+            |c, v| c.warnings = v,
+            |h| &mut h.warnings,
+            &WARNING_STYLES,
+        );
     });
 }
 

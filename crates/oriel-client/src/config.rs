@@ -46,6 +46,9 @@ pub struct ClientConfig {
     /// Where the menu button's center sits, as fractions of the window
     /// (unset: bottom right).
     pub menu_button_pos: Option<[f32; 2]>,
+    /// Warnings that explain a slow stream: "detailed" (with what to try),
+    /// "short" or "off".
+    pub warnings: String,
     /// Send the microphone to hosts by default.
     pub microphone: bool,
     /// Which input device (an `oriel_audio` device id; unset: default).
@@ -79,6 +82,7 @@ pub struct HostPrefs {
     pub microphone_device: Option<String>,
     pub show_stats: Option<bool>,
     pub menu_button: Option<String>,
+    pub warnings: Option<String>,
     // Only meaningful per host:
     /// "native" or "WIDTHxHEIGHT".
     pub resolution: Option<String>,
@@ -104,6 +108,7 @@ pub struct Effective {
     pub microphone_device: Option<String>,
     pub show_stats: bool,
     pub menu_button: String,
+    pub warnings: String,
     pub resolution: Option<(u32, u32)>,
     pub audio_device: Option<String>,
     pub virtual_display: Option<oriel_proto::VirtualMode>,
@@ -168,6 +173,13 @@ pub const MENU_BUTTON_STYLES: [(&str, &str); 4] = [
     ("hidden", "Hidden (use the shortcut)"),
 ];
 
+/// How connection warnings are shown, as (key, label).
+pub const WARNING_STYLES: [(&str, &str); 3] = [
+    ("detailed", "Detailed, with what to try"),
+    ("short", "Short"),
+    ("off", "Off"),
+];
+
 /// The codec choices offered in the UI, as (key, label).
 pub const CODEC_CHOICES: [(&str, &str); 5] = [
     ("auto", "Automatic"),
@@ -220,6 +232,7 @@ impl Default for ClientConfig {
             gamepads: true,
             menu_button: "full".into(),
             menu_button_pos: None,
+            warnings: "detailed".into(),
             microphone: false,
             microphone_device: None,
             shortcuts: Default::default(),
@@ -250,6 +263,7 @@ impl ClientConfig {
                 .menu_button
                 .clone()
                 .unwrap_or_else(|| self.menu_button.clone()),
+            warnings: h.warnings.clone().unwrap_or_else(|| self.warnings.clone()),
             resolution: h.resolution.as_deref().and_then(parse_resolution),
             audio_device: h.audio_device.clone().filter(|d| !d.is_empty()),
             virtual_display: h.virtual_display.as_deref().and_then(parse_virtual_mode),
