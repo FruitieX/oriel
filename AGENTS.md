@@ -13,8 +13,15 @@ Read [docs/architecture.md](docs/architecture.md) first.
   clang's `immintrin.h`/`x86intrin.h` (AMX types break the generated
   bindings); the script handles both. If bindings look stale, `cargo clean
   -p ffmpeg-sys-next --target x86_64-pc-windows-gnu`.
-- Windows is tested on the owner's PC through the Samba share: the
-  `dist/windows` folder is visible there as `Y:\projects\oriel\dist\windows`.
+- Windows is tested on the owner's PC (watermelon) through the Samba
+  share: `dist/windows` is `Y:\projects\oriel\dist\windows` there. Once
+  the owner has started `run-host.bat`, every `build-windows.sh` run
+  redeploys automatically (the host restarts into the new build within
+  seconds) and the host logs to `dist/host.log`. honeydew is paired with it
+  as `watermelon`, so `oriel connect watermelon --headless 5` (with that
+  client's `ORIEL_CONFIG_DIR`) tests the real Windows host from here. Only
+  release builds go to `dist/` (debug builds overflowed the Windows main
+  thread stack).
 
 ## Testing without hardware
 

@@ -72,10 +72,22 @@ the pointer is locked and raw motion is sent.
 ## PyroWave and automatic codec switching
 
 PyroWave is loaded at runtime from its C API library (built by
-`nix/pyrowave.nix`; `ORIEL_PYROWAVE_LIB` overrides the path). Frames go
-through the CPU for now: BGRA → YUV420P (BT.709 full range) → `encode_cpu`,
-and decoding into YUV420P. A frame's payload is its PyroWave packets, each
-prefixed with a little-endian `u32` length.
+`nix/pyrowave.nix`; `ORIEL_PYROWAVE_LIB` overrides the path). A frame's
+payload is its PyroWave packets, each prefixed with a little-endian `u32`
+length. Output is full-range BT.709 4:2:0.
+
+- Windows host (zero-copy): the captured texture is copied on the GPU into
+  a D3D11 texture shared by NT handle with a PyroWave Vulkan device on the
+  same adapter (LUID); a shared D3D11 fence imported as a timeline
+  semaphore orders the copy before `encode_gpu_scaled`, which converts
+  BGRA on the GPU.
+- Client (zero-copy, Vulkan): plane textures are created in wgpu's Vulkan
+  device with exportable memory, imported into a PyroWave device on the
+  same GPU (device/driver UUID) and decoded into directly (a ring of three
+  sets; the decoder thread waits on a timeline semaphore before handing a
+  set to the renderer).
+- Otherwise frames go through the CPU (swscale BGRA→YUV420P and
+  `encode_cpu`; `decode_cpu_buffer_synchronous`).
 
 With `auto_codec`, the host uses PyroWave while the RTT is below 3 ms and
 falls back to the next listed codec when fewer than 75% of the captured
@@ -92,3 +104,18 @@ the console session changes, and calls `SendSAS` when the host signals the
 Winlogon desktop, so capture and input follow the lock screen and UAC
 prompts. Pairing is allowed for ten minutes after `oriel service pair`
 writes a PIN to `pairing-pin` in the data directory.
+
+## App, tray and development hosts
+
+`oriel` is one app: the launcher window, the viewer, and (on Windows) a
+tray icon owned by the same winit event loop. Closing the window keeps the
+app in the tray; the tray lists connected clients (with disconnect),
+toggles sharing and allows pairing. Sharing runs the host in-process
+(`HostControl` exposes status, clients, kick and pairing). `oriel host` on
+Windows is this app started hidden with sharing on.
+
+Development hosts run with `--update-from <dir>`: when a new `oriel.exe`
+appears there, the running copy renames its own files aside, copies the new
+build next to itself and relaunches. `dist/windows/run-host.bat` installs
+the build into `%LOCALAPPDATA%\oriel-dev` and starts it that way, so
+`scripts/build-windows.sh` deploys to the test PC without user action.
