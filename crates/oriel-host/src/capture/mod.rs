@@ -65,6 +65,24 @@ pub trait Capturer {
     fn cursor_shape(&mut self) -> Option<CursorShape>;
 }
 
+/// What to capture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Target {
+    /// A physical display (`None`: the primary one).
+    Display(Option<u32>),
+    /// A virtual monitor created for the client.
+    Virtual(oriel_proto::VirtualMode),
+}
+
+/// Whether this host can create virtual monitors.
+pub fn virtual_display_available(source: SourceKind) -> bool {
+    match source {
+        #[cfg(target_os = "linux")]
+        SourceKind::Auto => crate::gnome::GnomeSession::available(),
+        _ => false,
+    }
+}
+
 /// State shared between the test pattern source and its input sink.
 pub type TestState = Arc<Mutex<test_pattern::State>>;
 
@@ -103,23 +121,22 @@ pub fn set_display_mode(
     }
 }
 
-pub fn open(
-    source: SourceKind,
-    display: Option<u32>,
-    test: &TestState,
-) -> Result<Box<dyn Capturer>> {
+pub fn open(source: SourceKind, target: Target, test: &TestState) -> Result<Box<dyn Capturer>> {
     match source {
         #[cfg(windows)]
-        SourceKind::Auto => Ok(Box::new(dxgi::DxgiCapturer::open(display)?)),
+        SourceKind::Auto => match target {
+            Target::Display(display) => Ok(Box::new(dxgi::DxgiCapturer::open(display)?)),
+            Target::Virtual(_) => anyhow::bail!("virtual displays are not supported on this host"),
+        },
         #[cfg(target_os = "linux")]
         SourceKind::Auto => {
             if !crate::gnome::GnomeSession::available() {
                 anyhow::bail!("hosting on Linux needs a GNOME session for now");
             }
-            Ok(Box::new(pipewire::PipeWireCapturer::open(display)?))
+            Ok(Box::new(pipewire::PipeWireCapturer::open(target)?))
         }
         _ => {
-            let _ = display;
+            let _ = target;
             Ok(Box::new(test_pattern::TestPattern::new(test.clone())))
         }
     }

@@ -7,11 +7,11 @@ use std::{
 
 use anyhow::Result;
 use oriel_net::{ControlStream, read_msg, write_msg};
-use oriel_proto::{ClientMsg, Datagram, FrameHeader, HostMsg, InputEvent};
+use oriel_proto::{ClientMsg, Datagram, FrameHeader, HostMsg, InputEvent, VirtualMode};
 use tokio::sync::mpsc as tmpsc;
 
 use crate::{
-    capture::TestState,
+    capture::{Target, TestState},
     input,
     pipeline::{self, Cmd, Event, Shared},
     server::HostOptions,
@@ -40,6 +40,15 @@ pub async fn run(
     };
     tracing::info!(?settings, "starting stream");
 
+    // A virtual monitor replaces the chosen display while set.
+    let mut virtual_mode = settings.virtual_display;
+    if virtual_mode.is_some() && !crate::capture::virtual_display_available(options.source) {
+        virtual_mode = None;
+        ctl.send(&HostMsg::Notice {
+            text: "This host cannot create virtual displays".into(),
+        })
+        .await?;
+    }
     let shared = Arc::new(Shared::default());
     let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded();
     let (ev_tx, mut ev_rx) = tmpsc::unbounded_channel();
@@ -51,7 +60,10 @@ pub async fn run(
     let pipeline = pipeline::spawn(
         pipeline::Config {
             source: options.source,
-            display: settings.display,
+            target: match virtual_mode {
+                Some(mode) => Target::Virtual(mode),
+                None => Target::Display(settings.display),
+            },
             surface: 1,
             codecs,
             bitrate_kbps: if settings.bitrate_kbps == 0 {
@@ -77,7 +89,7 @@ pub async fn run(
 
     // The display mode chosen by the client, restored when dropped.
     let mut mode_guard: Option<crate::capture::ModeGuard> = None;
-    if let Some(res) = settings.resolution {
+    if let Some(res) = settings.resolution.filter(|_| virtual_mode.is_none()) {
         match crate::capture::set_display_mode(options.source, settings.display, res) {
             Ok(g) => mode_guard = Some(g),
             Err(e) => {
@@ -236,10 +248,35 @@ pub async fn run(
                         // A resolution change belongs to the previous display.
                         mode_guard = None;
                         display = Some(id);
-                        let _ = cmd_tx.send(Cmd::Display(id));
+                        virtual_mode = None;
+                        let _ = cmd_tx.send(Cmd::Target(Target::Display(display)));
+                    }
+                    Some(ClientMsg::SetVirtualDisplay { mode }) => {
+                        if mode.is_some() && !crate::capture::virtual_display_available(options.source) {
+                            write_msg(&mut ctl_send, &HostMsg::Notice {
+                                text: "This host cannot create virtual displays".into(),
+                            }).await?;
+                            continue;
+                        }
+                        // The physical display goes back to its own mode.
+                        mode_guard = None;
+                        virtual_mode = mode;
+                        let target = match mode {
+                            Some(m) => Target::Virtual(m),
+                            None => Target::Display(display),
+                        };
+                        let _ = cmd_tx.send(Cmd::Target(target));
                     }
                     Some(ClientMsg::SetCodecs { codecs, auto_codec }) => {
                         let _ = cmd_tx.send(Cmd::Codecs(codecs, auto_codec));
+                    }
+                    Some(ClientMsg::SetResolution { resolution }) if virtual_mode.is_some() => {
+                        // Resize the virtual monitor (None: leave it).
+                        if let (Some(m), Some((width, height))) = (virtual_mode, resolution) {
+                            let mode = VirtualMode { width, height, ..m };
+                            virtual_mode = Some(mode);
+                            let _ = cmd_tx.send(Cmd::Target(Target::Virtual(mode)));
+                        }
                     }
                     Some(ClientMsg::SetResolution { resolution }) => {
                         mode_guard = None;

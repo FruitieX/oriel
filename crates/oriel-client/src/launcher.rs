@@ -425,6 +425,10 @@ impl Launcher {
             codec: Some(prefs.codec_key),
             resolution: Some(format_resolution(prefs.resolution)),
             audio_device: prefs.audio_device,
+            virtual_display: prefs
+                .virtual_display
+                .as_ref()
+                .map(crate::config::format_virtual_mode),
         };
         let entry = self.config.hosts.entry(host.to_string()).or_default();
         if *entry != new {
@@ -450,6 +454,10 @@ impl Launcher {
                 pyrowave_kbps: c.pyrowave_kbps,
                 resolution: prefs.resolution.as_deref().and_then(parse_resolution),
                 audio_device: prefs.audio_device.clone(),
+                virtual_display: prefs
+                    .virtual_display
+                    .as_deref()
+                    .and_then(crate::config::parse_virtual_mode),
             },
             hardware_decode: true,
             shortcuts: c.bindings(),

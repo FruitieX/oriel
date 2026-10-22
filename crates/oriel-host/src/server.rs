@@ -239,6 +239,7 @@ impl Host {
                     .collect(),
                 _ => Vec::new(),
             },
+            virtual_display: capture::virtual_display_available(self.options.source),
         })
         .await?;
 
@@ -309,6 +310,7 @@ impl Host {
             displays: Vec::new(),
             codecs: Vec::new(),
             audio_devices: Vec::new(),
+            virtual_display: false,
         })
         .await?;
         if !pairing::pair_as_host(&mut ctl, &pin, &client_fp, &self.identity.fingerprint).await? {

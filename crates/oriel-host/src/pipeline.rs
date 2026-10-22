@@ -21,7 +21,7 @@ use crate::capture::{self, Capturer, Geometry, SourceKind, TestState};
 #[derive(Debug, Clone)]
 pub struct Config {
     pub source: SourceKind,
-    pub display: Option<u32>,
+    pub target: capture::Target,
     pub surface: SurfaceId,
     pub codecs: Vec<Codec>,
     pub bitrate_kbps: u32,
@@ -33,7 +33,8 @@ pub struct Config {
 
 pub enum Cmd {
     Keyframe,
-    Display(u32),
+    /// Capture this target instead (display switch, virtual monitor).
+    Target(capture::Target),
     Codecs(Vec<Codec>, bool),
     Bitrate(u32),
     Stop,
@@ -200,7 +201,7 @@ impl Pipeline {
     fn open_capturer(&mut self) -> Result<Option<Box<dyn Capturer>>> {
         let mut failures = 0u32;
         loop {
-            match capture::open(self.config.source, self.config.display, &self.test) {
+            match capture::open(self.config.source, self.config.target, &self.test) {
                 Ok(c) => {
                     if failures > 0 {
                         self.send(Event::Notice("Capture resumed".into()))?;
@@ -342,9 +343,9 @@ impl Pipeline {
                             return Ok(Flow::Reencode);
                         }
                     }
-                    Cmd::Display(id) => {
-                        if self.config.display != Some(id) {
-                            self.config.display = Some(id);
+                    Cmd::Target(target) => {
+                        if self.config.target != target {
+                            self.config.target = target;
                             return Ok(Flow::Continue);
                         }
                     }

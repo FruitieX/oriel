@@ -37,6 +37,11 @@ Read [docs/architecture.md](docs/architecture.md) first.
   `--screenshot path.png`; `ORIEL_DEBUG_MENU=1` opens the menu at start.
 - Machines without a sound card: point `HOME` at a directory whose
   `.asoundrc` sets `pcm.!default { type null }`.
+- Headless GNOME host: run `gnome-shell --headless --wayland
+  --virtual-monitor 1920x1080`, `pipewire` and `wireplumber` from
+  `nix shell nixpkgs#gnome-shell nixpkgs#pipewire nixpkgs#wireplumber
+  nixpkgs#dbus -c dbus-run-session -- <script>` (tools from the dev shell
+  mismatch Mutter: "Could not connect: Invalid argument").
 - Gamepads: the uinput tests (`gamepad` in oriel-host and oriel-client)
   need write access to `/dev/uinput` and skip without it. honeydew has
   none; run the test binaries as root on a machine that does.

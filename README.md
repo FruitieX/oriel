@@ -21,6 +21,10 @@ display) and the client (connects to hosts).
   with rumble, while the viewer has focus. Windows hosts need the
   [ViGEmBus](https://github.com/nefarius/ViGEmBus/releases) driver; Linux
   hosts need write access to `/dev/uinput`.
+- Use the client as an extra display: the host creates a virtual monitor
+  in the mode you pick in the menu (default: the client's screen). GNOME
+  hosts for now. The client draws the host's cursor when the host's own
+  mouse moves it onto that display.
 - Shortcuts for the menu, fullscreen, next/previous display, statistics and
   disconnecting; rebind them in Settings → Input.
 - Codecs: HEVC/H.264/AV1 through FFmpeg, and

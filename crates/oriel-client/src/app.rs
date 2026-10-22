@@ -11,7 +11,7 @@ use std::{
 use anyhow::Result;
 use oriel_proto::{
     ClientMsg, CursorShape, CursorState, HostMsg, InputEvent, MouseButton, StreamSettings,
-    SurfaceInfo,
+    SurfaceInfo, VirtualMode,
 };
 use parking_lot::Mutex;
 use winit::{
@@ -68,6 +68,8 @@ pub struct ViewerPrefs {
     pub resolution: Option<(u32, u32)>,
     /// The host output being heard (`None`: the host's default).
     pub audio_device: Option<String>,
+    /// Streaming a virtual monitor in this mode.
+    pub virtual_display: Option<VirtualMode>,
 }
 
 /// Why the viewer window went away.
@@ -112,6 +114,7 @@ pub fn run(
     viewer.displays = connected.displays;
     viewer.host_codecs = connected.codecs;
     viewer.audio_devices = connected.audio_devices;
+    viewer.virtual_ok = connected.virtual_display;
     event_loop.run_app_on_demand(&mut viewer)?;
     session.close();
     rt.block_on(async {
@@ -123,6 +126,7 @@ pub fn run(
         codec_key: viewer.codec_key.clone(),
         resolution: viewer.resolution,
         audio_device: viewer.audio_device.clone(),
+        virtual_display: viewer.virtual_mode,
     };
     Ok((viewer.exit.take().unwrap_or(ViewerExit::Closed), prefs))
 }
@@ -189,6 +193,9 @@ struct Viewer {
     host_codecs: Vec<oriel_proto::Codec>,
     audio_devices: Vec<oriel_proto::AudioDevice>,
     audio_device: Option<String>,
+    /// The host can create a virtual monitor for this window.
+    virtual_ok: bool,
+    virtual_mode: Option<VirtualMode>,
     codec_key: String,
     resolution: Option<(u32, u32)>,
     fullscreen: bool,
@@ -243,6 +250,8 @@ impl Viewer {
             host_codecs: Vec::new(),
             audio_devices: Vec::new(),
             audio_device: options.settings.audio_device.clone(),
+            virtual_ok: false,
+            virtual_mode: options.settings.virtual_display,
             codec_key: options.codec_key.clone(),
             resolution: options.settings.resolution,
             fullscreen: options.fullscreen,
@@ -528,6 +537,19 @@ impl Viewer {
     }
 
     /// Switch to the next (`step` 1) or previous (-1) host display.
+    /// The mode of the monitor this window is on.
+    fn monitor_mode(&self) -> Option<VirtualMode> {
+        let monitor = self.window()?.current_monitor()?;
+        let size = monitor.size();
+        Some(VirtualMode {
+            width: size.width,
+            height: size.height,
+            refresh_hz: monitor
+                .refresh_rate_millihertz()
+                .map_or(60, |mhz| (mhz + 500) / 1000),
+        })
+    }
+
     fn cycle_display(&mut self, step: isize) {
         let n = self.displays.len();
         if n < 2 {
@@ -723,7 +745,13 @@ impl Viewer {
                     .send(ClientMsg::SetBitrate { kbps: mbps * 1000 });
             }
             Action::SecureAttention => self.session.input(InputEvent::SecureAttention),
+            Action::SetVirtualDisplay(mode) => {
+                self.virtual_mode = mode;
+                self.sized_window = false;
+                self.session.send(ClientMsg::SetVirtualDisplay { mode });
+            }
             Action::SelectDisplay(id) => {
+                self.virtual_mode = None;
                 self.display = Some(id);
                 self.sized_window = false;
                 self.session.send(ClientMsg::SelectDisplay { id });
@@ -749,6 +777,7 @@ enum Action {
     SetCodec(String),
     SetResolution(Option<(u32, u32)>),
     SetAudioDevice(Option<String>),
+    SetVirtualDisplay(Option<VirtualMode>),
     Disconnect,
 }
 
@@ -775,6 +804,10 @@ struct OverlayState {
     /// Host outputs to choose from (empty without sound).
     audio_devices: Vec<(String, String)>,
     audio_device: Option<String>,
+    virtual_ok: bool,
+    virtual_mode: Option<VirtualMode>,
+    /// This window's monitor, the default mode for a virtual display.
+    monitor_mode: Option<VirtualMode>,
 }
 
 impl From<&Viewer> for OverlayState {
@@ -798,7 +831,11 @@ impl From<&Viewer> for OverlayState {
                 .map_or("", |g| g.renderer.adapter_info.as_str()),
         );
         drop(s);
-        let remote_cursor = (v.relative() && v.host_cursor.is_some_and(|c| c.visible))
+        // Draw the host's cursor ourselves when the local pointer is not
+        // showing it: in relative mode, or when the host's own mouse moves
+        // it (e.g. onto an extra display) while ours is elsewhere.
+        let local_pointer = v.pointer.is_some() && v.focused && !v.relative();
+        let remote_cursor = (!local_pointer && v.host_cursor.is_some_and(|c| c.visible))
             .then(|| {
                 let c = v.host_cursor?;
                 let tex = v.egui_cursors.get(&c.shape)?;
@@ -887,6 +924,9 @@ impl From<&Viewer> for OverlayState {
                 Vec::new()
             },
             audio_device: v.audio_device.clone(),
+            virtual_ok: v.virtual_ok,
+            virtual_mode: v.virtual_mode,
+            monitor_mode: v.monitor_mode(),
         }
     }
 }
@@ -992,7 +1032,7 @@ fn overlay(ctx: &egui::Context, s: &OverlayState, viewport: Option<Viewport>) ->
                     .get(command)
                     .map_or_else(String::new, |k| format!("Shortcut: {k}"))
             };
-            if s.displays.len() > 1 {
+            if s.displays.len() > 1 || s.virtual_ok {
                 ui.horizontal(|ui| {
                     ui.label("Display:").on_hover_text(
                         match (
@@ -1006,10 +1046,92 @@ fn overlay(ctx: &egui::Context, s: &OverlayState, viewport: Option<Viewport>) ->
                         },
                     );
                     for (id, name) in &s.displays {
-                        if ui.selectable_label(s.display == Some(*id), name).clicked() {
+                        let selected = s.virtual_mode.is_none() && s.display == Some(*id);
+                        if ui.selectable_label(selected, name).clicked() {
                             actions.push(Action::SelectDisplay(*id));
                         }
                     }
+                    if s.virtual_ok
+                        && ui
+                            .selectable_label(s.virtual_mode.is_some(), "Extra display")
+                            .on_hover_text(
+                                "Extend the host's desktop with a new monitor shown here",
+                            )
+                            .clicked()
+                        && s.virtual_mode.is_none()
+                    {
+                        let mode = s.monitor_mode.unwrap_or(VirtualMode {
+                            width: 1920,
+                            height: 1080,
+                            refresh_hz: 60,
+                        });
+                        actions.push(Action::SetVirtualDisplay(Some(mode)));
+                    }
+                });
+            }
+            if let Some(mode) = s.virtual_mode {
+                ui.horizontal(|ui| {
+                    ui.label("Extra display:");
+                    let mut sizes = vec![
+                        (1280, 720),
+                        (1600, 900),
+                        (1920, 1080),
+                        (2560, 1440),
+                        (3840, 2160),
+                    ];
+                    let mut rates = vec![30, 60, 75, 90, 120, 144, 165, 240];
+                    if let Some(m) = s.monitor_mode {
+                        sizes.push((m.width, m.height));
+                        rates.push(m.refresh_hz);
+                    }
+                    sizes.push((mode.width, mode.height));
+                    rates.push(mode.refresh_hz);
+                    sizes.sort_by_key(|(w, h)| w * h);
+                    sizes.dedup();
+                    rates.sort();
+                    rates.dedup();
+                    let native = |w, h| {
+                        s.monitor_mode
+                            .is_some_and(|m| (m.width, m.height) == (w, h))
+                    };
+                    egui::ComboBox::from_id_salt("virtual-size")
+                        .selected_text(format!("{}×{}", mode.width, mode.height))
+                        .show_ui(ui, |ui| {
+                            for (w, h) in sizes {
+                                let label = if native(w, h) {
+                                    format!("{w}×{h} (this screen)")
+                                } else {
+                                    format!("{w}×{h}")
+                                };
+                                if ui
+                                    .selectable_label((mode.width, mode.height) == (w, h), label)
+                                    .clicked()
+                                    && (mode.width, mode.height) != (w, h)
+                                {
+                                    actions.push(Action::SetVirtualDisplay(Some(VirtualMode {
+                                        width: w,
+                                        height: h,
+                                        ..mode
+                                    })));
+                                }
+                            }
+                        });
+                    egui::ComboBox::from_id_salt("virtual-rate")
+                        .selected_text(format!("{} Hz", mode.refresh_hz))
+                        .show_ui(ui, |ui| {
+                            for hz in rates {
+                                if ui
+                                    .selectable_label(mode.refresh_hz == hz, format!("{hz} Hz"))
+                                    .clicked()
+                                    && mode.refresh_hz != hz
+                                {
+                                    actions.push(Action::SetVirtualDisplay(Some(VirtualMode {
+                                        refresh_hz: hz,
+                                        ..mode
+                                    })));
+                                }
+                            }
+                        });
                 });
             }
             if s.codec_choices.len() > 1 {
@@ -1024,7 +1146,7 @@ fn overlay(ctx: &egui::Context, s: &OverlayState, viewport: Option<Viewport>) ->
                     }
                 });
             }
-            if !s.modes.is_empty() {
+            if !s.modes.is_empty() && s.virtual_mode.is_none() {
                 ui.horizontal(|ui| {
                     ui.label("Resolution:");
                     let label = |r: Option<(u32, u32)>| match r {

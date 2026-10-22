@@ -54,6 +54,22 @@ pub struct HostPrefs {
     pub resolution: Option<String>,
     /// The host output to hear; unset follows the host's default.
     pub audio_device: Option<String>,
+    /// Use this window as an extra display of the host, "WIDTHxHEIGHT@HZ".
+    pub virtual_display: Option<String>,
+}
+
+pub fn parse_virtual_mode(s: &str) -> Option<oriel_proto::VirtualMode> {
+    let (size, hz) = s.split_once('@')?;
+    let (width, height) = parse_resolution(size)?;
+    Some(oriel_proto::VirtualMode {
+        width,
+        height,
+        refresh_hz: hz.trim().parse().ok()?,
+    })
+}
+
+pub fn format_virtual_mode(m: &oriel_proto::VirtualMode) -> String {
+    format!("{}x{}@{}", m.width, m.height, m.refresh_hz)
 }
 
 /// The codec choices offered in the UI, as (key, label).

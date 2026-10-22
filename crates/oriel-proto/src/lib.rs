@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 pub mod keys;
 
 pub const ALPN: &[u8] = b"oriel/1";
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 5;
 pub const DEFAULT_PORT: u16 = 48600;
 /// Upper bound for a single control/input message.
 pub const MAX_MESSAGE_LEN: usize = 4 * 1024 * 1024;
@@ -57,6 +57,14 @@ pub struct DisplayInfo {
     pub modes: Vec<(u32, u32)>,
 }
 
+/// A monitor the host creates for the client (extending its desktop).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VirtualMode {
+    pub width: u32,
+    pub height: u32,
+    pub refresh_hz: u32,
+}
+
 /// A host sound output that can be streamed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AudioDevice {
@@ -86,6 +94,8 @@ pub struct StreamSettings {
     /// The host output whose sound is streamed (an [`AudioDevice::id`]);
     /// `None` follows the host's default output.
     pub audio_device: Option<String>,
+    /// Stream a new virtual monitor in this mode instead of `display`.
+    pub virtual_display: Option<VirtualMode>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -137,6 +147,11 @@ pub enum ClientMsg {
     SetAudioDevice {
         id: Option<String>,
     },
+    /// Switch to a virtual monitor in this mode (or change its mode), or
+    /// with `None` back to the physical display.
+    SetVirtualDisplay {
+        mode: Option<VirtualMode>,
+    },
     Ping {
         id: u64,
     },
@@ -162,6 +177,8 @@ pub enum HostMsg {
         codecs: Vec<Codec>,
         /// Sound outputs the client can choose to hear.
         audio_devices: Vec<AudioDevice>,
+        /// The host can create virtual monitors.
+        virtual_display: bool,
     },
     Pair(PairMsg),
     PairResult {

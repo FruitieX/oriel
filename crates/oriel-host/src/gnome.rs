@@ -19,7 +19,10 @@ use zbus::{
     zvariant::{OwnedObjectPath, OwnedValue, Value},
 };
 
-use crate::capture::Geometry;
+use crate::capture::{Geometry, Target};
+
+/// The running session and what it captures.
+static CURRENT: Mutex<Option<(Target, Weak<GnomeSession>)>> = Mutex::new(None);
 
 #[proxy(
     interface = "org.gnome.Mutter.RemoteDesktop",
@@ -68,6 +71,8 @@ trait ScreenCastSession {
         connector: &str,
         properties: HashMap<&str, Value<'_>>,
     ) -> zbus::Result<OwnedObjectPath>;
+    fn record_virtual(&self, properties: HashMap<&str, Value<'_>>)
+    -> zbus::Result<OwnedObjectPath>;
 }
 
 #[proxy(
@@ -145,22 +150,29 @@ impl GnomeSession {
             || std::env::var_os("ORIEL_FORCE_GNOME").is_some()
     }
 
-    /// The shared session for `display`, created on first use.
-    pub fn shared(display: Option<u32>) -> Result<Arc<Self>> {
-        static CURRENT: Mutex<Option<(Option<u32>, Weak<GnomeSession>)>> = Mutex::new(None);
+    /// The shared session for `target`, created on first use. Asking for
+    /// `Display(None)` reuses whatever session is running.
+    pub fn shared(target: Target) -> Result<Arc<Self>> {
         let mut current = CURRENT.lock();
-        if let Some((d, weak)) = current.as_ref()
-            && (display.is_none() || *d == display)
+        if let Some((t, weak)) = current.as_ref()
+            && (target == Target::Display(None) || *t == target)
             && let Some(s) = weak.upgrade()
         {
             return Ok(s);
         }
-        let session = Arc::new(Self::start(display)?);
-        *current = Some((display, Arc::downgrade(&session)));
+        // The old session (another display) ends when its users drop it.
+        *current = None;
+        let session = Arc::new(Self::start(target)?);
+        *current = Some((target, Arc::downgrade(&session)));
         Ok(session)
     }
 
-    fn start(display: Option<u32>) -> Result<Self> {
+    /// The running session, if any.
+    pub fn current() -> Option<Arc<Self>> {
+        CURRENT.lock().as_ref()?.1.upgrade()
+    }
+
+    fn start(target: Target) -> Result<Self> {
         // A worker thread, so the input task runs on its own.
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
@@ -170,9 +182,11 @@ impl GnomeSession {
         let (rd, node_id, geometry, connector, rd_for_input) = rt.block_on(async {
             let conn = Connection::session().await.context("connect to the session bus")?;
             let monitors = monitors(&conn).await?;
-            let monitor = match display {
-                Some(i) => monitors.get(i as usize).cloned().with_context(|| format!("no display {i}"))?,
-                None => monitors.first().cloned().context("no monitors")?,
+            let monitor = match target {
+                Target::Display(Some(i)) => {
+                    monitors.get(i as usize).cloned().with_context(|| format!("no display {i}"))?
+                }
+                _ => monitors.first().cloned().context("no monitors")?,
             };
             let rd = RemoteDesktopProxy::new(&conn).await?;
             let rd_path = rd
@@ -188,10 +202,24 @@ impl GnomeSession {
                 .context("create a Mutter screen cast session")?;
             let sc_session = ScreenCastSessionProxy::builder(&conn).path(sc_path)?.build().await?;
             // cursor-mode 2: the cursor travels as stream metadata.
-            let stream_path = sc_session
-                .record_monitor(&monitor.connector, HashMap::from([("cursor-mode", Value::U32(2))]))
-                .await
-                .with_context(|| format!("record monitor {}", monitor.connector))?;
+            let stream_path = match target {
+                Target::Virtual(mode) => {
+                    // A platform monitor behaves like a real one (it can be
+                    // arranged and holds windows).
+                    tracing::info!(?mode, "creating a virtual monitor");
+                    sc_session
+                        .record_virtual(HashMap::from([
+                            ("cursor-mode", Value::U32(2)),
+                            ("is-platform", Value::Bool(true)),
+                        ]))
+                        .await
+                        .context("create a virtual monitor")?
+                }
+                Target::Display(_) => sc_session
+                    .record_monitor(&monitor.connector, HashMap::from([("cursor-mode", Value::U32(2))]))
+                    .await
+                    .with_context(|| format!("record monitor {}", monitor.connector))?,
+            };
             let stream = ScreenCastStreamProxy::builder(&conn)
                 .path(stream_path.clone())?
                 .build()
@@ -205,8 +233,12 @@ impl GnomeSession {
                 .args()?
                 .node_id;
             let params = stream.parameters().await.unwrap_or_default();
-            let (left, top) = pair(&params, "position").unwrap_or((monitor.x, monitor.y));
-            let (width, height) = pair(&params, "size").unwrap_or((monitor.width as i32, monitor.height as i32));
+            let fallback = match target {
+                Target::Virtual(m) => (0, 0, m.width as i32, m.height as i32),
+                Target::Display(_) => (monitor.x, monitor.y, monitor.width as i32, monitor.height as i32),
+            };
+            let (left, top) = pair(&params, "position").unwrap_or((fallback.0, fallback.1));
+            let (width, height) = pair(&params, "size").unwrap_or((fallback.2, fallback.3));
             tracing::info!(connector = %monitor.connector, node_id, width, height, "GNOME screen cast started");
             let geometry = Geometry {
                 left,

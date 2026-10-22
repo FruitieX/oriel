@@ -19,6 +19,8 @@ pub struct Connected {
     pub codecs: Vec<oriel_proto::Codec>,
     /// Host sound outputs the user can choose from.
     pub audio_devices: Vec<oriel_proto::AudioDevice>,
+    /// The host can create virtual monitors.
+    pub virtual_display: bool,
 }
 
 /// Resolve `host[:port]` (IPv6 addresses with a port go in brackets).
@@ -103,6 +105,7 @@ pub async fn connect(paths: &Paths, target: &str) -> Result<Connected> {
             displays,
             codecs,
             audio_devices,
+            virtual_display,
         } => {
             if protocol != PROTOCOL_VERSION {
                 bail!("host speaks protocol {protocol}, this client {PROTOCOL_VERSION}");
@@ -121,6 +124,7 @@ pub async fn connect(paths: &Paths, target: &str) -> Result<Connected> {
                 displays,
                 codecs,
                 audio_devices,
+                virtual_display,
             })
         }
         HostMsg::Rejected { reason } => bail!("host refused the connection: {reason}"),

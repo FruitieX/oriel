@@ -384,6 +384,11 @@ fn run() -> Result<()> {
                 pyrowave_kbps: pyrowave_bitrate.unwrap_or(file.pyrowave_kbps),
                 resolution: None,
                 audio_device: file.hosts.get(&host).and_then(|p| p.audio_device.clone()),
+                virtual_display: file
+                    .hosts
+                    .get(&host)
+                    .and_then(|p| p.virtual_display.as_deref())
+                    .and_then(oriel_client::config::parse_virtual_mode),
             };
             let codec_key = if auto_codec {
                 "auto".to_string()

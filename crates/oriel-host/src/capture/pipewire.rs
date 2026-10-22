@@ -44,8 +44,12 @@ pub struct PipeWireCapturer {
 }
 
 impl PipeWireCapturer {
-    pub fn open(display: Option<u32>) -> Result<Self> {
-        let session = GnomeSession::shared(display)?;
+    pub fn open(target: super::Target) -> Result<Self> {
+        let session = GnomeSession::shared(target)?;
+        let mode = match target {
+            super::Target::Virtual(mode) => Some(mode),
+            super::Target::Display(_) => None,
+        };
         let shared: Shared = Default::default();
         let (quit_tx, quit_rx) = pw::channel::channel::<()>();
         let node_id = session.node_id;
@@ -53,7 +57,7 @@ impl PipeWireCapturer {
         let thread = std::thread::Builder::new()
             .name("oriel-pipewire".into())
             .spawn(move || {
-                if let Err(e) = run_stream(node_id, thread_shared.clone(), quit_rx) {
+                if let Err(e) = run_stream(node_id, mode, thread_shared.clone(), quit_rx) {
                     tracing::error!("PipeWire capture failed: {e:#}");
                     let (latest, cv) = &*thread_shared;
                     latest.lock().error = Some(format!("{e:#}"));
@@ -157,7 +161,14 @@ impl Capturer for PipeWireCapturer {
 const CURSOR_META_SIZE: usize =
     size_of::<spa::sys::spa_meta_cursor>() + size_of::<spa::sys::spa_meta_bitmap>() + 256 * 256 * 4;
 
-fn run_stream(node_id: u32, shared: Shared, quit: pw::channel::Receiver<()>) -> Result<()> {
+/// Capture node `node_id`. For a virtual monitor, `mode` fixes its size and
+/// refresh rate (Mutter sizes the monitor from the negotiated format).
+fn run_stream(
+    node_id: u32,
+    mode: Option<oriel_proto::VirtualMode>,
+    shared: Shared,
+    quit: pw::channel::Receiver<()>,
+) -> Result<()> {
     pw::init();
     let mainloop = pw::main_loop::MainLoopRc::new(None)?;
     let context = pw::context::ContextRc::new(&mainloop, None)?;
@@ -242,7 +253,81 @@ fn run_stream(node_id: u32, shared: Shared, quit: pw::channel::Receiver<()>) -> 
         })
         .register()?;
 
-    let format = pod_bytes(spa::pod::Value::Object(spa::pod::object!(
+    let format = match mode {
+        Some(mode) => virtual_format(mode),
+        None => monitor_format(),
+    };
+    let mut params = [spa::pod::Pod::from_bytes(&format).unwrap()];
+    stream.connect(
+        spa::utils::Direction::Input,
+        Some(node_id),
+        pw::stream::StreamFlags::AUTOCONNECT | pw::stream::StreamFlags::MAP_BUFFERS,
+        &mut params,
+    )?;
+    mainloop.run();
+    Ok(())
+}
+
+/// A virtual monitor's format: exactly this size and rate.
+fn virtual_format(mode: oriel_proto::VirtualMode) -> Vec<u8> {
+    pod_bytes(spa::pod::Value::Object(spa::pod::object!(
+        spa::utils::SpaTypes::ObjectParamFormat,
+        spa::param::ParamType::EnumFormat,
+        spa::pod::property!(
+            spa::param::format::FormatProperties::MediaType,
+            Id,
+            spa::param::format::MediaType::Video
+        ),
+        spa::pod::property!(
+            spa::param::format::FormatProperties::MediaSubtype,
+            Id,
+            spa::param::format::MediaSubtype::Raw
+        ),
+        spa::pod::property!(
+            spa::param::format::FormatProperties::VideoFormat,
+            Choice,
+            Enum,
+            Id,
+            spa::param::video::VideoFormat::BGRx,
+            spa::param::video::VideoFormat::BGRx,
+            spa::param::video::VideoFormat::BGRA,
+        ),
+        spa::pod::property!(
+            spa::param::format::FormatProperties::VideoSize,
+            Rectangle,
+            spa::utils::Rectangle {
+                width: mode.width,
+                height: mode.height
+            }
+        ),
+        // Variable frame rate (as Mutter offers it); the maximum becomes
+        // the monitor's refresh rate.
+        spa::pod::property!(
+            spa::param::format::FormatProperties::VideoFramerate,
+            Fraction,
+            spa::utils::Fraction { num: 0, denom: 1 }
+        ),
+        spa::pod::property!(
+            spa::param::format::FormatProperties::VideoMaxFramerate,
+            Choice,
+            Range,
+            Fraction,
+            spa::utils::Fraction {
+                num: mode.refresh_hz,
+                denom: 1
+            },
+            spa::utils::Fraction { num: 0, denom: 1 },
+            spa::utils::Fraction {
+                num: mode.refresh_hz,
+                denom: 1
+            }
+        ),
+    )))
+}
+
+/// A monitor's format: whatever size it has, any rate.
+fn monitor_format() -> Vec<u8> {
+    pod_bytes(spa::pod::Value::Object(spa::pod::object!(
         spa::utils::SpaTypes::ObjectParamFormat,
         spa::param::ParamType::EnumFormat,
         spa::pod::property!(
@@ -294,16 +379,7 @@ fn run_stream(node_id: u32, shared: Shared, quit: pw::channel::Receiver<()>) -> 
                 denom: 1
             }
         ),
-    )));
-    let mut params = [spa::pod::Pod::from_bytes(&format).unwrap()];
-    stream.connect(
-        spa::utils::Direction::Input,
-        Some(node_id),
-        pw::stream::StreamFlags::AUTOCONNECT | pw::stream::StreamFlags::MAP_BUFFERS,
-        &mut params,
-    )?;
-    mainloop.run();
-    Ok(())
+    )))
 }
 
 fn pod_bytes(value: spa::pod::Value) -> Vec<u8> {

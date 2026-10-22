@@ -73,6 +73,13 @@ sound is a PipeWire capture of the default sink, or of the sink the client
 chose (`target.object`). Other desktops would use
 xdg-desktop-portal (ScreenCast + RemoteDesktop) behind the same interfaces.
 
+Virtual monitors (the client as an extra display) use `RecordVirtual` with
+`is-platform`, so the monitor behaves like a real one. Mutter sizes it from
+the negotiated PipeWire format: a fixed `VideoSize` and a variable frame
+rate (0/1) whose `maxFramerate` becomes its refresh rate (asking for a fixed
+rate fails with "no more input formats"). Input follows whichever session
+is current, so it moves with display switches.
+
 Testing without a desktop: run PipeWire, WirePlumber (plus a null sink for
 audio) and `gnome-shell --headless --wayland --virtual-monitor 1920x1080`
 inside `dbus-run-session`, then `oriel host` there (`XDG_CURRENT_DESKTOP=GNOME`).
