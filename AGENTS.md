@@ -29,7 +29,9 @@ Read [docs/architecture.md](docs/architecture.md) first.
   input it receives (F9 toggles the "captured cursor" state).
 - Use separate `ORIEL_CONFIG_DIR`s for host and client on one machine.
 - `oriel connect <host> --headless N` streams without a window and prints
-  stats once a second.
+  stats once a second. It moves the host's mouse to exercise input; set
+  `ORIEL_HEADLESS_STILL=1` against a real desktop, where hover effects
+  would otherwise keep the screen changing.
 - The window can be tested under a headless Weston
   (`weston --backend=headless --renderer=gl --socket=...`) with
   `--screenshot path.png`; `ORIEL_DEBUG_MENU=1` opens the menu at start.

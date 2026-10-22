@@ -47,6 +47,7 @@ pub async fn run(
     let mut frames = 0u64;
     let mut last_report = Instant::now();
     let mut wiggle = 0i32;
+    let still = std::env::var_os("ORIEL_HEADLESS_STILL").is_some();
     // Debugging aid: press this HID usage (hex) once, two seconds in.
     let mut press: Option<u16> = std::env::var("ORIEL_DEBUG_PRESS")
         .ok()
@@ -84,12 +85,16 @@ pub async fn run(
             s.input(InputEvent::Key { usage, down: false });
         }
         // Exercise the input path: the test pattern draws the pointer.
-        wiggle += 1;
-        s.input(InputEvent::MouseMove {
-            surface: 1,
-            x: 400 + (wiggle % 200),
-            y: 300,
-        });
+        // ORIEL_HEADLESS_STILL keeps the host's mouse still (on a real
+        // desktop, hover effects would keep the screen changing).
+        if !still {
+            wiggle += 1;
+            s.input(InputEvent::MouseMove {
+                surface: 1,
+                x: 400 + (wiggle % 200),
+                y: 300,
+            });
+        }
         if last_report.elapsed() >= Duration::from_secs(1) {
             let summary = s.stats.lock().summary();
             let st = s.stats.lock();

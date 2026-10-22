@@ -90,7 +90,12 @@ own matrix and range. `ORIEL_NO_ZERO_COPY=1` forces the copying paths.
 
 The Windows host sends nothing while the screen is unchanged: Desktop
 Duplication reports a frame for every present, so presents without dirty or
-move rectangles are skipped. The window cursor is set to the host's cursor image; in relative mode
+move rectangles are skipped. Once the screen has been still for 150 ms the
+host encodes the unchanged image 30 more times: each P-frame refines the
+previous lossy one (about +5 dB on text after scrolling; a keyframe under
+the same rate control is far worse). PyroWave frames need no refresh.
+Audio stops after 100 ms of digital silence without advancing the sequence
+number, so the client sees no loss and simply re-primes its buffer. The window cursor is set to the host's cursor image; in relative mode
 the pointer is locked and raw motion is sent.
 
 ## PyroWave and automatic codec switching

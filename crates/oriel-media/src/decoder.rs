@@ -679,3 +679,93 @@ mod tests {
         assert_eq!(decoded, 5, "decoder must not buffer frames");
     }
 }
+
+#[cfg(all(test, target_os = "linux"))]
+mod refine_tests {
+    use super::*;
+    use crate::{EncoderConfig, EncoderInput, HwDevice, encoder::Encoder};
+
+    /// Text-like page: rows of glyphs drawn from a small random font.
+    fn page(w: usize, h: usize, scroll: usize) -> Vec<u8> {
+        let mut font = [[0u8; 54]; 64];
+        let mut x = 12345u32;
+        for g in font.iter_mut() {
+            for b in g.iter_mut() {
+                x ^= x << 13;
+                x ^= x >> 17;
+                x ^= x << 5;
+                *b = (x % 3 == 0) as u8;
+            }
+        }
+        let mut bgra = vec![255u8; w * h * 4];
+        for row in 0..h {
+            let y = row + scroll;
+            let (line, gy) = (y / 14, y % 14);
+            for col in 0..w {
+                let (cell, gx) = (col / 8, col % 8);
+                if gy < 9 && gx < 6 {
+                    let glyph = (line * 131 + cell * 17) % 64;
+                    if font[glyph][gy * 6 + gx] == 1 {
+                        bgra[(row * w + col) * 4..][..3].copy_from_slice(&[30, 30, 30]);
+                    }
+                }
+            }
+        }
+        bgra
+    }
+
+    fn psnr(frame: &DecodedFrame, bgra: &[u8], w: usize, h: usize) -> f64 {
+        let (y, stride) = frame.plane(0);
+        let mut se = 0f64;
+        for row in 0..h {
+            for col in 0..w {
+                let expect = 16.0 + bgra[(row * w + col) * 4] as f64 * 219.0 / 255.0;
+                let d = y[row * stride + col] as f64 - expect;
+                se += d * d;
+            }
+        }
+        10.0 * (255.0f64 * 255.0 / (se / (w * h) as f64)).log10()
+    }
+
+    /// Re-encoding an unchanged image should sharpen it (the host sends a
+    /// few such frames once the screen stops changing).
+    #[test]
+    fn repeated_frames_refine_quality() {
+        {
+            let (encoder, codec) = ("hevc_vaapi", Codec::Hevc);
+            let (w, h) = (1280usize, 720usize);
+            let config = EncoderConfig {
+                codec,
+                width: w as u32,
+                height: h as u32,
+                fps: 120,
+                bitrate_kbps: 12_000,
+                device: HwDevice::None,
+                encoder: Some(encoder.into()),
+            };
+            let Ok(mut enc) = Encoder::open(&config) else {
+                eprintln!("skipping: no {encoder}");
+                return;
+            };
+            let mut dec = Decoder::open(codec, w as u32, h as u32, false).unwrap();
+            let mut results = Vec::new();
+            // Scroll for 20 frames, then stop for as many refresh frames as
+            // the host sends.
+            for n in 0..20 + 30usize {
+                let bgra = page(w, h, 40 * n.min(20));
+                let input = EncoderInput::Bgra {
+                    data: &bgra,
+                    stride: w * 4,
+                };
+                let out = enc.encode(input, n == 0).unwrap().unwrap();
+                let frame = dec.decode(&out.data).unwrap().unwrap();
+                if n >= 20 && (n - 20) % 5 == 0 {
+                    results.push((psnr(&frame, &bgra, w, h), out.data.len() / 1024));
+                }
+            }
+            eprintln!("{encoder} (last moving frame, then static): {results:.1?}");
+            let (first, last) = (results[0].0, results.last().unwrap().0);
+            assert!(last > first + 2.0, "{first:.1} dB → {last:.1} dB");
+        }
+    }
+}

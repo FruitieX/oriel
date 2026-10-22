@@ -171,6 +171,10 @@ enum Flow {
 
 /// RTT below which PyroWave is worth trying in automatic codec mode.
 const PYROWAVE_MAX_RTT: Duration = Duration::from_millis(3);
+/// Refresh frames sent once the screen is still (see `stream`), and how
+/// long it must be still first.
+const REFRESH_FRAMES: u32 = 30;
+const REFRESH_AFTER: Duration = Duration::from_millis(150);
 
 /// Automatic codec switching state.
 struct AutoCodec {
@@ -295,6 +299,11 @@ impl Pipeline {
         let mut capture_time = Instant::now();
         let mut has_frame = false;
         let mut dirty = false;
+        // Once the screen stops changing, the image is encoded a few more
+        // times: each P-frame refines the last, lossy one (+5 dB on text
+        // after scrolling). PyroWave frames are complete already.
+        let mut last_change = Instant::now();
+        let mut refreshes_left = 0u32;
         let mut force_key = true;
         let mut cursor_state: Option<CursorState> = None;
         let mut shape_id = 0u64;
@@ -346,6 +355,10 @@ impl Pipeline {
                 Duration::from_millis(1)
             } else if has_frame && (dirty || force_key) {
                 next_slot.saturating_duration_since(now)
+            } else if has_frame && refreshes_left > 0 {
+                next_slot
+                    .max(last_change + REFRESH_AFTER)
+                    .saturating_duration_since(now)
             } else {
                 Duration::from_millis(16)
             };
@@ -353,6 +366,12 @@ impl Pipeline {
                 Ok(true) => {
                     has_frame = true;
                     dirty = true;
+                    last_change = Instant::now();
+                    refreshes_left = if codec == Codec::PyroWave {
+                        0
+                    } else {
+                        REFRESH_FRAMES
+                    };
                     capture_time = Instant::now();
                     window_captured += 1;
                 }
@@ -436,7 +455,8 @@ impl Pipeline {
             }
 
             blocked = false;
-            if !(has_frame && (dirty || force_key)) || Instant::now() < next_slot {
+            let refresh = !dirty && refreshes_left > 0 && last_change.elapsed() >= REFRESH_AFTER;
+            if !(has_frame && (dirty || force_key || refresh)) || Instant::now() < next_slot {
                 continue;
             }
             let rtt = self.rtt();
@@ -496,6 +516,9 @@ impl Pipeline {
                     }
                     self.send(Event::Frame(header, out.data))?;
                     window_encoded += 1;
+                    if refresh {
+                        refreshes_left -= 1;
+                    }
                     dirty = false;
                     force_key = false;
                 }

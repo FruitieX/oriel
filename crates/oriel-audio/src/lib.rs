@@ -24,6 +24,8 @@ pub const SAMPLE_RATE: u32 = 48_000;
 pub const CHANNELS: usize = 2;
 /// Samples per channel in one packet (10 ms).
 pub const FRAME: usize = 480;
+/// Silent packets sent before going quiet, so the decoder ends cleanly.
+const SILENT_FRAMES_SENT: u32 = 10;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CaptureSource {
@@ -93,13 +95,26 @@ pub fn start_capture(
             let _ = ready_tx.send(Ok(()));
             let mut pending: Vec<f32> = Vec::with_capacity(FRAME * CHANNELS * 4);
             let mut out = vec![0u8; 1500];
+            // Consecutive silent frames: after a few, nothing is sent until
+            // sound returns (the client just runs out of buffered audio).
+            let mut silent = 0u32;
             while !thread_stop.load(Ordering::Relaxed) {
                 let Ok(samples) = rx.recv_timeout(Duration::from_millis(100)) else {
                     continue;
                 };
                 pending.extend_from_slice(&samples);
                 while pending.len() >= FRAME * CHANNELS {
-                    match encoder.encode_float(&pending[..FRAME * CHANNELS], &mut out) {
+                    let frame = &pending[..FRAME * CHANNELS];
+                    silent = if frame.iter().all(|s| s.abs() < 1e-5) {
+                        silent + 1
+                    } else {
+                        0
+                    };
+                    if silent > SILENT_FRAMES_SENT {
+                        pending.drain(..FRAME * CHANNELS);
+                        continue;
+                    }
+                    match encoder.encode_float(frame, &mut out) {
                         Ok(n) => on_packet(out[..n].to_vec()),
                         Err(e) => tracing::warn!("opus encode failed: {e}"),
                     }
@@ -591,5 +606,25 @@ mod routing_tests {
         let (a, b) = (*a.lock(), *b.lock());
         eprintln!("captured bytes: sink a {a}, sink b {b}");
         assert!(b > 3 * a.max(1), "the tone should only reach sink b");
+    }
+}
+
+#[cfg(test)]
+mod silence_tests {
+    use super::*;
+
+    /// The test tone beeps 150 ms each second; the silence between beeps
+    /// should cost only the few packets that end each beep.
+    #[test]
+    fn silence_is_not_sent() {
+        let count = Arc::new(Mutex::new(0u32));
+        let c = count.clone();
+        let capture =
+            start_capture(CaptureSource::TestTone, 128_000, move |_| *c.lock() += 1).unwrap();
+        std::thread::sleep(Duration::from_millis(2000));
+        drop(capture);
+        let n = *count.lock();
+        eprintln!("{n} packets in 2 s");
+        assert!((20..=70).contains(&n), "{n} packets");
     }
 }
