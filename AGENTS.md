@@ -45,7 +45,8 @@ Read [docs/architecture.md](docs/architecture.md) first.
 - Gamepads: the uinput tests (`gamepad` in oriel-host and oriel-client)
   need write access to `/dev/uinput` and skip without it. honeydew has
   none; run the test binaries as root on a machine that does.
-  `ORIEL_DEBUG_GAMEPAD=1` makes `--headless` send a synthetic controller.
+  `ORIEL_DEBUG_GAMEPAD=1` makes `--headless` send a synthetic controller,
+  `ORIEL_DEBUG_MIC=1` its test tone as the microphone.
 - Audio device routing: run a private `pipewire` and `wireplumber` (in
   `dbus-run-session`) with null sinks `oriel-sink-a`/`oriel-sink-b`, then
   `ORIEL_AUDIO_DEVICE_TEST=1 cargo test -p oriel-audio routing`. Keep

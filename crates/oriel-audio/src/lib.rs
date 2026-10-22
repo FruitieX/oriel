@@ -33,6 +33,8 @@ pub enum CaptureSource {
     /// monitor on PipeWire): the one with this [`OutputDevice::id`], or the
     /// default one.
     SystemOutput(Option<String>),
+    /// A microphone: the input device with this id, or the default one.
+    Microphone(Option<String>),
     /// A short beep every second, for testing.
     TestTone,
 }
@@ -81,6 +83,13 @@ pub fn start_capture(
             let _stream = match source {
                 CaptureSource::SystemOutput(device) => match open_system_output(tx, device) {
                     Ok(s) => Some(s),
+                    Err(e) => {
+                        let _ = ready_tx.send(Err(e));
+                        return;
+                    }
+                },
+                CaptureSource::Microphone(id) => match open_microphone(tx, id.as_deref()) {
+                    Ok(s) => Some(OutputCapture::Cpal(s)),
                     Err(e) => {
                         let _ = ready_tx.send(Err(e));
                         return;
@@ -233,7 +242,7 @@ pub fn output_devices() -> Vec<OutputDevice> {
             // PipeWire also lists the default-device alias and applications'
             // playback streams; only real sinks can be both played to and
             // captured.
-            if id.id() == "sink_default"
+            if id.id().ends_with("_default")
                 || (id.host() != cpal::default_host().id() && !description.supports_input())
             {
                 return None;
@@ -247,6 +256,105 @@ pub fn output_devices() -> Vec<OutputDevice> {
     list.sort_by(|a, b| a.name.cmp(&b.name));
     list.dedup_by(|a, b| a.id == b.id);
     list
+}
+
+/// Where the client's microphone plays on this host so that apps can
+/// record it: oriel's own virtual source on Linux; on Windows a virtual
+/// cable's playback end (Steam Streaming Microphone or VB-Audio CABLE).
+pub fn microphone_output() -> Result<Output> {
+    #[cfg(target_os = "linux")]
+    return Ok(Output::VirtualMicrophone);
+    #[cfg(not(target_os = "linux"))]
+    {
+        let devices = output_devices();
+        for wanted in ["Steam Streaming Microphone", "CABLE Input"] {
+            if let Some(d) = devices.iter().find(|d| d.name.contains(wanted)) {
+                tracing::info!(device = %d.name, "client microphone plays here");
+                return Ok(Output::Device(Some(d.id.clone())));
+            }
+        }
+        bail!(
+            "no virtual microphone on the host; install VB-Audio Virtual Cable \
+             (https://vb-audio.com/Cable/) and record from \"CABLE Output\""
+        )
+    }
+}
+
+/// Microphones and other inputs.
+pub fn input_devices() -> Vec<OutputDevice> {
+    // PipeWire offers sinks' monitors as inputs too; those are not mics.
+    let outputs: Vec<String> = output_devices().into_iter().map(|d| d.id).collect();
+    let host = device_host();
+    let Ok(devices) = host.input_devices() else {
+        return Vec::new();
+    };
+    let mut list: Vec<OutputDevice> = devices
+        .filter_map(|d| {
+            let id = d.id().ok()?;
+            let description = d.description().ok()?;
+            if id.id().ends_with("_default") || outputs.contains(&id.to_string()) {
+                return None;
+            }
+            Some(OutputDevice {
+                id: id.to_string(),
+                name: description.name().to_string(),
+            })
+        })
+        .collect();
+    list.sort_by(|a, b| a.name.cmp(&b.name));
+    list.dedup_by(|a, b| a.id == b.id);
+    list
+}
+
+fn open_microphone(
+    tx: crossbeam_channel::Sender<Vec<f32>>,
+    id: Option<&str>,
+) -> Result<cpal::Stream> {
+    let found = id.and_then(|id| {
+        let id = id.parse::<cpal::DeviceId>().ok()?;
+        cpal::host_from_id(id.host()).ok()?.device_by_id(&id)
+    });
+    let device = match found {
+        Some(d) => d,
+        None => cpal::default_host()
+            .default_input_device()
+            .context("no microphone")?,
+    };
+    let supported = device.default_input_config()?;
+    let config = supported.config();
+    tracing::info!(
+        device = device
+            .description()
+            .map(|d| d.name().to_string())
+            .unwrap_or_default(),
+        rate = config.sample_rate,
+        channels = config.channels,
+        "capturing the microphone"
+    );
+    let mut conv = Converter::new(config.sample_rate, config.channels as usize);
+    let err = |e| tracing::warn!("microphone error: {e}");
+    let stream = match supported.sample_format() {
+        cpal::SampleFormat::F32 => device.build_input_stream::<f32, _, _>(
+            config,
+            move |data, _| {
+                let _ = tx.try_send(conv.convert(data));
+            },
+            err,
+            None,
+        )?,
+        cpal::SampleFormat::I16 => device.build_input_stream::<i16, _, _>(
+            config,
+            move |data, _| {
+                let f: Vec<f32> = data.iter().map(|s| *s as f32 / 32768.0).collect();
+                let _ = tx.try_send(conv.convert(&f));
+            },
+            err,
+            None,
+        )?,
+        other => bail!("unsupported microphone sample format {other:?}"),
+    };
+    stream.play()?;
+    Ok(stream)
 }
 
 /// The output device with this id, or the default one.
@@ -332,7 +440,17 @@ fn tone(tx: crossbeam_channel::Sender<Vec<f32>>, stop: Arc<AtomicBool>) {
     }
 }
 
-/// Client-side playback. Feed packets with [`Player::push`].
+/// Where a [`Player`] plays.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Output {
+    /// The output device with this [`OutputDevice::id`], or the default.
+    Device(Option<String>),
+    /// A virtual microphone ("oriel microphone") other apps record from.
+    #[cfg(target_os = "linux")]
+    VirtualMicrophone,
+}
+
+/// Jitter-buffered Opus playback. Feed packets with [`Player::push`].
 pub struct Player {
     tx: crossbeam_channel::Sender<(u32, Vec<u8>)>,
     pub stats: Arc<Mutex<PlayerStats>>,
@@ -350,9 +468,7 @@ const TARGET_MS: usize = 30;
 const MAX_MS: usize = 80;
 
 impl Player {
-    /// Play on the output device with this [`OutputDevice::id`], or the
-    /// default one.
-    pub fn start(device: Option<String>) -> Result<Self> {
+    pub fn start(output: Output) -> Result<Self> {
         let (tx, rx) = crossbeam_channel::unbounded::<(u32, Vec<u8>)>();
         let stats = Arc::new(Mutex::new(PlayerStats::default()));
         let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<()>>();
@@ -361,14 +477,13 @@ impl Player {
             .name("oriel-audio-play".into())
             .spawn(move || {
                 let buffer = Arc::new(Mutex::new(VecDeque::<f32>::new()));
-                let stream =
-                    match open_output(device.as_deref(), buffer.clone(), thread_stats.clone()) {
-                        Ok(s) => s,
-                        Err(e) => {
-                            let _ = ready_tx.send(Err(e));
-                            return;
-                        }
-                    };
+                let stream = match open_output(&output, buffer.clone(), thread_stats.clone()) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        let _ = ready_tx.send(Err(e));
+                        return;
+                    }
+                };
                 let mut decoder = match opus::Decoder::new(SAMPLE_RATE, opus::Channels::Stereo) {
                     Ok(d) => d,
                     Err(e) => {
@@ -422,42 +537,36 @@ impl Player {
     }
 }
 
-fn open_output(
-    id: Option<&str>,
+/// Pulls 48 kHz stereo from the jitter buffer for an output callback,
+/// resampling to the device rate by stepping through the buffer.
+pub(crate) struct Reader {
     buffer: Arc<Mutex<VecDeque<f32>>>,
     stats: Arc<Mutex<PlayerStats>>,
-) -> Result<cpal::Stream> {
-    let device = output_device(id)?;
-    let supported = device.default_output_config()?;
-    let rate = supported.sample_rate();
-    let channels = supported.channels() as usize;
-    let config = cpal::StreamConfig {
-        channels: channels as u16,
-        sample_rate: rate,
-        buffer_size: cpal::BufferSize::Default,
-    };
-    tracing::info!(rate, channels, format = ?supported.sample_format(), "audio output");
-    // Resample 48 kHz stereo to the device rate by stepping through the
-    // buffer.
-    let step = SAMPLE_RATE as f64 / rate as f64;
-    let mut pos = 0.0f64;
-    let mut primed = false;
-    let mut fill = move |out: &mut dyn FnMut(usize, f32), frames: usize| {
-        let mut buf = buffer.lock();
+    step: f64,
+    pos: f64,
+    primed: bool,
+    channels: usize,
+}
+
+impl Reader {
+    /// Write `frames` frames of `channels` samples through `out(index, v)`.
+    pub(crate) fn fill(&mut self, out: &mut dyn FnMut(usize, f32), frames: usize) {
+        let channels = self.channels;
+        let mut buf = self.buffer.lock();
         let target = TARGET_MS * SAMPLE_RATE as usize / 1000 * CHANNELS;
         // Wait for the buffer to reach its target depth before playing.
-        if !primed && buf.len() < target {
+        if !self.primed && buf.len() < target {
             for i in 0..frames * channels {
                 out(i, 0.0);
             }
             return;
         }
-        primed = true;
+        self.primed = true;
         let mut underrun = false;
         for f in 0..frames {
-            let i = pos as usize;
+            let i = self.pos as usize;
             if (i + 1) * CHANNELS > buf.len() {
-                primed = false;
+                self.primed = false;
                 underrun = true;
                 for c in 0..channels {
                     out(f * channels + c, 0.0);
@@ -469,14 +578,57 @@ fn open_output(
             for c in 0..channels {
                 out(f * channels + c, if c % 2 == 0 { l } else { r });
             }
-            pos += step;
+            self.pos += self.step;
         }
         if underrun {
-            stats.lock().underruns += 1;
+            self.stats.lock().underruns += 1;
         }
-        let used = (pos as usize).min(buf.len() / CHANNELS);
+        let used = (self.pos as usize).min(buf.len() / CHANNELS);
         buf.drain(..used * CHANNELS);
-        pos -= used as f64;
+        self.pos -= used as f64;
+    }
+}
+
+/// Keeps an output alive (it stays on the playback thread).
+type OutputGuard = Box<dyn std::any::Any>;
+
+fn open_output(
+    output: &Output,
+    buffer: Arc<Mutex<VecDeque<f32>>>,
+    stats: Arc<Mutex<PlayerStats>>,
+) -> Result<OutputGuard> {
+    let id = match output {
+        Output::Device(id) => id.as_deref(),
+        #[cfg(target_os = "linux")]
+        Output::VirtualMicrophone => {
+            let reader = Reader {
+                buffer,
+                stats,
+                step: 1.0,
+                pos: 0.0,
+                primed: false,
+                channels: CHANNELS,
+            };
+            return Ok(Box::new(linux::virtual_microphone(reader)?));
+        }
+    };
+    let device = output_device(id)?;
+    let supported = device.default_output_config()?;
+    let rate = supported.sample_rate();
+    let channels = supported.channels() as usize;
+    let config = cpal::StreamConfig {
+        channels: channels as u16,
+        sample_rate: rate,
+        buffer_size: cpal::BufferSize::Default,
+    };
+    tracing::info!(rate, channels, format = ?supported.sample_format(), "audio output");
+    let mut reader = Reader {
+        buffer,
+        stats,
+        step: SAMPLE_RATE as f64 / rate as f64,
+        pos: 0.0,
+        primed: false,
+        channels,
     };
     let err = |e| tracing::warn!("audio playback error: {e}");
     let stream = match supported.sample_format() {
@@ -484,7 +636,7 @@ fn open_output(
             config,
             move |data, _| {
                 let frames = data.len() / channels;
-                fill(&mut |i, v| data[i] = v, frames);
+                reader.fill(&mut |i, v| data[i] = v, frames);
             },
             err,
             None,
@@ -493,7 +645,7 @@ fn open_output(
             config,
             move |data, _| {
                 let frames = data.len() / channels;
-                fill(
+                reader.fill(
                     &mut |i, v| data[i] = (v.clamp(-1.0, 1.0) * 32767.0) as i16,
                     frames,
                 );
@@ -504,7 +656,7 @@ fn open_output(
         other => bail!("unsupported output sample format {other:?}"),
     };
     stream.play()?;
-    Ok(stream)
+    Ok(Box::new(stream))
 }
 
 #[cfg(test)]
@@ -581,7 +733,7 @@ mod routing_tests {
         };
         let (_a, a) = bytes("oriel-sink-a");
         let (_b, b) = bytes("oriel-sink-b");
-        let player = Player::start(Some("pipewire:oriel-sink-b".into())).unwrap();
+        let player = Player::start(Output::Device(Some("pipewire:oriel-sink-b".into()))).unwrap();
         let mut enc = opus::Encoder::new(
             SAMPLE_RATE,
             opus::Channels::Stereo,
@@ -606,6 +758,55 @@ mod routing_tests {
         let (a, b) = (*a.lock(), *b.lock());
         eprintln!("captured bytes: sink a {a}, sink b {b}");
         assert!(b > 3 * a.max(1), "the tone should only reach sink b");
+    }
+
+    /// A tone played into the virtual microphone can be recorded from it.
+    #[test]
+    fn virtual_microphone_roundtrip() {
+        if std::env::var_os("ORIEL_AUDIO_DEVICE_TEST").is_none() {
+            eprintln!("skipping: ORIEL_AUDIO_DEVICE_TEST not set");
+            return;
+        }
+        let player = Player::start(Output::VirtualMicrophone).unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        let devices = input_devices();
+        eprintln!("inputs: {devices:?}");
+        let mic = devices
+            .iter()
+            .find(|d| d.name == "oriel microphone")
+            .expect("virtual microphone listed");
+        let total = Arc::new(Mutex::new(0usize));
+        let t = total.clone();
+        let _capture = start_capture(
+            CaptureSource::Microphone(Some(mic.id.clone())),
+            64_000,
+            move |p| *t.lock() += p.len(),
+        )
+        .unwrap();
+        let mut enc = opus::Encoder::new(
+            SAMPLE_RATE,
+            opus::Channels::Stereo,
+            opus::Application::LowDelay,
+        )
+        .unwrap();
+        let mut out = vec![0u8; 1500];
+        let start = Instant::now();
+        for seq in 0..150u32 {
+            let pcm: Vec<f32> = (0..FRAME)
+                .flat_map(|i| {
+                    let t = (seq as usize * FRAME + i) as f32 / SAMPLE_RATE as f32;
+                    let v = (t * 440.0 * std::f32::consts::TAU).sin() * 0.5;
+                    [v, v]
+                })
+                .collect();
+            let n = enc.encode_float(&pcm, &mut out).unwrap();
+            player.push(seq, out[..n].to_vec());
+            let due = start + Duration::from_millis(10 * (seq as u64 + 1));
+            std::thread::sleep(due.saturating_duration_since(Instant::now()));
+        }
+        let bytes = *total.lock();
+        eprintln!("recorded {bytes} bytes from the virtual microphone");
+        assert!(bytes > 5000, "the tone should be recorded");
     }
 }
 

@@ -35,6 +35,10 @@ pub struct ClientConfig {
     pub playback_device: Option<String>,
     /// Forward gamepads to the host while the viewer has focus.
     pub gamepads: bool,
+    /// Send the microphone to hosts by default.
+    pub microphone: bool,
+    /// Which input device (an `oriel_audio` device id; unset: default).
+    pub microphone_device: Option<String>,
     /// Shortcuts for the other viewer commands, by command id (see
     /// [`Command::id`]): a missing entry uses the default, an empty one
     /// disables the shortcut.
@@ -56,6 +60,8 @@ pub struct HostPrefs {
     pub audio_device: Option<String>,
     /// Use this window as an extra display of the host, "WIDTHxHEIGHT@HZ".
     pub virtual_display: Option<String>,
+    /// Send the microphone (unset: the global setting).
+    pub microphone: Option<bool>,
 }
 
 pub fn parse_virtual_mode(s: &str) -> Option<oriel_proto::VirtualMode> {
@@ -120,6 +126,8 @@ impl Default for ClientConfig {
             share: false,
             playback_device: None,
             gamepads: true,
+            microphone: false,
+            microphone_device: None,
             shortcuts: Default::default(),
             hosts: Default::default(),
         }

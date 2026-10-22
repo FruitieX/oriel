@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 pub mod keys;
 
 pub const ALPN: &[u8] = b"oriel/1";
-pub const PROTOCOL_VERSION: u32 = 5;
+pub const PROTOCOL_VERSION: u32 = 6;
 pub const DEFAULT_PORT: u16 = 48600;
 /// Upper bound for a single control/input message.
 pub const MAX_MESSAGE_LEN: usize = 4 * 1024 * 1024;
@@ -295,6 +295,8 @@ pub enum Datagram {
     FrameAck { surface: SurfaceId, seq: u64 },
     /// Host → client: one 10 ms Opus packet (48 kHz stereo).
     Audio { seq: u32, data: Vec<u8> },
+    /// Client → host: one 10 ms Opus packet from the client's microphone.
+    Microphone { seq: u32, data: Vec<u8> },
     /// Client → host: a gamepad's full state, sent on change and every
     /// 100 ms; `seq` (per pad) discards reordered ones.
     Gamepad {

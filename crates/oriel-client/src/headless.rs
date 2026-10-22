@@ -43,6 +43,8 @@ pub async fn run(
             hardware_decode: hardware,
             playback_device: None,
             gamepads: false,
+            microphone: false,
+            microphone_device: None,
         },
         sink,
     );
@@ -52,6 +54,18 @@ pub async fn run(
     let mut wiggle = 0i32;
     let still = std::env::var_os("ORIEL_HEADLESS_STILL").is_some();
     let fake_pad = std::env::var_os("ORIEL_DEBUG_GAMEPAD").is_some();
+    // ORIEL_DEBUG_MIC: send the test tone as the microphone.
+    let _mic = std::env::var_os("ORIEL_DEBUG_MIC").map(|_| {
+        let conn = s.conn.clone();
+        let mut seq = 0u32;
+        oriel_audio::start_capture(oriel_audio::CaptureSource::TestTone, 64_000, move |data| {
+            if let Ok(bytes) = oriel_proto::encode(&oriel_proto::Datagram::Microphone { seq, data })
+            {
+                let _ = conn.send_datagram(bytes.into());
+            }
+            seq = seq.wrapping_add(1);
+        })
+    });
     let mut pad_seq = 0u32;
     // Debugging aid: press this HID usage (hex) once, two seconds in.
     let mut press: Option<u16> = std::env::var("ORIEL_DEBUG_PRESS")

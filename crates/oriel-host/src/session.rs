@@ -184,9 +184,30 @@ pub async fn run(
     let datagram_conn = conn.clone();
     let datagram_shared = shared.clone();
     let datagram_pads = pad_tx.clone();
+    let mic_notices = ev_tx_audio.clone();
     let datagram_task = tokio::spawn(async move {
+        // The client's microphone, set up when its first packet arrives.
+        let mut mic: Option<oriel_audio::Player> = None;
+        let mut mic_failed = false;
         while let Ok(bytes) = datagram_conn.read_datagram().await {
             match oriel_proto::decode(&bytes) {
+                Ok(Datagram::Microphone { seq, data }) => {
+                    if mic.is_none() && !mic_failed {
+                        match oriel_audio::microphone_output().and_then(oriel_audio::Player::start)
+                        {
+                            Ok(p) => mic = Some(p),
+                            Err(e) => {
+                                mic_failed = true;
+                                tracing::warn!("cannot play the client's microphone: {e:#}");
+                                let _ = mic_notices
+                                    .send(Event::Notice(format!("Microphone unavailable: {e:#}")));
+                            }
+                        }
+                    }
+                    if let Some(p) = &mic {
+                        p.push(seq, data);
+                    }
+                }
                 Ok(Datagram::FrameAck { seq, .. }) => datagram_shared.decoded(seq),
                 Ok(Datagram::Gamepad { pad, seq, state }) => {
                     let _ = datagram_pads.send(crate::gamepad::Cmd::State { pad, seq, state });

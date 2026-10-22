@@ -116,3 +116,100 @@ pub fn capture_output(
         thread: Some(thread),
     })
 }
+
+/// A PipeWire source ("oriel microphone") that apps can record from, fed
+/// by `reader`. Removed when dropped.
+pub fn virtual_microphone(mut reader: crate::Reader) -> Result<SinkCapture> {
+    let (quit_tx, quit_rx) = pw::channel::channel::<()>();
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<()>>();
+    let thread = std::thread::Builder::new()
+        .name("oriel-pw-mic".into())
+        .spawn(move || {
+            let result = (|| -> Result<()> {
+                pw::init();
+                let mainloop = pw::main_loop::MainLoopRc::new(None)?;
+                let context = pw::context::ContextRc::new(&mainloop, None)?;
+                let core = context.connect_rc(None)?;
+                let ml = mainloop.clone();
+                let _quit = quit_rx.attach(mainloop.loop_(), move |_| ml.quit());
+                // A stream that is itself a source node, as `pw-cat
+                // --properties media.class=Audio/Source` makes.
+                let stream = pw::stream::StreamBox::new(
+                    &core,
+                    "oriel-microphone",
+                    pw::properties::properties! {
+                        *pw::keys::MEDIA_TYPE => "Audio",
+                        *pw::keys::MEDIA_CATEGORY => "Playback",
+                        *pw::keys::MEDIA_CLASS => "Audio/Source",
+                        *pw::keys::NODE_NAME => "oriel-microphone",
+                        *pw::keys::NODE_DESCRIPTION => "oriel microphone",
+                        *pw::keys::NODE_LATENCY => "480/48000",
+                    },
+                )?;
+                const STRIDE: usize = CHANNELS * 4;
+                let _listener = stream
+                    .add_local_listener_with_user_data(())
+                    .process(move |stream, _| {
+                        let Some(mut buffer) = stream.dequeue_buffer() else {
+                            return;
+                        };
+                        let requested = buffer.requested() as usize;
+                        let datas = buffer.datas_mut();
+                        let Some(data) = datas.first_mut() else {
+                            return;
+                        };
+                        let Some(bytes) = data.data() else { return };
+                        let mut frames = bytes.len() / STRIDE;
+                        if requested > 0 {
+                            frames = frames.min(requested);
+                        }
+                        reader.fill(
+                            &mut |i, v| {
+                                bytes[i * 4..i * 4 + 4].copy_from_slice(&v.to_le_bytes());
+                            },
+                            frames,
+                        );
+                        let chunk = data.chunk_mut();
+                        *chunk.offset_mut() = 0;
+                        *chunk.stride_mut() = STRIDE as i32;
+                        *chunk.size_mut() = (frames * STRIDE) as u32;
+                    })
+                    .register()?;
+                let mut info = spa::param::audio::AudioInfoRaw::new();
+                info.set_format(spa::param::audio::AudioFormat::F32LE);
+                info.set_rate(SAMPLE_RATE);
+                info.set_channels(CHANNELS as u32);
+                let obj = spa::pod::Object {
+                    type_: spa::utils::SpaTypes::ObjectParamFormat.as_raw(),
+                    id: spa::param::ParamType::EnumFormat.as_raw(),
+                    properties: info.into(),
+                };
+                let bytes = spa::pod::serialize::PodSerializer::serialize(
+                    std::io::Cursor::new(Vec::new()),
+                    &spa::pod::Value::Object(obj),
+                )
+                .map_err(|e| anyhow::anyhow!("serialize format: {e:?}"))?
+                .0
+                .into_inner();
+                let mut params = [spa::pod::Pod::from_bytes(&bytes).unwrap()];
+                stream.connect(
+                    spa::utils::Direction::Output,
+                    None,
+                    pw::stream::StreamFlags::MAP_BUFFERS | pw::stream::StreamFlags::RT_PROCESS,
+                    &mut params,
+                )?;
+                let _ = ready_tx.send(Ok(()));
+                mainloop.run();
+                Ok(())
+            })();
+            if let Err(e) = result {
+                let _ = ready_tx.send(Err(e));
+            }
+        })?;
+    ready_rx.recv()??;
+    tracing::info!("virtual microphone ready");
+    Ok(SinkCapture {
+        quit: Some(quit_tx),
+        thread: Some(thread),
+    })
+}

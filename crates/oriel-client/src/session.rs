@@ -48,6 +48,7 @@ pub struct Session {
     pub interop: decode::InteropSlot,
     /// Gamepads are forwarded only while the viewer window has focus.
     pub focused: Arc<std::sync::atomic::AtomicBool>,
+    mic: Arc<Mutex<Microphone>>,
     rt: tokio::runtime::Handle,
 }
 
@@ -58,6 +59,11 @@ impl Session {
 
     pub fn input(&self, event: InputEvent) {
         let _ = self.input.send(event);
+    }
+
+    /// Start or stop sending the microphone.
+    pub fn set_microphone(&self, on: bool) -> Result<()> {
+        self.mic.lock().set(on)
     }
 
     pub fn rtt(&self) -> Duration {
@@ -82,6 +88,43 @@ pub struct SessionOptions {
     pub playback_device: Option<String>,
     /// Forward local gamepads while the viewer has focus.
     pub gamepads: bool,
+    /// Send the microphone from the start.
+    pub microphone: bool,
+    /// Which input (`None`: the default one).
+    pub microphone_device: Option<String>,
+}
+
+/// The local microphone, sent to the host while on.
+struct Microphone {
+    conn: quinn::Connection,
+    device: Option<String>,
+    /// Continues across on/off, so the host never sees stale packets.
+    seq: Arc<std::sync::atomic::AtomicU32>,
+    capture: Option<oriel_audio::Capture>,
+}
+
+impl Microphone {
+    fn set(&mut self, on: bool) -> Result<()> {
+        if !on {
+            self.capture = None;
+            return Ok(());
+        }
+        if self.capture.is_some() {
+            return Ok(());
+        }
+        let (conn, seq) = (self.conn.clone(), self.seq.clone());
+        self.capture = Some(oriel_audio::start_capture(
+            oriel_audio::CaptureSource::Microphone(self.device.clone()),
+            64_000,
+            move |data| {
+                let seq = seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if let Ok(bytes) = oriel_proto::encode(&Datagram::Microphone { seq, data }) {
+                    let _ = conn.send_datagram(bytes.into());
+                }
+            },
+        )?);
+        Ok(())
+    }
 }
 
 pub fn start(
@@ -96,7 +139,18 @@ pub fn start(
         hardware_decode,
         playback_device,
         gamepads,
+        microphone,
+        microphone_device,
     } = options;
+    let mut mic = Microphone {
+        conn: conn.clone(),
+        device: microphone_device,
+        seq: Default::default(),
+        capture: None,
+    };
+    if microphone && let Err(e) = mic.set(true) {
+        tracing::warn!("no microphone: {e:#}");
+    }
     let _guard = rt.enter();
     let (ctl_tx, mut ctl_rx) = mpsc::unbounded_channel::<ClientMsg>();
     let (input_tx, mut input_rx) = mpsc::unbounded_channel::<InputEvent>();
@@ -114,7 +168,7 @@ pub fn start(
     );
 
     let player = if settings.audio {
-        match oriel_audio::Player::start(playback_device) {
+        match oriel_audio::Player::start(oriel_audio::Output::Device(playback_device)) {
             Ok(p) => Some(p),
             Err(e) => {
                 tracing::warn!("no audio output: {e:#}");
@@ -266,6 +320,7 @@ pub fn start(
         clock,
         interop,
         focused,
+        mic: Arc::new(Mutex::new(mic)),
         rt: rt.clone(),
     }
 }

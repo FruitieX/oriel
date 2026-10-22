@@ -105,6 +105,16 @@ Audio stops after 100 ms of digital silence without advancing the sequence
 number, so the client sees no loss and simply re-primes its buffer. The window cursor is set to the host's cursor image; in relative mode
 the pointer is locked and raw motion is sent.
 
+## Microphone
+
+The client captures its microphone like host sound (10 ms Opus,
+silence suppressed) and sends `Datagram::Microphone`. On the first packet
+the host starts a jitter-buffered player into a virtual microphone: on
+Linux a PipeWire stream that is itself a source node (`media.class =
+Audio/Source`, "oriel microphone"); on Windows the playback end of a
+virtual cable (Steam Streaming Microphone, else VB-Audio CABLE Input),
+since a virtual audio device needs a driver.
+
 ## Gamepads
 
 The client reads controllers with gilrs and, while the viewer has focus,

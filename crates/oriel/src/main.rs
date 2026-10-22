@@ -431,7 +431,7 @@ fn run() -> Result<()> {
                 oriel_client::launcher::GuiOptions {
                     connect: Some(target),
                     viewer: Some(ViewerOptions {
-                        target: host,
+                        target: host.clone(),
                         settings,
                         hardware_decode: !software_decode,
                         shortcuts,
@@ -441,6 +441,12 @@ fn run() -> Result<()> {
                         codec_key,
                         playback_device: file.playback_device.clone(),
                         gamepads: file.gamepads,
+                        microphone: file
+                            .hosts
+                            .get(&host)
+                            .and_then(|p| p.microphone)
+                            .unwrap_or(file.microphone),
+                        microphone_device: file.microphone_device.clone(),
                         screenshot: screenshot
                             .map(|p| (p, Duration::from_secs_f64(screenshot_after))),
                     }),

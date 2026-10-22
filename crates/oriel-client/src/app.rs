@@ -58,6 +58,9 @@ pub struct ViewerOptions {
     pub playback_device: Option<String>,
     /// Forward local gamepads to the host.
     pub gamepads: bool,
+    /// Send the microphone from the start, and which one.
+    pub microphone: bool,
+    pub microphone_device: Option<String>,
 }
 
 /// Choices made during a session, remembered for the next one.
@@ -70,6 +73,7 @@ pub struct ViewerPrefs {
     pub audio_device: Option<String>,
     /// Streaming a virtual monitor in this mode.
     pub virtual_display: Option<VirtualMode>,
+    pub microphone: bool,
 }
 
 /// Why the viewer window went away.
@@ -106,6 +110,8 @@ pub fn run(
             hardware_decode: options.hardware_decode,
             playback_device: options.playback_device.clone(),
             gamepads: options.gamepads,
+            microphone: options.microphone,
+            microphone_device: options.microphone_device.clone(),
         },
         sink.clone(),
     );
@@ -127,6 +133,7 @@ pub fn run(
         resolution: viewer.resolution,
         audio_device: viewer.audio_device.clone(),
         virtual_display: viewer.virtual_mode,
+        microphone: viewer.microphone,
     };
     Ok((viewer.exit.take().unwrap_or(ViewerExit::Closed), prefs))
 }
@@ -196,6 +203,8 @@ struct Viewer {
     /// The host can create a virtual monitor for this window.
     virtual_ok: bool,
     virtual_mode: Option<VirtualMode>,
+    /// Sending the microphone.
+    microphone: bool,
     codec_key: String,
     resolution: Option<(u32, u32)>,
     fullscreen: bool,
@@ -252,6 +261,7 @@ impl Viewer {
             audio_device: options.settings.audio_device.clone(),
             virtual_ok: false,
             virtual_mode: options.settings.virtual_display,
+            microphone: options.microphone,
             codec_key: options.codec_key.clone(),
             resolution: options.settings.resolution,
             fullscreen: options.fullscreen,
@@ -745,6 +755,12 @@ impl Viewer {
                     .send(ClientMsg::SetBitrate { kbps: mbps * 1000 });
             }
             Action::SecureAttention => self.session.input(InputEvent::SecureAttention),
+            Action::SetMicrophone(on) => match self.session.set_microphone(on) {
+                Ok(()) => self.microphone = on,
+                Err(e) => self
+                    .notices
+                    .push((format!("Microphone unavailable: {e:#}"), Instant::now())),
+            },
             Action::SetVirtualDisplay(mode) => {
                 self.virtual_mode = mode;
                 self.sized_window = false;
@@ -778,6 +794,7 @@ enum Action {
     SetResolution(Option<(u32, u32)>),
     SetAudioDevice(Option<String>),
     SetVirtualDisplay(Option<VirtualMode>),
+    SetMicrophone(bool),
     Disconnect,
 }
 
@@ -806,6 +823,7 @@ struct OverlayState {
     audio_device: Option<String>,
     virtual_ok: bool,
     virtual_mode: Option<VirtualMode>,
+    microphone: bool,
     /// This window's monitor, the default mode for a virtual display.
     monitor_mode: Option<VirtualMode>,
 }
@@ -926,6 +944,7 @@ impl From<&Viewer> for OverlayState {
             audio_device: v.audio_device.clone(),
             virtual_ok: v.virtual_ok,
             virtual_mode: v.virtual_mode,
+            microphone: v.microphone,
             monitor_mode: v.monitor_mode(),
         }
     }
@@ -1167,6 +1186,16 @@ fn overlay(ctx: &egui::Context, s: &OverlayState, viewport: Option<Viewport>) ->
                         });
                 });
             }
+            ui.horizontal(|ui| {
+                let mut on = s.microphone;
+                if ui
+                    .checkbox(&mut on, "Send my microphone")
+                    .on_hover_text("Apps on the host can record it as a microphone")
+                    .changed()
+                {
+                    actions.push(Action::SetMicrophone(on));
+                }
+            });
             if !s.audio_devices.is_empty() {
                 ui.horizontal(|ui| {
                     ui.label("Sound from:");

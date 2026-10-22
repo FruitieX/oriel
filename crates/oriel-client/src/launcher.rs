@@ -212,6 +212,7 @@ pub fn run(
         recording: None,
         shortcut_hint: String::new(),
         playback_devices: Vec::new(),
+        microphones: Vec::new(),
         config,
         paths,
         host,
@@ -366,6 +367,7 @@ struct Launcher {
     shortcut_hint: String,
     /// Local sound outputs, listed when the settings dialog opens.
     playback_devices: Vec<oriel_audio::OutputDevice>,
+    microphones: Vec<oriel_audio::OutputDevice>,
     opened: Instant,
     screenshot_taken: bool,
 }
@@ -429,6 +431,7 @@ impl Launcher {
                 .virtual_display
                 .as_ref()
                 .map(crate::config::format_virtual_mode),
+            microphone: Some(prefs.microphone),
         };
         let entry = self.config.hosts.entry(host.to_string()).or_default();
         if *entry != new {
@@ -468,6 +471,8 @@ impl Launcher {
             codec_key,
             playback_device: c.playback_device.clone(),
             gamepads: c.gamepads,
+            microphone: prefs.microphone.unwrap_or(c.microphone),
+            microphone_device: c.microphone_device.clone(),
         })
     }
 
@@ -508,6 +513,7 @@ impl Launcher {
                 self.recording = None;
                 self.shortcut_hint.clear();
                 self.playback_devices = oriel_audio::output_devices();
+                self.microphones = oriel_audio::input_devices();
                 self.settings_open = true;
             }
             Action::CloseSettings => {
@@ -1268,11 +1274,42 @@ impl Launcher {
                                     }
                                 });
                             ui.end_row();
+                            ui.label("Microphone");
+                            ui.checkbox(
+                                &mut c.microphone,
+                                "Send my microphone to the remote computer",
+                            );
+                            ui.end_row();
+                            ui.label("");
+                            let mics = &self.microphones;
+                            let mic_name = |id: &Option<String>| match id {
+                                None => "Default microphone".to_string(),
+                                Some(id) => mics.iter().find(|d| &d.id == id).map_or_else(
+                                    || format!("{id} (not found)"),
+                                    |d| d.name.clone(),
+                                ),
+                            };
+                            egui::ComboBox::from_id_salt("microphone-device")
+                                .selected_text(mic_name(&c.microphone_device))
+                                .width(260.0)
+                                .show_ui(ui, |ui| {
+                                    let choices = std::iter::once(None)
+                                        .chain(mics.iter().map(|d| Some(d.id.clone())));
+                                    for choice in choices {
+                                        let label = mic_name(&choice);
+                                        ui.selectable_value(
+                                            &mut c.microphone_device,
+                                            choice,
+                                            label,
+                                        );
+                                    }
+                                });
+                            ui.end_row();
                             ui.label("");
                             ui.label(
                                 egui::RichText::new(
-                                    "Which of the remote computer's outputs you hear is chosen \
-                                     in the menu while connected.",
+                                    "Which of the remote computer's outputs you hear, and the \
+                                     microphone, can be changed in the menu while connected.",
                                 )
                                 .color(MUTED)
                                 .size(12.0),
