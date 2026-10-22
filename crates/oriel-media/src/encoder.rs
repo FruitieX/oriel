@@ -644,7 +644,7 @@ unsafe fn convert_bgra(
             src_stride.as_ptr(),
             0,
             h,
-            (*dst).data.as_ptr() as *const *mut u8,
+            (*dst).data.as_ptr(),
             (*dst).linesize.as_ptr(),
         );
         check(ret, "sws_scale")?;

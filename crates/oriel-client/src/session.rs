@@ -106,11 +106,8 @@ pub fn start(
 
     let reader_sink = sink.clone();
     tokio::spawn(async move {
-        loop {
-            match read_msg::<HostMsg>(&mut recv).await {
-                Ok(Some(msg)) => reader_sink(UiEvent::Host(msg)),
-                Ok(None) | Err(_) => break,
-            }
+        while let Ok(Some(msg)) = read_msg::<HostMsg>(&mut recv).await {
+            reader_sink(UiEvent::Host(msg));
         }
     });
 

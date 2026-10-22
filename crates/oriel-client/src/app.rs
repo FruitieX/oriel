@@ -915,10 +915,8 @@ impl ApplicationHandler<UiEvent> for Viewer {
                     self.handle_button(button, state);
                 }
             }
-            WindowEvent::MouseWheel { delta, .. } => {
-                if !response.consumed {
-                    self.handle_wheel(delta);
-                }
+            WindowEvent::MouseWheel { delta, .. } if !response.consumed => {
+                self.handle_wheel(delta);
             }
             _ => {}
         }
@@ -990,18 +988,17 @@ impl ApplicationHandler<UiEvent> for Viewer {
         if let Some((path, after)) = &self.options.screenshot
             && let Some(first) = self.first_frame
             && first.elapsed() >= *after
+            && let Some(gfx) = &mut self.gfx
         {
-            if let Some(gfx) = &mut self.gfx {
-                if gfx.renderer.screenshot.is_none() && !self.screenshot_taken {
-                    gfx.renderer.screenshot = Some(path.clone());
-                    self.screenshot_taken = true;
-                    gfx.window.request_redraw();
-                } else if self.screenshot_taken && gfx.renderer.screenshot.is_none() {
-                    tracing::info!(frames = self.frames_presented, "screenshot done, exiting");
-                    self.session.close();
-                    event_loop.exit();
-                    return;
-                }
+            if gfx.renderer.screenshot.is_none() && !self.screenshot_taken {
+                gfx.renderer.screenshot = Some(path.clone());
+                self.screenshot_taken = true;
+                gfx.window.request_redraw();
+            } else if self.screenshot_taken && gfx.renderer.screenshot.is_none() {
+                tracing::info!(frames = self.frames_presented, "screenshot done, exiting");
+                self.session.close();
+                event_loop.exit();
+                return;
             }
         }
         self.notices

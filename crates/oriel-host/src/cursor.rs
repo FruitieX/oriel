@@ -71,6 +71,7 @@ pub fn arrow() -> CursorShape {
 /// something visible on any background: black, with a white outline.
 /// `invert` marks pixels that should invert; they are already opaque black
 /// in `rgba`.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn outline_inverted(width: u32, height: u32, rgba: &mut [u8], invert: &[bool]) {
     let (w, h) = (width as i32, height as i32);
     for y in 0..h {

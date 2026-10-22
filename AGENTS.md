@@ -1,0 +1,39 @@
+# oriel development notes
+
+Read [docs/architecture.md](docs/architecture.md) first.
+
+## Environment
+
+- Everything runs in `nix develop` (Rust with the Windows target, FFmpeg 8,
+  mingw, Wine). The mingw compiler is deliberately not on
+  `nativeBuildInputs`: its setup hook would set `CC` for native builds.
+- `scripts/build-windows.sh [--release]` cross-builds into `dist/windows`
+  with the FFmpeg DLLs. Bindgen for the Windows FFmpeg headers needs the
+  mingw include paths but not GCC's intrinsics headers, and must skip
+  clang's `immintrin.h`/`x86intrin.h` (AMX types break the generated
+  bindings); the script handles both. If bindings look stale, `cargo clean
+  -p ffmpeg-sys-next --target x86_64-pc-windows-gnu`.
+- Windows is tested on the owner's PC through the Samba share: the
+  `dist/windows` folder is visible there as `Y:\projects\oriel\dist\windows`.
+
+## Testing without hardware
+
+- `oriel host --test-pattern` streams a synthetic pattern that draws the
+  input it receives (F9 toggles the "captured cursor" state).
+- Use separate `ORIEL_CONFIG_DIR`s for host and client on one machine.
+- `oriel connect <host> --headless N` streams without a window and prints
+  stats once a second.
+- The window can be tested under a headless Weston
+  (`weston --backend=headless --renderer=gl --socket=...`) with
+  `--screenshot path.png`; `ORIEL_DEBUG_MENU=1` opens the menu at start.
+- Machines without a sound card: point `HOME` at a directory whose
+  `.asoundrc` sets `pcm.!default { type null }`.
+- Do not test `av1_vaapi` on the Radeon 780M (honeydew): Mesa accepts the
+  encoder but the GPU context is reset.
+
+## Conventions
+
+- Media code calls FFmpeg through raw FFI; check field layouts against the
+  FFmpeg version in the flake (8.1) when touching hwcontext structs.
+- Protocol changes need both ends rebuilt; there is no compatibility layer
+  beyond `PROTOCOL_VERSION`.

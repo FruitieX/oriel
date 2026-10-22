@@ -322,7 +322,7 @@ impl Decoder {
                     (*src).linesize.as_ptr(),
                     0,
                     h,
-                    (*dst).data.as_ptr() as *const *mut u8,
+                    (*dst).data.as_ptr(),
                     (*dst).linesize.as_ptr(),
                 );
                 ff::av_frame_copy_props(dst, src);
