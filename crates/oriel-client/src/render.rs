@@ -79,7 +79,7 @@ struct VideoTextures {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Current {
     Cpu((u32, u32)),
-    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    #[cfg_attr(not(zero_copy), allow(dead_code))]
     Gpu(usize, (u32, u32)),
 }
 
@@ -104,7 +104,7 @@ pub struct Renderer {
     dummy: wgpu::Texture,
     video: Option<VideoTextures>,
     /// Bind groups for zero-copy plane sets, by set identity.
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(zero_copy)]
     gpu_sets: std::collections::HashMap<
         usize,
         (std::sync::Weak<crate::interop::PlaneSet>, wgpu::BindGroup),
@@ -113,9 +113,9 @@ pub struct Renderer {
     current: Option<Current>,
     /// Recently shown GPU pictures, kept until the GPU is surely done
     /// sampling them (a VAAPI surface is reused once released).
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(zero_copy)]
     shown: std::collections::VecDeque<crate::decode::GpuPicture>,
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(zero_copy)]
     pub interop: Option<std::sync::Arc<crate::interop::VkInterop>>,
     srgb_target: bool,
     pub egui: egui_wgpu::Renderer,
@@ -163,7 +163,7 @@ impl Renderer {
                 ..Default::default()
             }))?;
 
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(zero_copy)]
         let interop = crate::interop::VkInterop::new(&adapter, &device);
         let caps = surface.get_capabilities(&adapter);
         // Plain 8-bit formats: the shader outputs gamma-encoded values.
@@ -296,12 +296,12 @@ impl Renderer {
             params,
             dummy,
             video: None,
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(zero_copy)]
             gpu_sets: Default::default(),
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(zero_copy)]
             shown: Default::default(),
             current: None,
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(zero_copy)]
             interop,
             srgb_target: format.is_srgb(),
             egui,
@@ -326,7 +326,7 @@ impl Renderer {
     }
 
     /// Show a zero-copy plane set.
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(zero_copy)]
     pub fn show_gpu(&mut self, picture: crate::decode::GpuPicture) {
         let set = &picture.set;
         let key = std::sync::Arc::as_ptr(set) as usize;
@@ -534,7 +534,7 @@ impl Renderer {
             });
             let bind_group = match self.current {
                 Some(Current::Cpu(_)) => self.video.as_ref().map(|v| &v.bind_group),
-                #[cfg(not(target_os = "macos"))]
+                #[cfg(zero_copy)]
                 Some(Current::Gpu(key, _)) => self.gpu_sets.get(&key).map(|(_, b)| b),
                 _ => None,
             };

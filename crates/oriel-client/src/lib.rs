@@ -1,6 +1,8 @@
 //! The oriel client: connects to a host, decodes its video and draws it,
 //! and forwards input.
 
+#[cfg(target_os = "android")]
+pub mod android;
 pub mod app;
 pub mod autostart;
 pub mod config;
@@ -23,7 +25,7 @@ mod gamepad;
 pub mod headless;
 #[cfg(target_os = "linux")]
 mod inhibit;
-#[cfg(not(target_os = "macos"))]
+#[cfg(zero_copy)]
 pub mod interop;
 pub mod keymap;
 pub mod launcher;

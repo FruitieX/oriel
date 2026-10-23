@@ -1,6 +1,7 @@
 //! Clipboard sync: text and images. arboard has no change notifications,
 //! so a thread polls (images less often, and on Windows only when the
 //! clipboard's sequence number changed).
+#![cfg_attr(target_os = "android", allow(unused_imports))]
 
 use std::{
     hash::{Hash, Hasher},
@@ -46,6 +47,13 @@ pub fn start(options: Options, on_change: impl Fn(Content) + Send + 'static) -> 
     ClipboardSync { set: set_tx }
 }
 
+/// Images are not synced on Android (yet): take what the peer sends.
+#[cfg(target_os = "android")]
+fn run(_options: Options, set_rx: mpsc::Receiver<Content>, _on_change: impl Fn(Content)) {
+    while set_rx.recv().is_ok() {}
+}
+
+#[cfg(not(target_os = "android"))]
 fn run(options: Options, set_rx: mpsc::Receiver<Content>, on_change: impl Fn(Content)) {
     let mut clipboard = match arboard::Clipboard::new() {
         Ok(c) => c,
@@ -134,6 +142,7 @@ fn run(options: Options, set_rx: mpsc::Receiver<Content>, on_change: impl Fn(Con
     }
 }
 
+#[cfg(not(target_os = "android"))]
 /// The clipboard's change counter, where the platform has one.
 fn sequence_number() -> Option<u32> {
     #[cfg(windows)]
@@ -142,6 +151,7 @@ fn sequence_number() -> Option<u32> {
     None
 }
 
+#[cfg(not(target_os = "android"))]
 fn image_hash(image: &arboard::ImageData) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     (image.width, image.height).hash(&mut h);
@@ -149,6 +159,7 @@ fn image_hash(image: &arboard::ImageData) -> u64 {
     h.finish()
 }
 
+#[cfg(not(target_os = "android"))]
 fn encode_png(image: &arboard::ImageData) -> Option<Vec<u8>> {
     let mut out = Vec::new();
     let mut encoder = png::Encoder::new(&mut out, image.width as u32, image.height as u32);
@@ -161,6 +172,7 @@ fn encode_png(image: &arboard::ImageData) -> Option<Vec<u8>> {
     Some(out)
 }
 
+#[cfg(not(target_os = "android"))]
 fn decode_png(png: &[u8]) -> Option<arboard::ImageData<'static>> {
     let mut decoder = png::Decoder::new(std::io::Cursor::new(png));
     decoder.set_transformations(png::Transformations::normalize_to_color8());

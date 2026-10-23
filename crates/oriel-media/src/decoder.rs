@@ -11,22 +11,7 @@ use crate::{
     util::{check, is_eagain},
 };
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PlaneFormat {
-    /// Y plane + interleaved UV plane at half resolution.
-    Nv12,
-    /// Y, U, V planes; chroma at half resolution.
-    Yuv420p,
-    /// Y, U, V planes at full resolution.
-    Yuv444p,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ColorMatrix {
-    Bt601,
-    Bt709,
-    Bt2020,
-}
+pub use crate::formats::{ColorMatrix, PlaneFormat};
 
 /// A decoded frame in CPU memory.
 pub struct DecodedFrame {

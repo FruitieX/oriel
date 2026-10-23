@@ -4,6 +4,13 @@
 use std::{path::Path, process::Command};
 
 fn main() {
+    // Zero-copy video (PyroWave and VAAPI through Vulkan interop): not on
+    // macOS (MoltenVK) or Android (MediaCodec has its own path).
+    println!("cargo::rustc-check-cfg=cfg(zero_copy)");
+    let os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    if os != "macos" && os != "android" {
+        println!("cargo:rustc-cfg=zero_copy");
+    }
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let git = root.join(".git");
     // A new commit or staged change rebuilds this; edits alone do not.

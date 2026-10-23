@@ -6,9 +6,11 @@ use std::{
 };
 
 use anyhow::Result;
+#[cfg(zero_copy)]
+use oriel_media::ColorMatrix;
 #[cfg(target_os = "linux")]
 use oriel_media::Frame;
-use oriel_media::{ColorMatrix, DecodedFrame, Decoder};
+use oriel_media::{DecodedFrame, Decoder};
 use oriel_proto::{ClientMsg, Codec, Datagram, FrameHeader};
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
@@ -22,11 +24,11 @@ use crate::{
 /// textures the renderer samples directly.
 pub enum Picture {
     Cpu(DecodedFrame),
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(zero_copy)]
     Gpu(GpuPicture),
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(zero_copy)]
 pub struct GpuPicture {
     pub set: Arc<crate::interop::PlaneSet>,
     pub matrix: ColorMatrix,
@@ -77,16 +79,16 @@ impl FrameSlot {
 }
 
 /// Set by the renderer once it knows whether GPU interop is possible.
-#[cfg(not(target_os = "macos"))]
+#[cfg(zero_copy)]
 pub type InteropSlot = Arc<Mutex<Option<Arc<crate::interop::VkInterop>>>>;
-#[cfg(target_os = "macos")]
+#[cfg(not(zero_copy))]
 pub type InteropSlot = Arc<Mutex<Option<()>>>;
 
 pub type Job = (FrameHeader, Vec<u8>, Instant);
 
 /// Plane sets cycled through, so the ones queued or being drawn are not
 /// overwritten.
-#[cfg(not(target_os = "macos"))]
+#[cfg(zero_copy)]
 const GPU_SETS: usize = 4 + crate::playout::MAX_QUEUED;
 
 /// VAAPI surfaces imported as textures, by surface.
@@ -104,7 +106,7 @@ enum VideoDecoder {
         decoder: Decoder,
         imports: DmabufImports,
     },
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(zero_copy)]
     PyroGpu {
         decoder: oriel_media::PyroDecoder,
         sets: Vec<Arc<crate::interop::PlaneSet>>,
@@ -119,7 +121,7 @@ impl VideoDecoder {
         interop: &InteropSlot,
         zero_copy: bool,
     ) -> Result<(Self, String)> {
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(zero_copy)]
         if zero_copy
             && header.codec == Codec::PyroWave
             && let Some(interop) = interop.lock().clone()
@@ -156,7 +158,7 @@ impl VideoDecoder {
         Ok((Self::Cpu(d), desc))
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(zero_copy)]
     fn open_pyro_gpu(header: &FrameHeader, interop: &crate::interop::VkInterop) -> Result<Self> {
         let mut decoder = oriel_media::PyroDecoder::new_on_gpu(
             header.width,
@@ -182,7 +184,7 @@ impl VideoDecoder {
             Self::Cpu(_) => false,
             #[cfg(target_os = "linux")]
             Self::Vaapi { .. } => true,
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(zero_copy)]
             Self::PyroGpu { .. } => true,
         }
     }
@@ -229,7 +231,7 @@ impl VideoDecoder {
                     })))
                 }
             },
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(zero_copy)]
             Self::PyroGpu {
                 decoder,
                 sets,
@@ -283,11 +285,16 @@ pub fn spawn(
             let path = |codec: Codec| usize::from(codec != Codec::PyroWave);
             // Whether this codec can decode zero-copy with the current
             // renderer.
+            #[cfg(target_os = "linux")]
             let zero_copy_possible = |codec: Codec| {
-                interop.lock().as_ref().is_some_and(|i| {
-                    codec == Codec::PyroWave || (cfg!(target_os = "linux") && hardware && i.dmabuf)
-                })
+                interop
+                    .lock()
+                    .as_ref()
+                    .is_some_and(|i| codec == Codec::PyroWave || (hardware && i.dmabuf))
             };
+            #[cfg(not(target_os = "linux"))]
+            let zero_copy_possible =
+                |codec: Codec| codec == Codec::PyroWave && interop.lock().is_some();
             let mut need_keyframe = false;
             let mut last_request = Instant::now() - Duration::from_secs(1);
             while let Ok((header, data, received)) = rx.recv() {

@@ -8,7 +8,6 @@ license.workspace = true
 oriel-proto.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
-ffmpeg-sys-next.workspace = true
 libloading = "0.8"
 ash = { version = "0.38", default-features = false, features = ["std"] }
 
@@ -20,3 +19,10 @@ windows = { workspace = true, features = [
   "Win32_Graphics_Dxgi_Common",
   "Win32_Security",
 ] }
+
+# Android decodes through MediaCodec instead of FFmpeg.
+[target.'cfg(not(target_os = "android"))'.dependencies]
+ffmpeg-sys-next.workspace = true
+
+[target.'cfg(target_os = "android")'.dependencies]
+ndk = { version = "0.9", features = ["media", "api-level-28"] }

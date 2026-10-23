@@ -136,7 +136,13 @@ pub fn run(
     host: Option<Box<dyn HostControl>>,
     options: GuiOptions,
 ) -> Result<()> {
-    let mut event_loop = EventLoop::<UiEvent>::with_user_event().build()?;
+    let mut builder = EventLoop::<UiEvent>::with_user_event();
+    #[cfg(target_os = "android")]
+    {
+        use winit::platform::android::EventLoopBuilderExtAndroid;
+        builder.with_android_app(crate::android::app().clone());
+    }
+    let mut event_loop = builder.build()?;
     #[cfg(windows)]
     let tray = if options.tray {
         match crate::tray::Tray::new(options.log_path.is_some()) {

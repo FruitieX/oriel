@@ -944,7 +944,7 @@ impl Viewer {
             if let Some(gfx) = &mut self.gfx {
                 match ready.picture {
                     crate::decode::Picture::Cpu(frame) => gfx.renderer.upload(&frame),
-                    #[cfg(not(target_os = "macos"))]
+                    #[cfg(zero_copy)]
                     crate::decode::Picture::Gpu(picture) => gfx.renderer.show_gpu(picture),
                 }
             }
@@ -1729,7 +1729,7 @@ impl ApplicationHandler<UiEvent> for Viewer {
         let display = window.display_handle().ok().map(|h| h.as_raw());
         // SAFETY: the display outlives the clipboard (both dropped in `exiting`).
         let clipboard = unsafe { egui_winit::clipboard::Clipboard::new(display) };
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(zero_copy)]
         if self.options.hardware_decode {
             *self.session.interop.lock() = renderer.interop.clone();
         }

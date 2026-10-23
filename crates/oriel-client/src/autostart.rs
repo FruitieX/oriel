@@ -114,6 +114,14 @@ mod imp {
     }
 }
 
+/// Android starts apps itself.
+#[cfg(target_os = "android")]
+mod imp {
+    pub fn set(_enabled: bool, _args: &[&str]) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
 #[cfg(windows)]
 mod imp {
     use super::*;

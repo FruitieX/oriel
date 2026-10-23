@@ -1,0 +1,22 @@
+[package]
+name = "oriel-android"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The Android app: `scripts/build-android.sh` packages this library into an
+# APK. On other platforms it is empty.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[target.'cfg(target_os = "android")'.dependencies]
+oriel-client.workspace = true
+oriel-net.workspace = true
+oriel-media.workspace = true
+anyhow.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+winit = { workspace = true, features = ["android-native-activity"] }
+ndk-sys = "0.6"
