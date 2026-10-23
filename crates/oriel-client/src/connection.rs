@@ -61,7 +61,13 @@ async fn open(
     let endpoint = client_endpoint(identity)?;
     let conn = tokio::time::timeout(Duration::from_secs(8), endpoint.connect(addr, "oriel")?)
         .await
-        .with_context(|| format!("timed out connecting to {addr}"))?
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "no answer from {addr}. Check that oriel is sharing there and that its \
+                 firewall lets UDP port {} in",
+                addr.port()
+            )
+        })?
         .with_context(|| format!("connect to {addr}"))?;
     let host_fp = peer_fingerprint(&conn)?;
     let (send, recv) = conn.open_bi().await?;

@@ -315,6 +315,8 @@ struct PairDialog {
     address: String,
     pin: String,
     name: String,
+    /// Why the last attempt failed, shown in the dialog.
+    error: Option<String>,
 }
 
 struct Launcher {
@@ -477,7 +479,10 @@ impl Launcher {
             Action::OpenPair => self.pair_dialog = Some(PairDialog::default()),
             Action::ClosePair => self.pair_dialog = None,
             Action::Pair => {
-                let Some(d) = &self.pair_dialog else { return };
+                let Some(d) = &mut self.pair_dialog else {
+                    return;
+                };
+                d.error = None;
                 let pending: Pending<String> = Default::default();
                 let out = pending.clone();
                 let paths = self.paths.clone();
@@ -735,7 +740,10 @@ impl Launcher {
                         self.pair_dialog = None;
                         self.reload_hosts();
                     }
-                    Err(e) => self.status = format!("Pairing failed: {e:#}"),
+                    Err(e) => match &mut self.pair_dialog {
+                        Some(d) => d.error = Some(format!("{e:#}")),
+                        None => self.status = format!("Pairing failed: {e:#}"),
+                    },
                 }
             }
         }
@@ -818,7 +826,7 @@ impl Launcher {
                     if self.connecting.is_some() || self.pairing.is_some() {
                         ui.spinner();
                     }
-                    ui.label(&self.status);
+                    ui.add(egui::Label::new(&self.status).wrap());
                     if self.reconnect.is_some() && ui.button("Cancel").clicked() {
                         actions.push(Action::CancelReconnect);
                     }
@@ -1067,7 +1075,7 @@ impl Launcher {
         let modal = egui::Modal::new(egui::Id::unique("pair"))
             .frame(dialog_frame())
             .show(ctx, |ui| {
-                ui.set_width(380.0);
+                ui.set_width((ctx.content_rect().width() - 60.0).clamp(240.0, 380.0));
                 ui.heading("Pair a computer");
                 ui.label(
                     egui::RichText::new(
@@ -1094,6 +1102,16 @@ impl Launcher {
                         ui.add(egui::TextEdit::singleline(&mut d.name).hint_text("optional"));
                         ui.end_row();
                     });
+                if let Some(error) = &d.error {
+                    ui.add_space(8.0);
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(format!("Pairing failed: {error}"))
+                                .color(crate::theme::AMBER),
+                        )
+                        .wrap(),
+                    );
+                }
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
                     let ready = !d.address.trim().is_empty() && d.pin.trim().len() == 6 && !busy;

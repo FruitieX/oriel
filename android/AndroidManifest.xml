@@ -18,7 +18,7 @@
             android:exported="true"
             android:launchMode="singleTask"
             android:windowSoftInputMode="adjustResize|stateHidden"
-            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|uiMode|density|fontScale">
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|uiMode|density|fontScale|fontWeightAdjustment|colorMode|layoutDirection|locale|mcc|mnc|touchscreen|grammaticalGender">
             <meta-data android:name="android.app.lib_name" android:value="oriel_android" />
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

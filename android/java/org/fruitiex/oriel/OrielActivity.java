@@ -78,6 +78,17 @@ public class OrielActivity extends NativeActivity {
                 });
     }
 
+    /**
+     * The Rust side runs one event loop per process and cannot start
+     * another, so a destroyed activity takes the process with it; the next
+     * launch starts fresh.
+     */
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        System.exit(0);
+    }
+
     /** Called from Rust: full screen hides the system bars (a swipe shows them). */
     public void setImmersive(final boolean on) {
         runOnUiThread(new Runnable() {
