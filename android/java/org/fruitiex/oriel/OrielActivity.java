@@ -11,6 +11,7 @@ import android.text.InputType;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.WindowInsets;
+import android.view.WindowInsetsController;
 import android.view.inputmethod.BaseInputConnection;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
@@ -75,6 +76,34 @@ public class OrielActivity extends NativeActivity {
                         return v.onApplyWindowInsets(insets);
                     }
                 });
+    }
+
+    /** Called from Rust: full screen hides the system bars (a swipe shows them). */
+    public void setImmersive(final boolean on) {
+        runOnUiThread(new Runnable() {
+            public void run() {
+                View decor = getWindow().getDecorView();
+                if (Build.VERSION.SDK_INT >= 30) {
+                    WindowInsetsController c = decor.getWindowInsetsController();
+                    if (c == null) {
+                        return;
+                    }
+                    if (on) {
+                        c.setSystemBarsBehavior(
+                                WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+                        c.hide(WindowInsets.Type.systemBars());
+                    } else {
+                        c.show(WindowInsets.Type.systemBars());
+                    }
+                } else {
+                    decor.setSystemUiVisibility(on
+                            ? View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                                    | View.SYSTEM_UI_FLAG_FULLSCREEN
+                                    | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                            : 0);
+                }
+            }
+        });
     }
 
     /** Called from Rust. */

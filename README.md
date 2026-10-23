@@ -6,7 +6,8 @@ display) and the client (connects to hosts).
 - Hosts: Windows (Desktop Duplication + NVENC/AMF/QSV/Media Foundation via
   FFmpeg, zero-copy on NVIDIA and AMD) and Linux under GNOME (Mutter's
   remote desktop API + PipeWire, no permission prompt; VAAPI encoding).
-- Clients: Linux (Wayland, X11), Windows; macOS should build but is untested.
+- Clients: Linux (Wayland, X11), Windows, Android; macOS should build but
+  is untested.
 - Client-side cursor: the host sends cursor images, the client's own OS cursor
   draws them, so pointing feels local even with latency. When an application
   on the host hides and confines the cursor (games), the client switches to
@@ -130,6 +131,25 @@ stats = "Ctrl+Alt+Shift+S"
 disconnect = "Ctrl+Alt+Shift+Q"
 ```
 
+## Android
+
+The Android app (Android 9 and newer) connects to hosts; it does not
+share the phone. Video decodes in hardware (MediaCodec, asking for
+low-latency decoding); PyroWave is desktop-only.
+
+- Tap: click. Drag: hold the left button. Long press or two-finger tap:
+  right click.
+- Two fingers pinch to zoom and pan the picture (zoom is local; the
+  quick menu resets it); while the whole picture fits, they scroll. Three
+  fingers scroll.
+- The keyboard button (bottom left) shows the phone's keyboard; what it
+  types goes to the host as text, whatever the host's keyboard layout. A
+  row above it adds Esc, Tab, arrows and Ctrl/Alt/Shift/Win, which latch
+  for the next key (Ctrl, then C).
+- Back opens or closes the menu; "Fill the screen" hides the system bars.
+- The clipboard's text syncs both ways. Gamepads and the microphone are
+  not supported on Android yet.
+
 ## Build
 
 ```sh
@@ -138,6 +158,10 @@ cargo build --release -p oriel          # Linux client (and test host)
 ./scripts/build-windows.sh --release    # Windows build in dist/windows
 ./scripts/package-windows.sh            # installer + portable ZIP in dist/
 nix build                               # Nix package
+
+nix develop .#android
+./scripts/build-android.sh [--install]  # debug APK in dist/ (arm64 + x86_64)
+./scripts/android-release.sh            # release APK, signed with the release key
 ```
 
 See [docs/architecture.md](docs/architecture.md) for how it works and

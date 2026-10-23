@@ -75,7 +75,7 @@ cp "$out/base.apk" "$out/unsigned.apk"
 apk="dist/oriel-$version-android.apk"
 if [ -n "${ORIEL_ANDROID_KEYSTORE:-}" ]; then
   "$build_tools/apksigner" sign --ks "$ORIEL_ANDROID_KEYSTORE" \
-    --ks-pass "env:ORIEL_ANDROID_KEYSTORE_PASS" \
+    --ks-pass "env:ORIEL_ANDROID_KEYSTORE_PASS" --key-pass "env:ORIEL_ANDROID_KEYSTORE_PASS" \
     --ks-key-alias "${ORIEL_ANDROID_KEYSTORE_ALIAS:-oriel}" \
     --out "$apk" "$out/aligned.apk"
 else

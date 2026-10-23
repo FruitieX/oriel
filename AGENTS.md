@@ -27,6 +27,42 @@ Read [docs/architecture.md](docs/architecture.md) first.
   release builds go to `dist/` (debug builds overflowed the Windows main
   thread stack).
 
+## Android
+
+- `nix develop .#android` has the SDK, NDK and Rust's Android targets.
+  `scripts/build-android.sh` builds without Gradle: `cargo ndk` for the
+  library (`crates/oriel-android`, API 28+), `javac` + `d8` for
+  `android/java/.../OrielActivity.java`, `aapt2` for the manifest and
+  icon, then `zipalign` and `apksigner`. Debug builds are debuggable
+  (`run-as` works) and signed with `~/.android/debug.keystore`;
+  `scripts/android-release.sh` signs with the release key from 1Password
+  (op-agent, Agents vault). A release install cannot be updated by a
+  debug-signed APK or the reverse: uninstall in between (which loses
+  the app's pairings).
+- The app is a NativeActivity: Rust runs in `android_main`, winit drives
+  it. Java exists only for what the NDK lacks: soft keyboard text (an
+  invisible editor view passes commits and composing changes on as
+  diffs), window insets (edge to edge is forced from Android 15),
+  immersive mode and the clipboard. The JNI calls are in
+  `oriel-client/src/android.rs`, the native methods in
+  `oriel-android/src/app.rs`.
+- Android sends winit's `Resumed` only when its single window first
+  appears: the launcher and viewer create their window on
+  `StartCause::Init` when it already exists, drop the GPU surface on
+  `Suspended`, and make a fresh egui context per window (egui sends each
+  texture only once). Back arrives as `NamedKey::BrowserBack`.
+- Video: `oriel-media/src/android.rs` decodes with MediaCodec into an
+  `AImageReader` and copies the YUV planes out (no FFmpeg on Android).
+- Emulator: `avdmanager create avd -n oriel35 -k
+  "system-images;android-35;google_apis;x86_64"`, then `emulator -avd
+  oriel35 -no-window -gpu swiftshader_indirect`. Its Vulkan crashes the
+  emulator on wgpu's shaders, so the app uses OpenGL ES there
+  (`ro.hardware` = ranchu). A host on honeydew is `10.0.2.2` from the
+  emulator. `adb shell input tap/swipe/keyevent` drive it; `input text`
+  sends key events, not the soft keyboard (tap its keys for that).
+  Shut the emulator down afterwards (`adb emu kill`).
+- Logs: `adb logcat -s oriel` (tracing, debug level in debug builds).
+
 ## Testing without hardware
 
 - `oriel host --test-pattern` streams a synthetic pattern that draws the

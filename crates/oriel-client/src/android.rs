@@ -152,6 +152,14 @@ pub(crate) fn show_keyboard(show: bool) {
     });
 }
 
+/// Hide (or show again) the status and navigation bars.
+pub(crate) fn set_immersive(on: bool) {
+    with_activity(|env, activity| {
+        env.call_method(activity, "setImmersive", "(Z)V", &[JValue::Bool(on.into())])
+            .map(|_| ())
+    });
+}
+
 /// Send the app to the background (Back on the start page).
 pub(crate) fn move_to_back() {
     with_activity(|env, activity| {

@@ -1149,6 +1149,8 @@ impl Viewer {
             && let Some(w) = self.window()
         {
             w.set_fullscreen(new.fullscreen.then_some(Fullscreen::Borderless(None)));
+            #[cfg(target_os = "android")]
+            crate::android::set_immersive(new.fullscreen);
         }
         if old.mouse != new.mouse {
             self.update_cursor();
@@ -2007,6 +2009,9 @@ impl ApplicationHandler<UiEvent> for Viewer {
         if self.in_force.fullscreen {
             window.set_fullscreen(Some(Fullscreen::Borderless(None)));
         }
+        // Android: "full screen" hides the status and navigation bars.
+        #[cfg(target_os = "android")]
+        crate::android::set_immersive(self.in_force.fullscreen);
         let renderer = match Renderer::new(window.clone()) {
             Ok(r) => r,
             Err(e) => {
@@ -2015,6 +2020,13 @@ impl ApplicationHandler<UiEvent> for Viewer {
                 return;
             }
         };
+        // A fresh context: textures egui already sent belonged to the
+        // previous renderer (Android recreates it after the background).
+        if self.gfx.is_none() && !self.egui_cursors.is_empty() {
+            self.egui_cursors.clear();
+        }
+        self.egui_ctx = egui::Context::default();
+        crate::theme::style(&self.egui_ctx);
         let egui = egui_winit::State::new(
             self.egui_ctx.clone(),
             egui::ViewportId::ROOT,
@@ -2242,6 +2254,8 @@ impl ApplicationHandler<UiEvent> for Viewer {
     }
 
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        #[cfg(target_os = "android")]
+        crate::android::set_immersive(false);
         #[cfg(windows)]
         {
             self.key_hook = None;
