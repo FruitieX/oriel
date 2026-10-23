@@ -50,6 +50,19 @@ With `ORIEL_HUB_FCM_SERVICE_ACCOUNT` set, `POST /api/wake` sends a
 high-priority Firebase data message (`type=wake`) to a device that reported
 a push token, to start sharing.
 
+Android asks before every screen share, so by default the phone shows a
+notification that starts it. To share unattended, grant two permissions
+once over adb:
+
+```sh
+adb shell appops set org.fruitiex.oriel PROJECT_MEDIA allow        # approve the share without asking
+adb shell appops set org.fruitiex.oriel SYSTEM_ALERT_WINDOW allow  # open from the background
+```
+
+A wake-up then lights the screen (the lock screen stays), starts sharing
+and moves the app to the back. Without a push, test it with
+`adb shell am broadcast -a org.fruitiex.oriel.WAKE -n org.fruitiex.oriel/.WakeReceiver`.
+
 ## Deployment
 
 The homelab runs it (`FruitieX/homelab`, `apps/oriel-hub`) at

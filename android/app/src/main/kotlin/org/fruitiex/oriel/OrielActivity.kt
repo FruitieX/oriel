@@ -31,6 +31,8 @@ class OrielActivity : NativeActivity() {
     private lateinit var sink: TextSink
     private var keyboardShown = false
     private var askedAccessibility = false
+    /** Started by a wake-up: share, then step aside. */
+    private var woken = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -74,10 +76,14 @@ class OrielActivity : NativeActivity() {
         handle(intent)
     }
 
-    /** A wake-up's notification asks to share. */
+    /** A wake-up, or its notification, asks to share. */
     private fun handle(intent: Intent?) {
-        if (intent?.action == ACTION_SHARE) {
-            requestScreenShare()
+        when (intent?.action) {
+            ACTION_SHARE -> requestScreenShare()
+            ACTION_WAKE -> {
+                woken = true
+                requestScreenShare()
+            }
         }
     }
 
@@ -95,7 +101,7 @@ class OrielActivity : NativeActivity() {
 
     fun requestScreenShare() = runOnUiThread {
         if (ShareService.instance != null) {
-            askForAccessibility()
+            shareStarted()
             return@runOnUiThread
         }
         val mpm = getSystemService(MediaProjectionManager::class.java)
@@ -113,6 +119,19 @@ class OrielActivity : NativeActivity() {
                     .putExtra("code", result)
                     .putExtra("data", data),
             )
+            shareStarted()
+        } else if (request == REQUEST_SHARE && woken) {
+            woken = false
+            moveTaskToBack(true)
+        }
+    }
+
+    private fun shareStarted() {
+        if (woken) {
+            // Leave the phone as it was, for whoever connects.
+            woken = false
+            moveTaskToBack(true)
+        } else {
             askForAccessibility()
         }
     }
@@ -308,6 +327,8 @@ class OrielActivity : NativeActivity() {
     companion object {
         /** A wake-up notification's action: start sharing. */
         const val ACTION_SHARE = "org.fruitiex.oriel.SHARE"
+        /** A wake-up allowed to start sharing unattended (see `Wake`). */
+        const val ACTION_WAKE = "org.fruitiex.oriel.WAKE_SHARE"
         private const val REQUEST_SHARE = 7
 
         init {
