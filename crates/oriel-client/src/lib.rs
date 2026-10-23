@@ -38,3 +38,16 @@ mod tray;
 mod winkeys;
 
 pub use app::{MouseMode, ViewerOptions};
+
+/// What this build is, for Settings → App.
+pub fn build_info() -> [(&'static str, String); 4] {
+    [
+        ("Version", env!("CARGO_PKG_VERSION").to_string()),
+        ("Commit", env!("ORIEL_GIT_SHA").to_string()),
+        ("Built", env!("ORIEL_BUILD_DATE").to_string()),
+        (
+            "Platform",
+            format!("{} {}", std::env::consts::OS, std::env::consts::ARCH),
+        ),
+    ]
+}

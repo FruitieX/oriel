@@ -727,44 +727,61 @@ fn interface_tab(ui: &mut Ui, rows: &mut Rows) {
 }
 
 fn app_tab(ui: &mut Ui, rows: &mut Rows) {
-    let c = &mut *rows.config;
-    let before = (c.autostart, c.start_hidden, c.share);
-    let machine_wide = crate::autostart::machine_wide();
-    grid(ui, "app", |ui| {
-        ui.label("Start");
-        if machine_wide {
+    // Starting at login and sharing are for desktops.
+    #[cfg(not(target_os = "android"))]
+    {
+        let c = &mut *rows.config;
+        let before = (c.autostart, c.start_hidden, c.share);
+        let machine_wide = crate::autostart::machine_wide();
+        grid(ui, "app", |ui| {
+            ui.label("Start");
+            if machine_wide {
+                ui.add_enabled(
+                    false,
+                    egui::Checkbox::new(&mut true, "Start oriel when I log in"),
+                )
+                .on_disabled_hover_text("The installer starts oriel in the tray for every user");
+            } else {
+                ui.checkbox(&mut c.autostart, "Start oriel when I log in");
+            }
+            ui.label("");
+            ui.end_row();
+            ui.label("");
             ui.add_enabled(
-                false,
-                egui::Checkbox::new(&mut true, "Start oriel when I log in"),
-            )
-            .on_disabled_hover_text("The installer starts oriel in the tray for every user");
-        } else {
-            ui.checkbox(&mut c.autostart, "Start oriel when I log in");
+                c.autostart && !machine_wide,
+                egui::Checkbox::new(
+                    &mut c.start_hidden,
+                    if cfg!(windows) {
+                        "Start in the tray"
+                    } else {
+                        "Start minimized"
+                    },
+                ),
+            );
+            ui.label("");
+            ui.end_row();
+            ui.label("Sharing");
+            ui.checkbox(&mut c.share, "Share this computer when oriel starts");
+            ui.label("");
+            ui.end_row();
+        });
+        if (c.autostart, c.start_hidden, c.share) != before {
+            rows.outcome.changed = true;
         }
-        ui.label("");
-        ui.end_row();
-        ui.label("");
-        ui.add_enabled(
-            c.autostart && !machine_wide,
-            egui::Checkbox::new(
-                &mut c.start_hidden,
-                if cfg!(windows) {
-                    "Start in the tray"
-                } else {
-                    "Start minimized"
-                },
-            ),
-        );
-        ui.label("");
-        ui.end_row();
-        ui.label("Sharing");
-        ui.checkbox(&mut c.share, "Share this computer when oriel starts");
-        ui.label("");
-        ui.end_row();
-    });
-    if (c.autostart, c.start_hidden, c.share) != before {
-        rows.outcome.changed = true;
+        ui.add_space(14.0);
     }
+    #[cfg(target_os = "android")]
+    let _ = &rows;
+    ui.label(egui::RichText::new("About").strong());
+    ui.add_space(4.0);
+    grid(ui, "about", |ui| {
+        for (label, value) in crate::build_info() {
+            ui.label(label);
+            ui.add(egui::Label::new(value).selectable(true));
+            ui.label("");
+            ui.end_row();
+        }
+    });
 }
 
 /// Narrower than this, rows stack: label above control.

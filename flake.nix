@@ -7,6 +7,11 @@
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    # The Android SDK and NDK for the Android client (`nix develop .#android`).
+    android-nixpkgs = {
+      url = "github:tadfisher/android-nixpkgs";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
@@ -14,6 +19,7 @@
       self,
       nixpkgs,
       rust-overlay,
+      android-nixpkgs,
     }:
     let
       systems = [
@@ -67,6 +73,13 @@
               "-p"
               "oriel"
             ];
+            # Shown in Settings → App (the source has no .git).
+            ORIEL_GIT_SHA = self.shortRev or self.dirtyShortRev or "unknown";
+            ORIEL_BUILD_DATE =
+              let
+                d = self.lastModifiedDate or "19700101000000";
+              in
+              "${builtins.substring 0 4 d}-${builtins.substring 4 2 d}-${builtins.substring 6 2 d} ${builtins.substring 8 2 d}:${builtins.substring 10 2 d} UTC";
             doCheck = false;
             nativeBuildInputs = with pkgs; [
               pkg-config
@@ -141,6 +154,50 @@
           };
         in
         {
+          # The Android client: `scripts/build-android.sh` builds the APK.
+          android =
+            let
+              androidSdk = android-nixpkgs.sdk.${system} (
+                sdk: with sdk; [
+                  cmdline-tools-latest
+                  build-tools-35-0-0
+                  platform-tools
+                  platforms-android-35
+                  ndk-27-2-12479018
+                  emulator
+                  system-images-android-35-google-apis-x86-64
+                ]
+              );
+              rustAndroid = pkgs.rust-bin.stable.latest.default.override {
+                extensions = [
+                  "rust-src"
+                  "clippy"
+                  "rustfmt"
+                ];
+                targets = [
+                  "aarch64-linux-android"
+                  "x86_64-linux-android"
+                ];
+              };
+            in
+            pkgs.mkShell {
+              nativeBuildInputs = with pkgs; [
+                rustAndroid
+                cargo-ndk
+                jdk17
+                cmake
+                ninja
+                pkg-config
+                zip
+                unzip
+              ];
+              ANDROID_HOME = "${androidSdk}/share/android-sdk";
+              ANDROID_SDK_ROOT = "${androidSdk}/share/android-sdk";
+              ANDROID_NDK_HOME = "${androidSdk}/share/android-sdk/ndk/27.2.12479018";
+              JAVA_HOME = "${pkgs.jdk17}";
+              LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
+            };
+
           default = pkgs.mkShell (
             {
               nativeBuildInputs =
