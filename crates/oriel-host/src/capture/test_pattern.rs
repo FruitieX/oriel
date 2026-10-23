@@ -61,7 +61,7 @@ impl State {
                 self.buttons = 0;
                 self.keys_down.clear();
             }
-            SecureAttention => {}
+            SecureAttention | Text { .. } => {}
         }
     }
 }

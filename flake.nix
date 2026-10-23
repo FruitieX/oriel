@@ -190,6 +190,8 @@
                 pkg-config
                 zip
                 unzip
+                # The launcher icon from assets/oriel.svg.
+                resvg
               ];
               ANDROID_HOME = "${androidSdk}/share/android-sdk";
               ANDROID_SDK_ROOT = "${androidSdk}/share/android-sdk";

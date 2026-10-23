@@ -53,3 +53,13 @@ pub fn build_info() -> [(&'static str, String); 4] {
         ),
     ]
 }
+
+/// Running in the Android emulator (whose GPU emulation has gaps).
+pub fn android_emulator() -> bool {
+    #[cfg(target_os = "android")]
+    return android_system_properties::AndroidSystemProperties::new()
+        .get("ro.hardware")
+        .is_some_and(|h| h == "ranchu" || h == "goldfish");
+    #[cfg(not(target_os = "android"))]
+    false
+}

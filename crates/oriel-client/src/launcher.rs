@@ -143,6 +143,8 @@ pub fn run(
         builder.with_android_app(crate::android::app().clone());
     }
     let mut event_loop = builder.build()?;
+    #[cfg(target_os = "android")]
+    crate::android::set_proxy(event_loop.create_proxy());
     #[cfg(windows)]
     let tray = if options.tray {
         match crate::tray::Tray::new(options.log_path.is_some()) {
@@ -1209,7 +1211,13 @@ impl ApplicationHandler<UiEvent> for Launcher {
                 window.request_redraw();
             }
             WindowEvent::RedrawRequested => {
-                let input = egui.take_egui_input(window);
+                #[allow(unused_mut)]
+                let mut input = egui.take_egui_input(window);
+                #[cfg(target_os = "android")]
+                {
+                    input.safe_area_insets =
+                        Some(crate::android::safe_area(window.scale_factor() as f32));
+                }
                 let ctx = self.egui_ctx.clone();
                 let mut actions = Vec::new();
                 let output = ctx.run_ui(input, |ui| actions = self.ui(ui));
@@ -1236,7 +1244,29 @@ impl ApplicationHandler<UiEvent> for Launcher {
         }
     }
 
+    fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
+        // Android takes the surface away while in the background.
+        if cfg!(target_os = "android") {
+            self.gfx = None;
+        }
+    }
+
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: UiEvent) {
+        // Insets or the keyboard changed.
+        if matches!(event, UiEvent::Platform)
+            && let Some((window, ..)) = &self.gfx
+        {
+            window.request_redraw();
+        }
+    }
+
     fn new_events(&mut self, event_loop: &ActiveEventLoop, cause: StartCause) {
+        // Android announces its one window only once: a launcher started
+        // again after a viewer creates it here.
+        #[cfg(target_os = "android")]
+        if matches!(cause, StartCause::Init) && crate::android::app().native_window().is_some() {
+            self.resumed(event_loop);
+        }
         if matches!(cause, StartCause::ResumeTimeReached { .. }) {
             self.poll(event_loop);
             if let Some((window, ..)) = &self.gfx {

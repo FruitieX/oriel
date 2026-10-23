@@ -104,7 +104,37 @@ impl Injector for GnomeInjector {
                 }
             }
             InputEvent::SecureAttention => {}
+            InputEvent::Text { text } => {
+                for c in text.chars() {
+                    let sym = keysym(c);
+                    input(InputCmd::Keysym(sym, true));
+                    input(InputCmd::Keysym(sym, false));
+                }
+            }
         }
         Ok(())
+    }
+}
+
+/// The X keysym that types `c`: Latin-1 directly, controls as their keys,
+/// everything else as a Unicode keysym.
+fn keysym(c: char) -> u32 {
+    match c {
+        '\n' | '\r' => 0xff0d, // Return
+        '\t' => 0xff09,        // Tab
+        '\u{8}' => 0xff08,     // BackSpace
+        ' '..='~' | '\u{a0}'..='\u{ff}' => c as u32,
+        _ => 0x0100_0000 + c as u32,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn keysyms() {
+        assert_eq!(super::keysym('a'), 0x61);
+        assert_eq!(super::keysym('ä'), 0xe4);
+        assert_eq!(super::keysym('€'), 0x0100_20ac);
+        assert_eq!(super::keysym('\n'), 0xff0d);
     }
 }

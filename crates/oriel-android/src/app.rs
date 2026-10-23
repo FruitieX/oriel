@@ -92,3 +92,76 @@ impl Drop for Logcat {
         }
     }
 }
+
+// Called by OrielActivity (android/java/.../OrielActivity.java).
+
+use jni::{
+    JNIEnv,
+    objects::{JClass, JString},
+    sys::{jboolean, jint},
+};
+use oriel_client::android::{Insets, TextInput, push_input};
+
+#[unsafe(no_mangle)]
+extern "system" fn Java_org_fruitiex_oriel_OrielActivity_nativeText(
+    mut env: JNIEnv,
+    _class: JClass,
+    text: JString,
+) {
+    if let Ok(text) = env.get_string(&text) {
+        push_input(TextInput::Text(text.into()));
+    }
+}
+
+#[unsafe(no_mangle)]
+extern "system" fn Java_org_fruitiex_oriel_OrielActivity_nativeDelete(
+    _env: JNIEnv,
+    _class: JClass,
+    before: jint,
+    after: jint,
+) {
+    push_input(TextInput::Delete {
+        before: before.max(0) as u32,
+        after: after.max(0) as u32,
+    });
+}
+
+#[unsafe(no_mangle)]
+extern "system" fn Java_org_fruitiex_oriel_OrielActivity_nativeKey(
+    _env: JNIEnv,
+    _class: JClass,
+    code: jint,
+    down: jboolean,
+    meta: jint,
+) {
+    push_input(TextInput::Key {
+        code,
+        down: down != 0,
+        meta,
+    });
+}
+
+#[unsafe(no_mangle)]
+extern "system" fn Java_org_fruitiex_oriel_OrielActivity_nativeKeyboardShown(
+    _env: JNIEnv,
+    _class: JClass,
+    shown: jboolean,
+) {
+    oriel_client::android::set_keyboard_shown(shown != 0);
+}
+
+#[unsafe(no_mangle)]
+extern "system" fn Java_org_fruitiex_oriel_OrielActivity_nativeInsets(
+    _env: JNIEnv,
+    _class: JClass,
+    left: jint,
+    top: jint,
+    right: jint,
+    bottom: jint,
+    keyboard: jint,
+) {
+    oriel_client::android::set_insets(Insets {
+        bars: [left as f32, top as f32, right as f32, bottom as f32],
+        keyboard: keyboard as f32,
+    });
+}

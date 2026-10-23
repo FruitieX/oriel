@@ -128,7 +128,14 @@ impl Renderer {
     pub fn new(window: Arc<Window>) -> Result<Self> {
         // Prefer Vulkan (zero-copy PyroWave needs it), then anything.
         let mut found = None;
-        for backends in [wgpu::Backends::VULKAN, wgpu::Backends::all()] {
+        // The Android emulator's Vulkan crashes the emulator on wgpu's
+        // shaders; its OpenGL ES works.
+        let order: &[wgpu::Backends] = if crate::android_emulator() {
+            &[wgpu::Backends::GL]
+        } else {
+            &[wgpu::Backends::VULKAN, wgpu::Backends::all()]
+        };
+        for &backends in order {
             let mut desc =
                 wgpu::InstanceDescriptor::new_with_display_handle(Box::new(window.clone()))
                     .with_env();
@@ -156,12 +163,18 @@ impl Renderer {
         let adapter_info = format!("{} ({:?})", info.name, info.backend);
         // DMA-BUF import lets VAAPI frames be drawn without copies.
         let required_features = adapter.features() & wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF;
-        let (device, queue) =
-            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        let (device, queue) = pollster::block_on(
+            adapter.request_device(&wgpu::DeviceDescriptor {
                 label: Some("oriel"),
                 required_features,
+                // No compute: what OpenGL ES (the Android emulator) offers,
+                // with the adapter's real texture size for 4K video.
+                required_limits: wgpu::Limits::downlevel_webgl2_defaults()
+                    .using_resolution(adapter.limits())
+                    .using_alignment(adapter.limits()),
                 ..Default::default()
-            }))?;
+            }),
+        )?;
 
         #[cfg(zero_copy)]
         let interop = crate::interop::VkInterop::new(&adapter, &device);

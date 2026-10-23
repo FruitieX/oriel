@@ -7,11 +7,11 @@ use oriel_proto::{InputEvent, MouseButton, keys};
 use windows::Win32::UI::{
     Input::KeyboardAndMouse::{
         INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBD_EVENT_FLAGS, KEYBDINPUT,
-        KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, MOUSE_EVENT_FLAGS,
-        MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_HWHEEL, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
-        MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN,
-        MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_WHEEL, MOUSEEVENTF_XDOWN,
-        MOUSEEVENTF_XUP, MOUSEINPUT, SendInput, VIRTUAL_KEY, VK_PAUSE,
+        KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, KEYEVENTF_UNICODE,
+        MOUSE_EVENT_FLAGS, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_HWHEEL, MOUSEEVENTF_LEFTDOWN,
+        MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE,
+        MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_WHEEL,
+        MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, MOUSEINPUT, SendInput, VIRTUAL_KEY, VK_PAUSE,
     },
     WindowsAndMessaging::{
         GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
@@ -56,6 +56,40 @@ impl SendInputInjector {
             "SendInput was blocked: {}",
             windows::core::Error::from_thread()
         )
+    }
+
+    /// Type text as Unicode key events; Enter, Tab and Backspace as keys.
+    fn text(&mut self, text: &str) -> Result<()> {
+        for c in text.chars() {
+            let key = match c {
+                '\n' | '\r' => Some(keys::ENTER),
+                '\t' => Some(keys::TAB),
+                '\u{8}' => Some(keys::BACKSPACE),
+                _ => None,
+            };
+            if let Some(usage) = key {
+                self.key(usage, true)?;
+                self.key(usage, false)?;
+                continue;
+            }
+            let mut units = [0u16; 2];
+            for &unit in c.encode_utf16(&mut units).iter() {
+                for flags in [KEYEVENTF_UNICODE, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP] {
+                    self.send(&[INPUT {
+                        r#type: INPUT_KEYBOARD,
+                        Anonymous: INPUT_0 {
+                            ki: KEYBDINPUT {
+                                wVk: VIRTUAL_KEY(0),
+                                wScan: unit,
+                                dwFlags: flags,
+                                ..Default::default()
+                            },
+                        },
+                    }])?;
+                }
+            }
+        }
+        Ok(())
     }
 
     fn key(&mut self, usage: u16, down: bool) -> Result<()> {
@@ -178,6 +212,7 @@ impl Injector for SendInputInjector {
                 }
                 Ok(())
             }
+            InputEvent::Text { text } => self.text(&text),
             InputEvent::SecureAttention => {
                 // Only a service may send it; ask ours, or try directly.
                 if !crate::service::request_secure_attention() {

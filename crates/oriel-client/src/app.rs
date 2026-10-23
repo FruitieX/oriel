@@ -577,6 +577,38 @@ impl Viewer {
         });
     }
 
+    /// Text and keys from Android's soft keyboard.
+    #[cfg(target_os = "android")]
+    fn handle_platform(&mut self) {
+        use crate::android::TextInput;
+        if !self.forwarding() {
+            crate::android::take_input();
+            return;
+        }
+        let tap = |s: &Session, usage: u16| {
+            s.input(InputEvent::Key { usage, down: true });
+            s.input(InputEvent::Key { usage, down: false });
+        };
+        for input in crate::android::take_input() {
+            match input {
+                TextInput::Text(text) => self.session.input(InputEvent::Text { text }),
+                TextInput::Delete { before, after } => {
+                    for _ in 0..before.min(256) {
+                        tap(&self.session, oriel_proto::keys::BACKSPACE);
+                    }
+                    for _ in 0..after.min(256) {
+                        tap(&self.session, 0x4C);
+                    }
+                }
+                TextInput::Key { code, down, .. } => {
+                    if let Some(usage) = crate::android::hid_usage(code) {
+                        self.session.input(InputEvent::Key { usage, down });
+                    }
+                }
+            }
+        }
+    }
+
     /// Keys taken by the Windows keyboard hook while forwarding.
     #[cfg(windows)]
     fn handle_hook_keys(&mut self) {
@@ -985,7 +1017,13 @@ impl Viewer {
         if self.menu_open && !self.menu_placed {
             self.menu_generation += 1;
         }
-        let raw_input = gfx.egui.take_egui_input(&gfx.window);
+        #[allow(unused_mut)]
+        let mut raw_input = gfx.egui.take_egui_input(&gfx.window);
+        #[cfg(target_os = "android")]
+        {
+            raw_input.safe_area_insets =
+                Some(crate::android::safe_area(gfx.window.scale_factor() as f32));
+        }
         let ctx = self.egui_ctx.clone();
         let mut actions = Vec::new();
         let state = OverlayState::from(&*self);
@@ -1842,6 +1880,11 @@ impl ApplicationHandler<UiEvent> for Viewer {
                     self.request_redraw();
                 }
             }
+            UiEvent::Platform => {
+                #[cfg(target_os = "android")]
+                self.handle_platform();
+                self.request_redraw();
+            }
             UiEvent::HookKeys => {
                 #[cfg(windows)]
                 self.handle_hook_keys();
@@ -1950,7 +1993,22 @@ impl ApplicationHandler<UiEvent> for Viewer {
         self.gfx = None;
     }
 
-    fn new_events(&mut self, _event_loop: &ActiveEventLoop, cause: StartCause) {
+    fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
+        // Android takes the surface away while in the background; the
+        // session keeps running and the window comes back on resume.
+        if cfg!(target_os = "android") {
+            self.egui_cursors.clear();
+            self.gfx = None;
+        }
+    }
+
+    fn new_events(&mut self, event_loop: &ActiveEventLoop, cause: StartCause) {
+        // Android announces its one window only once, before the launcher.
+        #[cfg(target_os = "android")]
+        if matches!(cause, StartCause::Init) && crate::android::app().native_window().is_some() {
+            self.resumed(event_loop);
+        }
+        let _ = event_loop;
         if !matches!(cause, StartCause::ResumeTimeReached { .. }) {
             return;
         }

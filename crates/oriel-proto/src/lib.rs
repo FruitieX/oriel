@@ -22,7 +22,7 @@ pub const ALPN: &[u8] = b"oriel/1";
 /// when it only checks whether the host is up.
 pub const PROBE_REASON: &[u8] = b"probe";
 
-pub const PROTOCOL_VERSION: u32 = 10;
+pub const PROTOCOL_VERSION: u32 = 11;
 pub const DEFAULT_PORT: u16 = 48600;
 /// Upper bound for a single control/input message.
 pub const MAX_MESSAGE_LEN: usize = 32 * 1024 * 1024;
@@ -298,7 +298,7 @@ pub enum MouseButton {
     Forward,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum InputEvent {
     /// Absolute position in surface pixels.
     MouseMove {
@@ -330,6 +330,12 @@ pub enum InputEvent {
     ReleaseAll,
     /// Ctrl+Alt+Del (the secure attention sequence).
     SecureAttention,
+    /// Type this text, whatever the host's keyboard layout (a phone's
+    /// keyboard sends text, not keys). "\n" is Enter, "\t" Tab and
+    /// "\u{8}" Backspace.
+    Text {
+        text: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

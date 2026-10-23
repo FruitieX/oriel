@@ -41,6 +41,7 @@ trait RemoteDesktopSession {
     fn start(&self) -> zbus::Result<()>;
     fn stop(&self) -> zbus::Result<()>;
     fn notify_keyboard_keycode(&self, keycode: u32, state: bool) -> zbus::Result<()>;
+    fn notify_keyboard_keysym(&self, keysym: u32, state: bool) -> zbus::Result<()>;
     fn notify_pointer_motion_relative(&self, dx: f64, dy: f64) -> zbus::Result<()>;
     fn notify_pointer_motion_absolute(&self, stream: &str, x: f64, y: f64) -> zbus::Result<()>;
     fn notify_pointer_button(&self, button: i32, state: bool) -> zbus::Result<()>;
@@ -127,10 +128,15 @@ trait DisplayConfig {
 /// Commands for the input task (ordered, fire and forget).
 pub enum InputCmd {
     Key(u32, bool),
+    /// An X keysym (typed text).
+    Keysym(u32, bool),
     MoveAbsolute(f64, f64),
     MoveRelative(f64, f64),
     Button(i32, bool),
-    Scroll { axis: u32, steps: i32 },
+    Scroll {
+        axis: u32,
+        steps: i32,
+    },
 }
 
 pub struct GnomeSession {
@@ -261,6 +267,7 @@ impl GnomeSession {
             while let Some(cmd) = input_rx.recv().await {
                 let result = match cmd {
                     InputCmd::Key(code, down) => rd_input.notify_keyboard_keycode(code, down).await,
+                    InputCmd::Keysym(sym, down) => rd_input.notify_keyboard_keysym(sym, down).await,
                     InputCmd::MoveAbsolute(x, y) => {
                         rd_input
                             .notify_pointer_motion_absolute(&stream_path, x, y)

@@ -167,7 +167,7 @@ pub async fn run(
             while let Ok(event) = input_rx.recv() {
                 let geometry = *injector_shared.geometry.lock();
                 if let Err(e) = injector.inject(event, geometry) {
-                    tracing::debug!(?event, "inject failed: {e:#}");
+                    tracing::debug!("inject failed: {e:#}");
                 }
             }
             let geometry = *injector_shared.geometry.lock();

@@ -22,6 +22,9 @@ pub enum UiEvent {
         y: i32,
     },
     FrameReady,
+    /// Android: typed text, insets or the keyboard changed (see
+    /// `crate::android`).
+    Platform,
     /// Keys were taken by the Windows keyboard hook.
     HookKeys,
     /// The connection ended. `retry` when it was lost (timeout, network)
