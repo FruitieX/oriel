@@ -34,6 +34,7 @@ pub mod session;
 pub mod settings_ui;
 mod stats;
 pub mod theme;
+mod touch;
 #[cfg(windows)]
 mod tray;
 #[cfg(windows)]

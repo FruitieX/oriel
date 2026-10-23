@@ -203,6 +203,13 @@ struct Viewer {
     buttons_down: HashSet<MouseButton>,
     pointer: Option<PhysicalPosition<f64>>,
     last_move: Option<(i32, i32)>,
+    /// Touch screens: the local zoom and pan, the gesture in progress, and
+    /// touches that belong to the overlay.
+    view: crate::touch::View,
+    /// Modifiers latched on the touch key row.
+    sticky: [bool; 4],
+    gestures: crate::touch::Gestures,
+    touch_ui: std::collections::HashSet<u64>,
     pointer_over_ui: bool,
     wheel_px: (f64, f64),
     motion: (f64, f64),
@@ -283,6 +290,17 @@ impl Viewer {
             buttons_down: HashSet::new(),
             pointer: None,
             last_move: None,
+            // Debugging aid: ORIEL_DEBUG_ZOOM=2 starts zoomed in.
+            sticky: [false; 4],
+            view: crate::touch::View {
+                zoom: std::env::var("ORIEL_DEBUG_ZOOM")
+                    .ok()
+                    .and_then(|z| z.parse::<f32>().ok())
+                    .map_or(1.0, |z| z.clamp(1.0, crate::touch::MAX_ZOOM)),
+                offset: (0.0, 0.0),
+            },
+            gestures: crate::touch::Gestures::new(24.0),
+            touch_ui: Default::default(),
             pointer_over_ui: false,
             wheel_px: (0.0, 0.0),
             motion: (0.0, 0.0),
@@ -371,10 +389,151 @@ impl Viewer {
             .as_ref()
             .map(|s| (s.width, s.height))
             .or(gfx.renderer.video_size())?;
-        Some(letterbox(
-            (gfx.renderer.config.width, gfx.renderer.config.height),
-            video,
-        ))
+        let window = self.video_area()?;
+        Some(
+            self.view
+                .apply(letterbox(window, video), (window.0 as f32, window.1 as f32)),
+        )
+    }
+
+    /// The window area the picture fits into: above the soft keyboard.
+    fn video_area(&self) -> Option<(u32, u32)> {
+        let gfx = self.gfx.as_ref()?;
+        #[allow(unused_mut)]
+        let mut size = (gfx.renderer.config.width, gfx.renderer.config.height);
+        #[cfg(target_os = "android")]
+        {
+            let keyboard = crate::android::insets().keyboard as u32;
+            size.1 = size.1.saturating_sub(keyboard).max(1);
+        }
+        Some(size)
+    }
+
+    fn set_focused(&mut self, focused: bool) {
+        tracing::debug!(focused, "window focus");
+        self.focused = focused;
+        self.session
+            .focused
+            .store(focused, std::sync::atomic::Ordering::Relaxed);
+        if !focused {
+            self.release_all();
+        }
+        self.update_cursor();
+    }
+
+    /// Press and release `usage` with the latched modifiers, then release
+    /// the latch.
+    fn tap_key(&mut self, usage: u16) {
+        let mods: Vec<u16> = STICKY
+            .iter()
+            .zip(self.sticky)
+            .filter(|(_, on)| *on)
+            .map(|((_, m), _)| *m)
+            .collect();
+        for &m in &mods {
+            self.session.input(InputEvent::Key {
+                usage: m,
+                down: true,
+            });
+        }
+        self.session.input(InputEvent::Key { usage, down: true });
+        self.session.input(InputEvent::Key { usage, down: false });
+        for &m in mods.iter().rev() {
+            self.session.input(InputEvent::Key {
+                usage: m,
+                down: false,
+            });
+        }
+        if !mods.is_empty() {
+            self.sticky = [false; 4];
+            self.request_redraw();
+        }
+    }
+
+    /// Touch screens (see `crate::touch`): gestures become mouse input, two
+    /// fingers zoom and pan the picture.
+    fn handle_touch(&mut self, t: winit::event::Touch) {
+        use winit::event::TouchPhase;
+        let pos = (t.location.x as f32, t.location.y as f32);
+        let now = Instant::now();
+        // A touch that starts on the menu button, a warning or the menu
+        // belongs to them.
+        if t.phase == TouchPhase::Started
+            && !self.gestures.active()
+            && (self.over_ui() || self.menu_open)
+        {
+            self.touch_ui.insert(t.id);
+        }
+        if self.touch_ui.contains(&t.id) {
+            if matches!(t.phase, TouchPhase::Ended | TouchPhase::Cancelled) {
+                self.touch_ui.remove(&t.id);
+            }
+            return;
+        }
+        let actions = match t.phase {
+            TouchPhase::Started => self.gestures.down(t.id, pos, now),
+            TouchPhase::Moved => self.gestures.moved(t.id, pos),
+            TouchPhase::Ended => self.gestures.up(t.id, now),
+            TouchPhase::Cancelled => self.gestures.cancel(),
+        };
+        self.apply_touch(actions);
+    }
+
+    fn apply_touch(&mut self, actions: Vec<crate::touch::Action>) {
+        use crate::touch::Action as A;
+        for action in actions {
+            match action {
+                A::MoveTo(x, y) => {
+                    if !self.forwarding() {
+                        continue;
+                    }
+                    if let Some((x, y)) = self.to_surface(PhysicalPosition::new(x as f64, y as f64))
+                    {
+                        self.last_move = Some((x, y));
+                        self.session.input(InputEvent::MouseMove {
+                            surface: self.surface.as_ref().map_or(0, |s| s.id),
+                            x,
+                            y,
+                        });
+                    }
+                }
+                A::Button(button, down) => {
+                    if !self.forwarding() {
+                        continue;
+                    }
+                    if down {
+                        self.buttons_down.insert(button);
+                    } else if !self.buttons_down.remove(&button) {
+                        continue;
+                    }
+                    self.session.input(InputEvent::MouseButton { button, down });
+                }
+                A::Scroll(dx, dy) => self.handle_wheel(MouseScrollDelta::PixelDelta(
+                    PhysicalPosition::new(dx as f64, dy as f64),
+                )),
+                A::Pinch { mid, moved, scale } => {
+                    let Some(window) = self.video_area() else {
+                        continue;
+                    };
+                    let Some(surface) = &self.surface else {
+                        continue;
+                    };
+                    let fit = letterbox(window, (surface.width, surface.height));
+                    let was_zoomed = self.view.zoomed();
+                    let rest =
+                        self.view
+                            .pinch(fit, (window.0 as f32, window.1 as f32), mid, moved, scale);
+                    // With the whole picture in view, two fingers scroll.
+                    if !was_zoomed && !self.view.zoomed() && (scale - 1.0).abs() < 0.02 {
+                        self.handle_wheel(MouseScrollDelta::PixelDelta(PhysicalPosition::new(
+                            rest.0 as f64,
+                            rest.1 as f64,
+                        )));
+                    }
+                    self.request_redraw();
+                }
+            }
+        }
     }
 
     fn to_surface(&self, p: PhysicalPosition<f64>) -> Option<(i32, i32)> {
@@ -506,6 +665,9 @@ impl Viewer {
             }
             HostMsg::Rejected { reason } => self.closed = Some(reason),
             HostMsg::Clipboard { text } => {
+                #[cfg(target_os = "android")]
+                crate::android::set_clipboard_text(&text);
+                #[cfg(not(target_os = "android"))]
                 if let Some(gfx) = &mut self.gfx {
                     gfx.clipboard.set_text(text.clone());
                 }
@@ -581,6 +743,10 @@ impl Viewer {
     #[cfg(target_os = "android")]
     fn handle_platform(&mut self) {
         use crate::android::TextInput;
+        // A text field in the menu has it (see `draw`).
+        if self.egui_ctx.text_edit_focused() {
+            return;
+        }
         if !self.forwarding() {
             crate::android::take_input();
             return;
@@ -591,6 +757,17 @@ impl Viewer {
         };
         for input in crate::android::take_input() {
             match input {
+                // With latched modifiers, letters go as keys (Ctrl+C).
+                TextInput::Text(text) if self.sticky.iter().any(|m| *m) => {
+                    for c in text.chars() {
+                        match ascii_usage(c) {
+                            Some(usage) => self.tap_key(usage),
+                            None => self.session.input(InputEvent::Text {
+                                text: c.to_string(),
+                            }),
+                        }
+                    }
+                }
                 TextInput::Text(text) => self.session.input(InputEvent::Text { text }),
                 TextInput::Delete { before, after } => {
                     for _ in 0..before.min(256) {
@@ -1023,6 +1200,10 @@ impl Viewer {
         {
             raw_input.safe_area_insets =
                 Some(crate::android::safe_area(gfx.window.scale_factor() as f32));
+            // A text field in the menu takes the keyboard from the host.
+            if self.egui_ctx.text_edit_focused() {
+                crate::android::feed_egui(&self.egui_ctx, &mut raw_input);
+            }
         }
         let ctx = self.egui_ctx.clone();
         let mut actions = Vec::new();
@@ -1065,7 +1246,14 @@ impl Viewer {
         }
         self.clipboard_polled = Instant::now();
         let Some(gfx) = &mut self.gfx else { return };
-        let Some(text) = gfx.clipboard.get() else {
+        #[cfg(target_os = "android")]
+        let text = {
+            let _ = gfx;
+            crate::android::clipboard_text()
+        };
+        #[cfg(not(target_os = "android"))]
+        let text = gfx.clipboard.get();
+        let Some(text) = text else {
             return;
         };
         if text.is_empty() || self.clipboard_last.as_ref() == Some(&text) || text.len() > 1 << 20 {
@@ -1078,6 +1266,19 @@ impl Viewer {
     fn apply(&mut self, action: Action) {
         match action {
             Action::OpenMenu => self.set_menu(true),
+            Action::ToggleKeyboard => {
+                #[cfg(target_os = "android")]
+                crate::android::show_keyboard(!crate::android::keyboard_shown());
+            }
+            Action::KeyTap(usage) => self.tap_key(usage),
+            Action::ToggleSticky(i) => {
+                self.sticky[i] = !self.sticky[i];
+                self.request_redraw();
+            }
+            Action::ResetZoom => {
+                self.view = Default::default();
+                self.request_redraw();
+            }
             Action::DismissWarning(issue) => self.diagnostics.dismiss(issue),
             Action::Run(command) => self.run_command(command),
             Action::CloseMenu => self.set_menu(false),
@@ -1163,7 +1364,22 @@ enum Action {
     /// The settings panel changed the config.
     SettingsChanged,
     Disconnect,
+    /// Touch screens: show or hide the soft keyboard.
+    ToggleKeyboard,
+    /// Press and release a key (with the latched modifiers).
+    KeyTap(u16),
+    /// Latch a modifier (index into `STICKY`) for the next key.
+    ToggleSticky(usize),
+    ResetZoom,
 }
+
+/// Modifiers the touch key row latches: label and HID usage.
+const STICKY: [(&str, u16); 4] = [
+    ("Ctrl", 0xE0),
+    ("Alt", 0xE2),
+    ("Shift", 0xE1),
+    ("Win", 0xE3),
+];
 
 /// Everything the overlay draws, copied out so the UI closure does not
 /// borrow the viewer.
@@ -1188,6 +1404,11 @@ struct OverlayState {
     menu_button: String,
     menu_button_pos: Option<[f32; 2]>,
     menu_button_scale: f32,
+    /// A touch screen (Android): touch controls and no shortcuts.
+    touch: bool,
+    keyboard: bool,
+    sticky: [bool; 4],
+    zoomed: bool,
     /// Place the menu this frame: where it was dragged, else centered.
     place_menu: Option<Option<[f32; 2]>>,
     menu_generation: u32,
@@ -1238,13 +1459,20 @@ impl From<&Viewer> for OverlayState {
                 let surface = v.surface.as_ref()?;
                 let ppp = v.egui_ctx.pixels_per_point();
                 let sx = vp.w / surface.width as f32;
+                // On a phone the picture is scaled down a lot; keep the
+                // cursor findable.
+                let cs = if cfg!(target_os = "android") {
+                    sx.max(ppp * 0.75)
+                } else {
+                    sx
+                };
                 let pos = egui::pos2(
-                    (vp.x + (c.x as f32 - shape.hotspot_x as f32) * sx) / ppp,
-                    (vp.y + (c.y as f32 - shape.hotspot_y as f32) * sx) / ppp,
+                    (vp.x + c.x as f32 * sx - shape.hotspot_x as f32 * cs) / ppp,
+                    (vp.y + c.y as f32 * sx - shape.hotspot_y as f32 * cs) / ppp,
                 );
                 Some((
                     tex.id(),
-                    egui::vec2(shape.width as f32, shape.height as f32) * sx / ppp,
+                    egui::vec2(shape.width as f32, shape.height as f32) * cs / ppp,
                     pos,
                 ))
             })
@@ -1285,6 +1513,13 @@ impl From<&Viewer> for OverlayState {
             menu_button: v.in_force.menu_button.clone(),
             menu_button_pos: v.config.menu_button_pos,
             menu_button_scale: v.config.menu_button_scale.clamp(0.5, 2.5),
+            touch: cfg!(target_os = "android"),
+            #[cfg(target_os = "android")]
+            keyboard: crate::android::keyboard_shown(),
+            #[cfg(not(target_os = "android"))]
+            keyboard: false,
+            sticky: v.sticky,
+            zoomed: v.view.zoomed(),
             place_menu: (!v.menu_placed).then_some(v.menu_pos),
             menu_generation: v.menu_generation,
             menu_center: v.menu_pos.and_then(|[fx, fy]| {
@@ -1435,6 +1670,9 @@ fn overlay(ctx: &egui::Context, s: &OverlayState, settings: &mut MenuSettings) -
     if s.menu_button != "hidden" {
         menu_button(ctx, s, &mut actions);
     }
+    if s.touch && s.closed.is_none() {
+        touch_controls(ctx, s, &mut actions);
+    }
     if !s.menu_open {
         return actions;
     }
@@ -1538,9 +1776,11 @@ fn menu_button(ctx: &egui::Context, s: &OverlayState, actions: &mut Vec<Action>)
         None => area.anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-8.0, -8.0)),
     };
     area.show(ctx, |ui| {
+        // No keyboard shortcuts on a phone.
         let text = match s.menu_button.as_str() {
-            "shortcut" => s.shortcut.clone(),
             "logo" => String::new(),
+            _ if s.touch => "Menu".to_string(),
+            "shortcut" => s.shortcut.clone(),
             _ => format!("Menu  ·  {}", s.shortcut),
         };
         let logo = matches!(s.menu_button.as_str(), "full" | "logo");
@@ -1635,6 +1875,17 @@ fn quick_menu(ui: &mut egui::Ui, s: &OverlayState, actions: &mut Vec<Action>) {
         paint_mark(ui, &response, mark);
         response.clicked()
     };
+    if s.touch {
+        if item(ui, "Keyboard", None, Mark::Check(s.keyboard)) {
+            actions.push(Action::ToggleKeyboard);
+            ui.close();
+        }
+        if s.zoomed && item(ui, "Reset zoom", None, Mark::None) {
+            actions.push(Action::ResetZoom);
+            ui.close();
+        }
+        ui.separator();
+    }
     if item(ui, "Settings…", Some(Command::Menu), Mark::None) {
         actions.push(Action::OpenMenu);
         ui.close();
@@ -1795,6 +2046,10 @@ impl ApplicationHandler<UiEvent> for Viewer {
         }
         self.fit_window();
         self.update_cursor();
+        // Android said "focused" once, to the launcher: a shown app has it.
+        if cfg!(target_os = "android") {
+            self.set_focused(true);
+        }
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -1823,19 +2078,11 @@ impl ApplicationHandler<UiEvent> for Viewer {
                 gfx.window.request_redraw();
             }
             WindowEvent::RedrawRequested => self.draw(),
-            WindowEvent::Focused(focused) => {
-                self.focused = focused;
-                self.session
-                    .focused
-                    .store(focused, std::sync::atomic::Ordering::Relaxed);
-                if !focused {
-                    self.release_all();
-                }
-                self.update_cursor();
-            }
+            WindowEvent::Focused(focused) => self.set_focused(focused),
             WindowEvent::ModifiersChanged(m) => self.modifiers = m.state(),
             WindowEvent::KeyboardInput { event, .. } => self.handle_key(&event),
             WindowEvent::CursorMoved { position, .. } => self.handle_pointer_moved(position),
+            WindowEvent::Touch(t) => self.handle_touch(t),
             WindowEvent::CursorLeft { .. } => self.pointer = None,
             WindowEvent::MouseInput { state, button, .. } => {
                 if !(response.consumed && state == ElementState::Pressed) {
@@ -1976,6 +2223,12 @@ impl ApplicationHandler<UiEvent> for Viewer {
         if let Some(due) = self.session.frames.next_due() {
             wake = Some(wake.map_or(due, |w| w.min(due)));
         }
+        // A finger held still becomes a right click.
+        let actions = self.gestures.tick(Instant::now());
+        self.apply_touch(actions);
+        if let Some(due) = self.gestures.deadline() {
+            wake = Some(wake.map_or(due, |w| w.min(due)));
+        }
         event_loop.set_control_flow(wake.map_or(ControlFlow::Wait, ControlFlow::WaitUntil));
     }
 
@@ -1997,6 +2250,7 @@ impl ApplicationHandler<UiEvent> for Viewer {
         // Android takes the surface away while in the background; the
         // session keeps running and the window comes back on resume.
         if cfg!(target_os = "android") {
+            self.set_focused(false);
             self.egui_cursors.clear();
             self.gfx = None;
         }
@@ -2028,4 +2282,119 @@ impl ApplicationHandler<UiEvent> for Viewer {
             self.request_redraw();
         }
     }
+}
+
+/// The key that types `c` on a US layout (letters, digits, space).
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn ascii_usage(c: char) -> Option<u16> {
+    match c.to_ascii_lowercase() {
+        c @ 'a'..='z' => Some(0x04 + (c as u16 - 'a' as u16)),
+        c @ '1'..='9' => Some(0x1E + (c as u16 - '1' as u16)),
+        '0' => Some(0x27),
+        ' ' => Some(0x2C),
+        _ => None,
+    }
+}
+
+/// Touch screens: a keyboard button, and while the keyboard is up, the
+/// keys phones lack (Esc, Tab, modifiers that latch, arrows).
+fn touch_controls(ctx: &egui::Context, s: &OverlayState, actions: &mut Vec<Action>) {
+    let fill = egui::Color32::from_rgba_unmultiplied(34, 39, 56, 210);
+    egui::Area::new(egui::Id::unique("keyboard-button"))
+        .order(egui::Order::Foreground)
+        .anchor(egui::Align2::LEFT_BOTTOM, egui::vec2(8.0, -8.0))
+        .show(ctx, |ui| {
+            let size = egui::vec2(44.0, 30.0) * s.menu_button_scale;
+            let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+            let p = ui.painter();
+            p.rect_filled(rect, size.y / 2.0, fill);
+            // A keyboard: an outline with rows of keys.
+            let k = rect.shrink2(egui::vec2(size.x * 0.25, size.y * 0.27));
+            let stroke = egui::Stroke::new(1.3, egui::Color32::WHITE);
+            p.rect_stroke(k, 2.0, stroke, egui::StrokeKind::Middle);
+            for row in 0..2 {
+                for col in 0..4 {
+                    let c = egui::pos2(
+                        k.left() + k.width() * (col as f32 + 0.75) / 4.5,
+                        k.top() + k.height() * (row as f32 + 0.8) / 3.0,
+                    );
+                    p.circle_filled(c, 1.0, egui::Color32::WHITE);
+                }
+            }
+            p.line_segment(
+                [
+                    egui::pos2(k.left() + k.width() * 0.3, k.bottom() - k.height() * 0.2),
+                    egui::pos2(k.right() - k.width() * 0.3, k.bottom() - k.height() * 0.2),
+                ],
+                stroke,
+            );
+            if response
+                .on_hover_text(if s.keyboard {
+                    "Hide the keyboard"
+                } else {
+                    "Keyboard"
+                })
+                .clicked()
+            {
+                actions.push(Action::ToggleKeyboard);
+            }
+        });
+    if !s.keyboard {
+        return;
+    }
+    egui::Area::new(egui::Id::unique("key-row"))
+        .order(egui::Order::Foreground)
+        .anchor(
+            egui::Align2::CENTER_BOTTOM,
+            egui::vec2(0.0, -46.0 * s.menu_button_scale),
+        )
+        .show(ctx, |ui| {
+            egui::Frame::popup(ui.style()).fill(fill).show(ui, |ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
+                // Arrows on a second row on a narrow (portrait) phone.
+                let narrow = ctx.content_rect().width() < 520.0;
+                ui.horizontal_wrapped(|ui| {
+                    ui.set_max_width(if narrow { 300.0 } else { 600.0 });
+                    let key = |ui: &mut egui::Ui, label: &str, on: bool| {
+                        ui.add(
+                            egui::Button::new(egui::RichText::new(label).size(13.0))
+                                .selected(on)
+                                .min_size(egui::vec2(30.0, 30.0)),
+                        )
+                        .clicked()
+                    };
+                    if key(ui, "Esc", false) {
+                        actions.push(Action::KeyTap(0x29));
+                    }
+                    if key(ui, "Tab", false) {
+                        actions.push(Action::KeyTap(0x2B));
+                    }
+                    for (i, (label, _)) in STICKY.iter().enumerate() {
+                        if key(ui, label, s.sticky[i]) {
+                            actions.push(Action::ToggleSticky(i));
+                        }
+                    }
+                    // Arrows, painted (the font has none): left, up, down, right.
+                    for (usage, dir) in [(0x50u16, 0), (0x52, 1), (0x51, 2), (0x4F, 3)] {
+                        let r = ui.add(egui::Button::new("").min_size(egui::vec2(30.0, 30.0)));
+                        let c = r.rect.center();
+                        let (a, b, t) = match dir {
+                            0 => ((4.0, -5.0), (4.0, 5.0), (-4.0, 0.0)),
+                            1 => ((-5.0, 4.0), (5.0, 4.0), (0.0, -4.0)),
+                            2 => ((-5.0, -4.0), (5.0, -4.0), (0.0, 4.0)),
+                            _ => ((-4.0, -5.0), (-4.0, 5.0), (4.0, 0.0)),
+                        };
+                        let at = |(x, y): (f32, f32)| c + egui::vec2(x, y);
+                        ui.painter().add(egui::Shape::convex_polygon(
+                            vec![at(a), at(b), at(t)],
+                            egui::Color32::WHITE,
+                            egui::Stroke::NONE,
+                        ));
+                        if r.clicked() {
+                            actions.push(Action::KeyTap(usage));
+                        }
+                    }
+                });
+            });
+        });
 }

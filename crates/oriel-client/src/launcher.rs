@@ -753,8 +753,21 @@ impl Launcher {
 
     fn ui(&mut self, root: &mut egui::Ui) -> Vec<Action> {
         let mut actions = Vec::new();
+        // Clear of the status bar, navigation bar and keyboard (Android).
+        let safe = root
+            .ctx()
+            .input(|i| i.raw.safe_area_insets)
+            .map(|s| s.0)
+            .unwrap_or_default();
+        let m = |inset: f32| (24.0 + inset).round().clamp(0.0, 127.0) as i8;
+        let margin = egui::Margin {
+            left: m(safe.left),
+            right: m(safe.right),
+            top: m(safe.top),
+            bottom: m(safe.bottom),
+        };
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(BG).inner_margin(24))
+            .frame(egui::Frame::new().fill(BG).inner_margin(margin))
             .show(root, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     self.header(ui, &mut actions);
@@ -1217,6 +1230,7 @@ impl ApplicationHandler<UiEvent> for Launcher {
                 {
                     input.safe_area_insets =
                         Some(crate::android::safe_area(window.scale_factor() as f32));
+                    crate::android::feed_egui(&self.egui_ctx, &mut input);
                 }
                 let ctx = self.egui_ctx.clone();
                 let mut actions = Vec::new();

@@ -13,6 +13,8 @@ struct Params {
     m: vec4<f32>,
     // srgb_target
     o: vec4<f32>,
+    // The part of the picture shown: origin and size in texture coordinates.
+    uv: vec4<f32>,
 };
 @group(0) @binding(0) var tex_y: texture_2d<f32>;
 @group(0) @binding(1) var tex_u: texture_2d<f32>;
@@ -30,7 +32,7 @@ fn vs(@builtin(vertex_index) i: u32) -> VsOut {
     let uv = vec2<f32>(f32((i << 1u) & 2u), f32(i & 2u));
     var out: VsOut;
     out.pos = vec4<f32>(uv * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0), 0.0, 1.0);
-    out.uv = uv;
+    out.uv = params.uv.xy + uv * params.uv.zw;
     return out;
 }
 
@@ -244,7 +246,7 @@ impl Renderer {
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 4,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
@@ -292,7 +294,7 @@ impl Renderer {
         });
         let params = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("yuv params"),
-            size: 32,
+            size: 48,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -551,7 +553,35 @@ impl Renderer {
                 Some(Current::Gpu(key, _)) => self.gpu_sets.get(&key).map(|(_, b)| b),
                 _ => None,
             };
-            if let (Some(bind_group), Some(vp)) = (bind_group, viewport) {
+            // The picture may extend past the window (zoomed in): draw the
+            // part inside it.
+            let shown = viewport.and_then(|vp| {
+                let (sw, sh) = (self.config.width as f32, self.config.height as f32);
+                let (x0, y0) = (vp.x.max(0.0), vp.y.max(0.0));
+                let (x1, y1) = ((vp.x + vp.w).min(sw), (vp.y + vp.h).min(sh));
+                (x1 - x0 >= 1.0 && y1 - y0 >= 1.0 && vp.w > 0.0 && vp.h > 0.0).then(|| {
+                    let uv = [
+                        (x0 - vp.x) / vp.w,
+                        (y0 - vp.y) / vp.h,
+                        (x1 - x0) / vp.w,
+                        (y1 - y0) / vp.h,
+                    ];
+                    (
+                        Viewport {
+                            x: x0,
+                            y: y0,
+                            w: x1 - x0,
+                            h: y1 - y0,
+                        },
+                        uv,
+                    )
+                })
+            });
+            if let Some((_, uv)) = shown {
+                let bytes: Vec<u8> = uv.iter().flat_map(|f| f.to_le_bytes()).collect();
+                self.queue.write_buffer(&self.params, 32, &bytes);
+            }
+            if let (Some(bind_group), Some((vp, _))) = (bind_group, shown) {
                 pass.set_viewport(vp.x, vp.y, vp.w, vp.h, 0.0, 1.0);
                 pass.set_pipeline(&self.pipeline);
                 pass.set_bind_group(0, bind_group, &[]);

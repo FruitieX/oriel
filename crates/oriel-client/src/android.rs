@@ -204,3 +204,70 @@ pub(crate) fn hid_usage(code: i32) -> Option<u16> {
         _ => return None,
     })
 }
+
+/// While an egui text field has focus: give it the soft keyboard's input,
+/// and show or hide the keyboard as focus comes and goes.
+pub(crate) fn feed_egui(ctx: &egui::Context, raw: &mut egui::RawInput) {
+    static WANTED: AtomicBool = AtomicBool::new(false);
+    let wants = ctx.text_edit_focused();
+    if wants != WANTED.swap(wants, Ordering::Relaxed) {
+        show_keyboard(wants);
+    }
+    if !wants {
+        return;
+    }
+    let tap = |raw: &mut egui::RawInput, key: egui::Key| {
+        for pressed in [true, false] {
+            raw.events.push(egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers: Default::default(),
+            });
+        }
+    };
+    for input in take_input() {
+        match input {
+            TextInput::Text(text) => {
+                for (i, line) in text.split('\n').enumerate() {
+                    if i > 0 {
+                        tap(raw, egui::Key::Enter);
+                    }
+                    if !line.is_empty() {
+                        raw.events.push(egui::Event::Text(line.to_string()));
+                    }
+                }
+            }
+            TextInput::Delete { before, after } => {
+                for _ in 0..before.min(256) {
+                    tap(raw, egui::Key::Backspace);
+                }
+                for _ in 0..after.min(256) {
+                    tap(raw, egui::Key::Delete);
+                }
+            }
+            TextInput::Key { code, down, .. } => {
+                let key = match code {
+                    66 | 160 => egui::Key::Enter,
+                    67 => egui::Key::Backspace,
+                    112 => egui::Key::Delete,
+                    61 => egui::Key::Tab,
+                    111 => egui::Key::Escape,
+                    21 => egui::Key::ArrowLeft,
+                    22 => egui::Key::ArrowRight,
+                    19 => egui::Key::ArrowUp,
+                    20 => egui::Key::ArrowDown,
+                    _ => continue,
+                };
+                raw.events.push(egui::Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed: down,
+                    repeat: false,
+                    modifiers: Default::default(),
+                });
+            }
+        }
+    }
+}

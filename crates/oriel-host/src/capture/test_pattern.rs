@@ -61,7 +61,8 @@ impl State {
                 self.buttons = 0;
                 self.keys_down.clear();
             }
-            SecureAttention | Text { .. } => {}
+            SecureAttention => {}
+            Text { text } => tracing::info!(text, "typed"),
         }
     }
 }
