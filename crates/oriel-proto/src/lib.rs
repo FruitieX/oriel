@@ -15,6 +15,7 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod hub;
 pub mod keys;
 
 pub const ALPN: &[u8] = b"oriel/1";

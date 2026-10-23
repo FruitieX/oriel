@@ -22,3 +22,6 @@ rand.workspace = true
 tracing.workspace = true
 directories.workspace = true
 hex.workspace = true
+ureq = { version = "3", features = ["json"] }
+serde_json = "1"
+if-addrs = "0.13"

@@ -1756,6 +1756,7 @@ fn overlay(ctx: &egui::Context, s: &OverlayState, settings: &mut MenuSettings) -
                 crate::settings_ui::LiveAction::SelectDisplay(id) => {
                     actions.push(Action::SelectDisplay(id))
                 }
+                crate::settings_ui::LiveAction::Hub(_) => {}
             }
         }
         if outcome.changed {

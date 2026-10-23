@@ -136,6 +136,20 @@ public class OrielActivity extends NativeActivity {
         });
     }
 
+    /** Called from Rust: open a web page (signing in to the hub). */
+    public void openUrl(final String url) {
+        runOnUiThread(new Runnable() {
+            public void run() {
+                try {
+                    startActivity(new android.content.Intent(
+                            android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url)));
+                } catch (Exception e) {
+                    // No browser.
+                }
+            }
+        });
+    }
+
     /** Called from Rust: the name from Settings → About phone, else the model. */
     public String deviceName() {
         String name = android.provider.Settings.Global.getString(

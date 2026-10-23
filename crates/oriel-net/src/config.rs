@@ -39,7 +39,7 @@ impl Paths {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TrustedPeer {
     pub name: String,
     pub fingerprint: Fingerprint,

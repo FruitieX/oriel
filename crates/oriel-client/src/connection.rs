@@ -1,6 +1,6 @@
 //! Connecting to a host: address resolution, fingerprint pinning, pairing.
 
-use std::{net::SocketAddr, time::Duration};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result, bail};
 use oriel_net::{
@@ -47,19 +47,66 @@ pub async fn resolve(address: &str) -> Result<SocketAddr> {
         .with_context(|| format!("{with_port} did not resolve"))
 }
 
-async fn open(
-    identity: &Identity,
-    address: &str,
-    pair: bool,
-) -> Result<(
+type Opened = (
     quinn::Endpoint,
     quinn::Connection,
     ControlStream,
     Fingerprint,
-)> {
+);
+
+async fn open(identity: &Identity, address: &str, pair: bool) -> Result<Opened> {
+    open_within(identity, address, pair, Duration::from_secs(8)).await
+}
+
+async fn open_within(
+    identity: &Identity,
+    address: &str,
+    pair: bool,
+    timeout: Duration,
+) -> Result<Opened> {
     let addr = resolve(address).await?;
     let endpoint = client_endpoint(identity)?;
-    let conn = tokio::time::timeout(Duration::from_secs(8), endpoint.connect(addr, "oriel")?)
+    handshake(endpoint, addr, pair, timeout).await
+}
+
+/// Through the hub's relay: introduce this socket to the relay, then run
+/// QUIC over it (still end to end with the host).
+async fn open_relayed(identity: &Identity, relay: &oriel_proto::hub::Relay) -> Result<Opened> {
+    use oriel_proto::hub::{RELAY_HELLO, RELAY_READY};
+    let addr = resolve(&relay.address).await?;
+    let mut hello = RELAY_HELLO.to_vec();
+    hello.extend(hex::decode(&relay.token).context("relay token")?);
+    let socket = tokio::task::spawn_blocking(move || -> Result<std::net::UdpSocket> {
+        let socket = std::net::UdpSocket::bind(if addr.is_ipv4() {
+            "0.0.0.0:0"
+        } else {
+            "[::]:0"
+        })?;
+        socket.set_read_timeout(Some(Duration::from_millis(400)))?;
+        let mut buf = [0u8; 64];
+        for _ in 0..10 {
+            socket.send_to(&hello, addr)?;
+            if let Ok((n, from)) = socket.recv_from(&mut buf)
+                && from == addr
+                && &buf[..n] == RELAY_READY
+            {
+                return Ok(socket);
+            }
+        }
+        anyhow::bail!("the hub's relay at {addr} does not answer")
+    })
+    .await??;
+    let endpoint = oriel_net::client_endpoint_on(identity, socket)?;
+    handshake(endpoint, addr, false, Duration::from_secs(8)).await
+}
+
+async fn handshake(
+    endpoint: quinn::Endpoint,
+    addr: SocketAddr,
+    pair: bool,
+    timeout: Duration,
+) -> Result<Opened> {
+    let conn = tokio::time::timeout(timeout, endpoint.connect(addr, "oriel")?)
         .await
         .map_err(|_| {
             anyhow::anyhow!(
@@ -81,10 +128,108 @@ async fn open(
     Ok((endpoint, conn, ctl, host_fp))
 }
 
+/// Reach a host: its known address; with a hub login, also the other
+/// addresses it reported (all at once), and finally the hub's relay.
+/// Returns the address that answered (`None` when relayed).
+async fn open_any(
+    paths: &Paths,
+    identity: Arc<Identity>,
+    entry: Option<&oriel_net::TrustedPeer>,
+    address: &str,
+) -> Result<(
+    quinn::Endpoint,
+    quinn::Connection,
+    ControlStream,
+    Fingerprint,
+    Option<String>,
+)> {
+    let account = oriel_net::hub::account(paths);
+    if account.is_some() {
+        refresh_hub(paths).await;
+    }
+    let device = entry.zip(account.as_ref()).and_then(|(e, _)| {
+        oriel_net::hub::cached_devices(paths)
+            .into_iter()
+            .find(|d| oriel_net::hub::fingerprint(&d.fingerprint) == Some(e.fingerprint))
+    });
+    let mut candidates = vec![address.to_string()];
+    if let Some(host) = device.as_ref().and_then(|d| d.host.as_ref()) {
+        for a in &host.addresses {
+            let a = oriel_net::hub::join(a, host.port);
+            if !candidates.contains(&a) {
+                candidates.push(a);
+            }
+        }
+    }
+    let Some(device) = device else {
+        let (e, c, ctl, fp) = open(&identity, address, false).await?;
+        return Ok((e, c, ctl, fp, Some(address.to_string())));
+    };
+    // Every direct address at once; the first to answer wins.
+    // Debugging aid: ORIEL_DEBUG_FORCE_RELAY=1 goes through the hub.
+    let force_relay = std::env::var_os("ORIEL_DEBUG_FORCE_RELAY").is_some();
+    let mut attempts = tokio::task::JoinSet::new();
+    for candidate in candidates.clone().into_iter().filter(|_| !force_relay) {
+        let identity = identity.clone();
+        attempts.spawn(async move {
+            open_within(&identity, &candidate, false, Duration::from_secs(4))
+                .await
+                .map(|o| (o, candidate))
+        });
+    }
+    let mut first_error = None;
+    while let Some(result) = attempts.join_next().await {
+        match result {
+            Ok(Ok(((e, c, ctl, fp), candidate))) => {
+                attempts.abort_all();
+                return Ok((e, c, ctl, fp, Some(candidate)));
+            }
+            Ok(Err(e)) => {
+                first_error.get_or_insert(e);
+            }
+            Err(_) => {}
+        }
+    }
+    // Not reachable directly (away from home): through the hub.
+    let account = account.expect("checked above");
+    tracing::info!(host = %device.name, "no direct route; asking the hub to relay");
+    let id = device.id.clone();
+    let relay = tokio::task::spawn_blocking(move || account.relay(&id))
+        .await?
+        .map_err(|e| {
+            let direct = first_error.map(|d| format!("{d:#}")).unwrap_or_default();
+            anyhow::anyhow!("{direct}; the hub cannot relay either: {e:#}")
+        })?;
+    let (e, c, ctl, fp) = open_relayed(&identity, &relay).await?;
+    Ok((e, c, ctl, fp, None))
+}
+
+/// Fetch the hub account's devices (a few seconds at most), adding its
+/// hosts to the known hosts.
+async fn refresh_hub(paths: &Paths) {
+    let p = paths.clone();
+    let fetch = tokio::task::spawn_blocking(move || -> Result<()> {
+        if let Some(account) = oriel_net::hub::account(&p) {
+            oriel_net::hub::store_devices(&p, &account.devices()?)?;
+        }
+        Ok(())
+    });
+    match tokio::time::timeout(Duration::from_secs(4), fetch).await {
+        Ok(Ok(Err(e))) => tracing::warn!("cannot reach the hub: {e:#}"),
+        Err(_) => tracing::warn!("the hub does not answer"),
+        _ => {}
+    }
+}
+
 /// Connect to a paired host. `target` is a known host's name or an address.
 pub async fn connect(paths: &Paths, target: &str) -> Result<Connected> {
     let identity = Identity::load_or_create(&paths.config_dir)?;
     let mut known = TrustStore::load(&paths.known_hosts())?;
+    // A host of the hub account not seen yet.
+    if known.lookup(target).is_none() && oriel_net::hub::account(paths).is_some() {
+        refresh_hub(paths).await;
+        known = TrustStore::load(&paths.known_hosts())?;
+    }
     let entry = known.lookup(target).cloned();
     let address = entry
         .as_ref()
@@ -94,7 +239,8 @@ pub async fn connect(paths: &Paths, target: &str) -> Result<Connected> {
                 .flatten()
         })
         .unwrap_or_else(|| target.to_string());
-    let (endpoint, conn, mut ctl, host_fp) = open(&identity, &address, false).await?;
+    let (endpoint, conn, mut ctl, host_fp, reached) =
+        open_any(&paths.clone(), Arc::new(identity), entry.as_ref(), &address).await?;
     // Check the host before reading anything it says.
     let Some(trusted) = known.by_fingerprint(&host_fp).cloned() else {
         conn.close(0u32.into(), b"unknown host");
@@ -133,6 +279,7 @@ pub async fn connect(paths: &Paths, target: &str) -> Result<Connected> {
                     "the host speaks another protocol version"
                 );
             }
+            let address = reached.unwrap_or_else(|| trusted.address.clone().unwrap_or_default());
             if trusted.address.as_deref() != Some(address.as_str()) || trusted.name != name {
                 let mut updated = trusted.clone();
                 updated.address = Some(address.clone());

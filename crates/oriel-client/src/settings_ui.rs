@@ -43,6 +43,8 @@ pub struct Live {
 /// Choices that are not settings: they act on the running session.
 pub enum LiveAction {
     SelectDisplay(u32),
+    /// The hub account (start window only).
+    Hub(crate::hub::HubAction),
 }
 
 #[derive(Default)]
@@ -62,6 +64,8 @@ pub struct Panel {
         Vec<oriel_audio::OutputDevice>,
         Vec<oriel_audio::OutputDevice>,
     )>,
+    /// The hub account section of the App tab (start window only).
+    pub hub: Option<crate::hub::HubView>,
 }
 
 impl Panel {
@@ -71,6 +75,7 @@ impl Panel {
             recording: None,
             hint: String::new(),
             devices: None,
+            hub: None,
         }
     }
 
@@ -143,7 +148,7 @@ impl Panel {
                     Tab::Input => self.input_tab(ui, &mut rows),
                     Tab::Sound => self.sound_tab(ui, &mut rows, live),
                     Tab::Interface => interface_tab(ui, &mut rows),
-                    Tab::App => app_tab(ui, &mut rows),
+                    Tab::App => app_tab(ui, &mut rows, self.hub.as_mut()),
                 }
             });
         rows.outcome
@@ -730,7 +735,7 @@ fn interface_tab(ui: &mut Ui, rows: &mut Rows) {
     });
 }
 
-fn app_tab(ui: &mut Ui, rows: &mut Rows) {
+fn app_tab(ui: &mut Ui, rows: &mut Rows, hub: Option<&mut crate::hub::HubView>) {
     // Starting at login and sharing are for desktops.
     #[cfg(not(target_os = "android"))]
     {
@@ -776,6 +781,10 @@ fn app_tab(ui: &mut Ui, rows: &mut Rows) {
     }
     #[cfg(target_os = "android")]
     let _ = &rows;
+    if let Some(hub) = hub {
+        account_section(ui, rows, hub);
+        ui.add_space(14.0);
+    }
     ui.label(egui::RichText::new("About").strong());
     ui.add_space(4.0);
     grid(ui, "about", |ui| {
@@ -1037,4 +1046,115 @@ fn save_resolution(rows: &mut Rows, host: &str, value: Resolution) {
         Resolution::Fixed(w, h2) => h.resolution = Some(format_resolution(Some((w, h2)))),
     }
     rows.outcome.changed = true;
+}
+
+/// The optional hub: log in once per device, and every device of the
+/// account reaches every computer shared under it, without pairing.
+fn account_section(ui: &mut Ui, rows: &mut Rows, hub: &mut crate::hub::HubView) {
+    use crate::hub::HubAction;
+    let act = |rows: &mut Rows, a: HubAction| rows.outcome.actions.push(LiveAction::Hub(a));
+    ui.label(egui::RichText::new("Account").strong());
+    ui.add_space(4.0);
+    if let Some(user) = hub.user.clone() {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(format!("Logged in to {} as {user}", hub.url));
+            if ui.button("Log out").clicked() {
+                act(rows, HubAction::Logout);
+            }
+        });
+        ui.add_space(4.0);
+        theme::note(
+            ui,
+            "Every device logged in to this account can reach the computers shared under it.",
+        );
+        ui.add_space(6.0);
+        grid(ui, "hub-devices", |ui| {
+            for d in &hub.devices {
+                ui.horizontal(|ui| {
+                    let color = if d.online { theme::GREEN } else { theme::MUTED };
+                    let (dot, _) =
+                        ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                    ui.painter().circle_filled(dot.center(), 4.0, color);
+                    ui.label(&d.name);
+                });
+                let mut what = vec![d.platform.clone()];
+                if d.host.is_some() {
+                    what.push("shares".into());
+                }
+                if d.this_device {
+                    what.push("this device".into());
+                }
+                ui.label(egui::RichText::new(what.join(" · ")).color(theme::MUTED));
+                ui.horizontal(|ui| {
+                    if d.wakeable
+                        && !d.online
+                        && ui
+                            .small_button("Wake")
+                            .on_hover_text("Ask it to start sharing")
+                            .clicked()
+                    {
+                        act(rows, HubAction::Wake(d.id.clone()));
+                    }
+                    if !d.this_device
+                        && ui
+                            .small_button("Remove")
+                            .on_hover_text("Log this device out of the account")
+                            .clicked()
+                    {
+                        act(rows, HubAction::Remove(d.id.clone()));
+                    }
+                });
+                ui.end_row();
+            }
+        });
+    } else if let Some(login) = hub.login.clone() {
+        ui.horizontal(|ui| {
+            ui.spinner();
+            ui.label("Waiting for you to approve this device…");
+        });
+        ui.add_space(4.0);
+        ui.label(format!("Open {} and enter", login.uri));
+        ui.label(
+            egui::RichText::new(&login.code)
+                .size(26.0)
+                .monospace()
+                .strong(),
+        );
+        ui.horizontal(|ui| {
+            if ui.add(theme_primary("Open sign-in page")).clicked() {
+                act(rows, HubAction::Open(login.open.clone()));
+            }
+            if ui.button("Cancel").clicked() {
+                act(rows, HubAction::Cancel);
+            }
+        });
+    } else {
+        theme::note(
+            ui,
+            "Optional: log in to a hub to reach your computers from every device you log in \
+             on, without pairing each one, and through the hub when away from home.",
+        );
+        ui.add_space(6.0);
+        grid(ui, "hub-login", |ui| {
+            ui.label("Hub");
+            ui.add(
+                egui::TextEdit::singleline(&mut hub.url)
+                    .hint_text(crate::hub::DEFAULT_URL)
+                    .desired_width(rows.field),
+            );
+            if ui.button("Log in").clicked() {
+                act(rows, HubAction::Login);
+            }
+            ui.end_row();
+        });
+    }
+    if let Some(error) = &hub.error {
+        ui.add_space(4.0);
+        ui.add(egui::Label::new(egui::RichText::new(error).color(theme::AMBER)).wrap());
+    }
+}
+
+fn theme_primary(text: &str) -> egui::Button<'static> {
+    egui::Button::new(egui::RichText::new(text.to_string()).color(egui::Color32::BLACK))
+        .fill(theme::AMBER)
 }

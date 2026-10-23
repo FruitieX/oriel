@@ -9,6 +9,7 @@ pub mod config;
 pub mod connection;
 mod decode;
 mod diagnostics;
+pub mod hub;
 mod playout;
 
 /// Name the window after the app, so desktops match it to oriel.desktop

@@ -1,0 +1,29 @@
+[package]
+name = "oriel-hub"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The optional hub (see docs/hub.md): logins, the account's device list,
+# relaying and push wake-ups. Deployed on the homelab as a container.
+[dependencies]
+oriel-proto.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+hex.workspace = true
+rand.workspace = true
+sha2.workspace = true
+axum = "0.8"
+base64 = "0.22"
+rusqlite = { version = "0.37", features = ["bundled"] }
+serde_json = "1"
+ureq = { version = "3", features = ["json"] }
+ring = "0.17"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"

@@ -60,6 +60,11 @@ pub trait HostControl {
     fn stops_with_app(&self) -> bool {
         true
     }
+    /// Where the host reads a hub login besides the app's own config
+    /// directory (the Windows service's).
+    fn shared_hub_login(&self) -> Option<std::path::PathBuf> {
+        None
+    }
 }
 
 pub struct GuiOptions {
@@ -170,6 +175,10 @@ pub fn run(
         quit_flag: options.quit_flag.clone(),
         quit: false,
         tray_updated: Instant::now(),
+        hub: crate::hub::HubState::new(
+            paths.clone(),
+            host.as_ref().and_then(|h| h.shared_hub_login()),
+        ),
         config,
         paths,
         host,
@@ -335,6 +344,8 @@ struct Launcher {
     tray_updated: Instant,
     paths: Paths,
     config: ClientConfig,
+    /// The optional hub account.
+    hub: crate::hub::HubState,
     host: Option<Box<dyn HostControl>>,
     rt: Arc<tokio::runtime::Runtime>,
     gfx: Option<(Arc<Window>, Renderer, egui_winit::State)>,
@@ -358,6 +369,7 @@ struct Launcher {
 }
 
 enum Action {
+    Hub(crate::hub::HubAction),
     Connect(String),
     Forget(String),
     OpenPair,
@@ -461,6 +473,10 @@ impl Launcher {
 
     fn apply(&mut self, action: Action) {
         match action {
+            Action::Hub(a) => {
+                let rt = self.rt.handle().clone();
+                self.hub.apply(a, &rt);
+            }
             Action::Connect(target) => {
                 self.reconnect = None;
                 self.connect(target);
@@ -748,6 +764,10 @@ impl Launcher {
             }
         }
         self.poll_probe();
+        let rt = self.rt.handle().clone();
+        if self.hub.poll(&rt) {
+            self.reload_hosts();
+        }
         if self.connecting.is_none()
             && let Some(r) = &self.reconnect
             && Instant::now() >= r.at
@@ -1135,6 +1155,10 @@ impl Launcher {
         let Some(dialog) = &mut self.settings else {
             return;
         };
+        // The defaults dialog's App tab shows the hub account.
+        if dialog.host.is_none() {
+            dialog.panel.hub = Some(self.hub.view.clone());
+        }
         let screen = ctx.content_rect();
         // One size on every tab, within the window; what does not fit
         // scrolls.
@@ -1196,6 +1220,11 @@ impl Launcher {
                 if outcome.changed {
                     actions.push(Action::SettingsChanged);
                 }
+                for action in outcome.actions {
+                    if let crate::settings_ui::LiveAction::Hub(a) = action {
+                        actions.push(Action::Hub(a));
+                    }
+                }
                 ui.add_space(12.0);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.add(primary_button("Done")).clicked() {
@@ -1205,6 +1234,10 @@ impl Launcher {
             });
         if modal.should_close() {
             actions.push(Action::CloseSettings);
+        }
+        // The hub address as typed.
+        if let Some(view) = self.settings.as_ref().and_then(|d| d.panel.hub.as_ref()) {
+            self.hub.view.url = view.url.clone();
         }
     }
 }
@@ -1362,6 +1395,7 @@ impl ApplicationHandler<UiEvent> for Launcher {
             || self.pairing.is_some()
             || self.probe.is_some()
             || self.reconnect.is_some()
+            || self.hub.view.login.is_some()
             || std::env::var_os("ORIEL_DEBUG_SCREENSHOT").is_some();
         event_loop.set_control_flow(if waiting {
             ControlFlow::WaitUntil(Instant::now() + Duration::from_millis(100))

@@ -137,6 +137,31 @@ pub fn server_endpoint(identity: &Identity, listen: SocketAddr) -> Result<quinn:
 }
 
 pub fn client_endpoint(identity: &Identity) -> Result<quinn::Endpoint> {
+    let mut endpoint = quinn::Endpoint::client((std::net::Ipv6Addr::UNSPECIFIED, 0).into())
+        .or_else(|_| quinn::Endpoint::client((std::net::Ipv4Addr::UNSPECIFIED, 0).into()))
+        .context("bind client socket")?;
+    endpoint.set_default_client_config(client_config(identity)?);
+    Ok(endpoint)
+}
+
+/// A client endpoint on a socket already in use (a relayed connection
+/// introduces itself to the hub from it first).
+pub fn client_endpoint_on(
+    identity: &Identity,
+    socket: std::net::UdpSocket,
+) -> Result<quinn::Endpoint> {
+    socket.set_nonblocking(true)?;
+    let mut endpoint = quinn::Endpoint::new(
+        quinn::EndpointConfig::default(),
+        None,
+        socket,
+        Arc::new(quinn::TokioRuntime),
+    )?;
+    endpoint.set_default_client_config(client_config(identity)?);
+    Ok(endpoint)
+}
+
+fn client_config(identity: &Identity) -> Result<quinn::ClientConfig> {
     let mut tls = rustls::ClientConfig::builder_with_provider(provider())
         .with_protocol_versions(&[&rustls::version::TLS13])?
         .dangerous()
@@ -146,11 +171,7 @@ pub fn client_endpoint(identity: &Identity) -> Result<quinn::Endpoint> {
     let crypto = QuicClientConfig::try_from(tls)?;
     let mut config = quinn::ClientConfig::new(Arc::new(crypto));
     config.transport_config(Arc::new(transport_config()));
-    let mut endpoint = quinn::Endpoint::client((std::net::Ipv6Addr::UNSPECIFIED, 0).into())
-        .or_else(|_| quinn::Endpoint::client((std::net::Ipv4Addr::UNSPECIFIED, 0).into()))
-        .context("bind client socket")?;
-    endpoint.set_default_client_config(config);
-    Ok(endpoint)
+    Ok(config)
 }
 
 /// Fingerprint of the certificate the peer presented during the handshake.

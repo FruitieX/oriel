@@ -1,6 +1,7 @@
 //! Accepts connections, authenticates clients and runs pairing and sessions.
 
 use std::{
+    collections::HashSet,
     net::SocketAddr,
     sync::Arc,
     time::{Duration, Instant},
@@ -40,6 +41,10 @@ struct Host {
     sessions: Arc<Mutex<Vec<quinn::Connection>>>,
     /// The connection currently streaming, replaced by newer sessions.
     active: Mutex<Option<quinn::Connection>>,
+    /// Devices of the hub account this host is logged in to (see
+    /// `oriel_net::hub`), and when the list was last fetched on demand.
+    hub_devices: Arc<Mutex<HashSet<Fingerprint>>>,
+    hub_fetched: Mutex<Option<Instant>>,
 }
 
 struct PairingState {
@@ -214,6 +219,61 @@ fn publish_sessions(config_dir: std::path::PathBuf, control: HostControl) {
     });
 }
 
+/// Tell the hub (when logged in to one) that this host is sharing and
+/// where, every half minute; its answer lists the account's devices, which
+/// may connect without pairing.
+fn report_to_hub(paths: Paths, name: String, port: u16, devices: Arc<Mutex<HashSet<Fingerprint>>>) {
+    tokio::spawn(async move {
+        let mut warned = false;
+        loop {
+            let paths = paths.clone();
+            let name = name.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                let Some(account) = oriel_net::hub::account(&paths) else {
+                    return Ok(None);
+                };
+                account
+                    .presence(&oriel_proto::hub::Presence {
+                        name,
+                        platform: std::env::consts::OS.into(),
+                        host: Some(oriel_proto::hub::HostInfo {
+                            port,
+                            addresses: oriel_net::hub::local_addresses(),
+                        }),
+                        push_token: None,
+                    })
+                    .map(Some)
+            })
+            .await;
+            match result {
+                Ok(Ok(Some(list))) => {
+                    warned = false;
+                    *devices.lock() = fingerprints(&list);
+                }
+                Ok(Ok(None)) => devices.lock().clear(),
+                Ok(Err(e)) => {
+                    if !warned {
+                        tracing::warn!("cannot reach the hub: {e:#}");
+                        warned = true;
+                    }
+                    if e.is::<oriel_net::hub::Unauthorized>() {
+                        devices.lock().clear();
+                    }
+                }
+                Err(_) => {}
+            }
+            tokio::time::sleep(Duration::from_secs(30)).await;
+        }
+    });
+}
+
+fn fingerprints(list: &oriel_proto::hub::Devices) -> HashSet<Fingerprint> {
+    list.devices
+        .iter()
+        .filter_map(|d| oriel_net::hub::fingerprint(&d.fingerprint))
+        .collect()
+}
+
 /// A PIN pairs one device, within this time.
 const PIN_VALIDITY: Duration = Duration::from_secs(600);
 
@@ -251,6 +311,13 @@ pub async fn run_with(paths: Paths, options: HostOptions, control: HostControl) 
         );
     }
     publish_sessions(paths.config_dir.clone(), control.clone());
+    let hub_devices: Arc<Mutex<HashSet<Fingerprint>>> = Default::default();
+    report_to_hub(
+        paths.clone(),
+        options.name.clone(),
+        endpoint.local_addr()?.port(),
+        hub_devices.clone(),
+    );
     let host = Arc::new(Host {
         pairing: control.pairing.clone(),
         status: control.status.clone(),
@@ -260,6 +327,8 @@ pub async fn run_with(paths: Paths, options: HostOptions, control: HostControl) 
         identity,
         test: TestState::default(),
         active: Mutex::new(None),
+        hub_devices,
+        hub_fetched: Mutex::new(None),
     });
 
     while let Some(incoming) = endpoint.accept().await {
@@ -317,7 +386,7 @@ impl Host {
         }
 
         let trusted = TrustStore::load(&self.paths.trusted_clients())?;
-        if trusted.by_fingerprint(&client_fp).is_none() {
+        if trusted.by_fingerprint(&client_fp).is_none() && !self.hub_trusts(&client_fp).await {
             return reject(
                 &conn,
                 &mut ctl,
@@ -377,6 +446,40 @@ impl Host {
         self.status.lock().clients.retain(|c| c.id != id);
         conn.close(0u32.into(), b"bye");
         result
+    }
+
+    /// Is this client a device of the hub account? A device not in the
+    /// last list may have just logged in: fetch the list again (at most
+    /// every few seconds).
+    async fn hub_trusts(&self, fp: &Fingerprint) -> bool {
+        if self.hub_devices.lock().contains(fp) {
+            return true;
+        }
+        {
+            let mut fetched = self.hub_fetched.lock();
+            if fetched.is_some_and(|t| t.elapsed() < Duration::from_secs(5)) {
+                return false;
+            }
+            *fetched = Some(Instant::now());
+        }
+        let paths = self.paths.clone();
+        let list = tokio::task::spawn_blocking(move || {
+            oriel_net::hub::account(&paths).map(|a| a.devices())
+        })
+        .await;
+        match list {
+            Ok(Some(Ok(list))) => {
+                let set = fingerprints(&list);
+                let found = set.contains(fp);
+                *self.hub_devices.lock() = set;
+                found
+            }
+            Ok(Some(Err(e))) => {
+                tracing::warn!("cannot reach the hub: {e:#}");
+                false
+            }
+            _ => false,
+        }
     }
 
     async fn pair(

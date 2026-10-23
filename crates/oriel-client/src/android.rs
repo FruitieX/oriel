@@ -176,6 +176,20 @@ pub(crate) fn device_name() -> Option<String> {
     .filter(|s: &String| !s.trim().is_empty())
 }
 
+/// Open a web page (the hub's sign-in page).
+pub(crate) fn open_url(url: &str) {
+    with_activity(|env, activity| {
+        let s = env.new_string(url)?;
+        env.call_method(
+            activity,
+            "openUrl",
+            "(Ljava/lang/String;)V",
+            &[JValue::Object(&s)],
+        )
+        .map(|_| ())
+    });
+}
+
 /// Send the app to the background (Back on the start page).
 pub(crate) fn move_to_back() {
     with_activity(|env, activity| {

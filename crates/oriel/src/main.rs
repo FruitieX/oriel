@@ -819,6 +819,14 @@ impl oriel_client::launcher::HostControl for ServiceHost {
         false
     }
 
+    fn shared_hub_login(&self) -> Option<std::path::PathBuf> {
+        Some(
+            oriel_host::service::data_dir()
+                .join("pairing")
+                .join("hub.toml"),
+        )
+    }
+
     fn is_running(&self) -> bool {
         // Asked every frame; the service manager is asked once a second.
         if let Some((running, at)) = self.running.get()
