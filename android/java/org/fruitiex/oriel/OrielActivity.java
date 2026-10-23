@@ -136,6 +136,13 @@ public class OrielActivity extends NativeActivity {
         });
     }
 
+    /** Called from Rust: the name from Settings → About phone, else the model. */
+    public String deviceName() {
+        String name = android.provider.Settings.Global.getString(
+                getContentResolver(), "device_name");
+        return name != null && !name.isEmpty() ? name : Build.MODEL;
+    }
+
     /** Called from Rust; null when empty or not readable. */
     public String clipboardText() {
         ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);

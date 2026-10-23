@@ -411,13 +411,13 @@ fn display_tab(ui: &mut Ui, rows: &mut Rows, live: Option<&Live>) {
         ui.add_space(10.0);
         grid(ui, "display", |ui| {
             if let Some(mode) = effective.virtual_display {
-                virtual_mode_rows(ui, rows, &host, live, mode);
+                virtual_mode_rows(ui, rows, &host, live, mode, effective.resolution);
             } else if !live.modes.is_empty() {
                 ui.label("Resolution")
                     .on_hover_text("Switches the host's display for the session");
                 let label = |r: Resolution| match r {
                     Resolution::Fixed(w, h) => format!("{w}×{h}"),
-                    Resolution::Client(_) => "This computer's".to_string(),
+                    Resolution::Client(_) => "This screen".to_string(),
                     Resolution::Host => "Host's own".to_string(),
                 };
                 let current = effective.resolution;
@@ -439,54 +439,19 @@ fn display_tab(ui: &mut Ui, rows: &mut Rows, live: Option<&Live>) {
                     })
                     .response
                     .on_hover_text(
-                        "This computer's: this screen's resolution, scaled. Displays that \
-                         cannot show it get the closest size they support.",
+                        "This screen: the resolution of the screen oriel shows it on, \
+                         scaled. Displays that cannot show it get the closest size they \
+                         support.",
                     );
                 ui.label("");
                 ui.end_row();
-                if let Resolution::Client(scale) = current {
-                    ui.label("Scale").on_hover_text(
-                        "Lower resolutions are lighter on the network and both computers",
-                    );
-                    // Applied once dragging ends: each change switches the
-                    // host's display mode.
-                    let id = ui.make_persistent_id("resolution-scale");
-                    let mut v = ui.data(|d| d.get_temp::<f32>(id)).unwrap_or(scale);
-                    let slider = ui.add(
-                        egui::Slider::new(&mut v, crate::config::RESOLUTION_SCALE)
-                            .step_by(0.05)
-                            .custom_formatter(|v, _| format!("{:.0} %", v * 100.0))
-                            .custom_parser(|s| {
-                                s.trim_end_matches(['%', ' '])
-                                    .parse::<f64>()
-                                    .ok()
-                                    .map(|v| v / 100.0)
-                            }),
-                    );
-                    if slider.dragged() {
-                        ui.data_mut(|d| d.insert_temp(id, v));
-                    } else {
-                        ui.data_mut(|d| d.remove::<f32>(id));
-                        if (v - scale).abs() > 0.001 {
-                            value = Resolution::Client(v);
-                        }
-                    }
-                    ui.label("");
-                    ui.end_row();
+                if let Resolution::Client(scale) = current
+                    && let Some(v) = scale_row(ui, scale)
+                {
+                    value = Resolution::Client(v);
                 }
                 if value != current {
-                    let h = rows.config.host_mut(&host);
-                    match value {
-                        Resolution::Host => h.resolution = None,
-                        Resolution::Client(scale) => {
-                            h.resolution = Some("client".into());
-                            h.resolution_scale = Some(scale);
-                        }
-                        Resolution::Fixed(w, h2) => {
-                            h.resolution = Some(format_resolution(Some((w, h2))))
-                        }
-                    }
-                    rows.outcome.changed = true;
+                    save_resolution(rows, &host, value);
                 }
             }
             fullscreen_row(ui, rows);
@@ -514,7 +479,14 @@ fn fullscreen_row(ui: &mut Ui, rows: &mut Rows) {
     );
 }
 
-fn virtual_mode_rows(ui: &mut Ui, rows: &mut Rows, host: &str, live: &Live, mode: VirtualMode) {
+fn virtual_mode_rows(
+    ui: &mut Ui,
+    rows: &mut Rows,
+    host: &str,
+    live: &Live,
+    mode: VirtualMode,
+    resolution: Resolution,
+) {
     let mut sizes = vec![
         (1280, 720),
         (1600, 900),
@@ -538,11 +510,27 @@ fn virtual_mode_rows(ui: &mut Ui, rows: &mut Rows, host: &str, live: &Live, mode
             .is_some_and(|m| (m.width, m.height) == (w, h))
     };
     let mut value = mode;
+    // "This screen" sizes the extra display to the screen oriel shows it
+    // on (scaled), following it when the window moves or the phone turns.
+    let follows = match resolution {
+        Resolution::Client(scale) => Some(scale),
+        _ => None,
+    };
+    let mut follow = follows;
     ui.label("Size");
     egui::ComboBox::from_id_salt("virtual-size")
         .width(rows.field)
-        .selected_text(format!("{}×{}", mode.width, mode.height))
+        .selected_text(match follows {
+            Some(_) => "This screen".to_string(),
+            None => format!("{}×{}", mode.width, mode.height),
+        })
         .show_ui(ui, |ui| {
+            if ui
+                .selectable_label(follows.is_some(), "This screen")
+                .clicked()
+            {
+                follow = Some(follows.unwrap_or(1.0));
+            }
             for (w, h) in sizes {
                 let label = if native(w, h) {
                     format!("{w}×{h} (this screen)")
@@ -550,16 +538,25 @@ fn virtual_mode_rows(ui: &mut Ui, rows: &mut Rows, host: &str, live: &Live, mode
                     format!("{w}×{h}")
                 };
                 if ui
-                    .selectable_label((value.width, value.height) == (w, h), label)
+                    .selectable_label(
+                        follows.is_none() && (value.width, value.height) == (w, h),
+                        label,
+                    )
                     .clicked()
                 {
                     value.width = w;
                     value.height = h;
+                    follow = None;
                 }
             }
         });
     ui.label("");
     ui.end_row();
+    if let Some(scale) = follows
+        && let Some(v) = scale_row(ui, scale)
+    {
+        follow = Some(v);
+    }
     ui.label("Refresh rate");
     egui::ComboBox::from_id_salt("virtual-rate")
         .width(rows.field)
@@ -574,6 +571,13 @@ fn virtual_mode_rows(ui: &mut Ui, rows: &mut Rows, host: &str, live: &Live, mode
     if value != mode {
         rows.config.host_mut(host).virtual_display = Some(format_virtual_mode(&value));
         rows.outcome.changed = true;
+    }
+    if follow != follows {
+        save_resolution(
+            rows,
+            host,
+            follow.map_or(Resolution::Host, Resolution::Client),
+        );
     }
 }
 
@@ -990,4 +994,47 @@ fn combo(ui: &mut Ui, id: &str, value: &mut String, choices: &[(&str, &str)], wi
                 }
             }
         });
+}
+
+/// The scale slider of "This screen". Returns a new scale once dragging
+/// ends: each change switches the host's display mode.
+fn scale_row(ui: &mut Ui, scale: f32) -> Option<f32> {
+    ui.label("Scale")
+        .on_hover_text("Lower resolutions are lighter on the network and both computers");
+    let id = ui.make_persistent_id("resolution-scale");
+    let mut v = ui.data(|d| d.get_temp::<f32>(id)).unwrap_or(scale);
+    let slider = ui.add(
+        egui::Slider::new(&mut v, crate::config::RESOLUTION_SCALE)
+            .step_by(0.05)
+            .custom_formatter(|v, _| format!("{:.0} %", v * 100.0))
+            .custom_parser(|s| {
+                s.trim_end_matches(['%', ' '])
+                    .parse::<f64>()
+                    .ok()
+                    .map(|v| v / 100.0)
+            }),
+    );
+    let changed = if slider.dragged() {
+        ui.data_mut(|d| d.insert_temp(id, v));
+        None
+    } else {
+        ui.data_mut(|d| d.remove::<f32>(id));
+        ((v - scale).abs() > 0.001).then_some(v)
+    };
+    ui.label("");
+    ui.end_row();
+    changed
+}
+
+fn save_resolution(rows: &mut Rows, host: &str, value: Resolution) {
+    let h = rows.config.host_mut(host);
+    match value {
+        Resolution::Host => h.resolution = None,
+        Resolution::Client(scale) => {
+            h.resolution = Some("client".into());
+            h.resolution_scale = Some(scale);
+        }
+        Resolution::Fixed(w, h2) => h.resolution = Some(format_resolution(Some((w, h2)))),
+    }
+    rows.outcome.changed = true;
 }

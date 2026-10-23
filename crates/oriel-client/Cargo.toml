@@ -34,6 +34,9 @@ wayland-client = { version = "0.31", features = ["system", "dlopen"] }
 wayland-backend = { version = "0.3", features = ["client_system", "dlopen"] }
 wayland-protocols = { version = "0.32", features = ["client", "unstable"] }
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [target.'cfg(target_os = "android")'.dependencies]
 android_system_properties = "0.1"
 jni = "0.21"

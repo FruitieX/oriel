@@ -239,10 +239,13 @@ fn platform_name() -> Option<String> {
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .filter(|s| !s.is_empty());
+    // The name shown in Settings → About phone, else the model.
     #[cfg(target_os = "android")]
-    return android_system_properties::AndroidSystemProperties::new()
-        .get("ro.product.model")
-        .filter(|s| !s.is_empty());
+    return crate::android::device_name().or_else(|| {
+        android_system_properties::AndroidSystemProperties::new()
+            .get("ro.product.model")
+            .filter(|s| !s.is_empty())
+    });
     #[allow(unreachable_code)]
     None
 }
@@ -259,5 +262,23 @@ pub fn device_name() -> String {
                 .map(|s| s.trim().to_string())
         })
         .filter(|s| !s.is_empty())
+        .or_else(system_hostname)
         .unwrap_or_else(|| "oriel-client".into())
+}
+
+/// The kernel's hostname (Linux without /etc/hostname, macOS without a
+/// computer name).
+fn system_hostname() -> Option<String> {
+    #[cfg(unix)]
+    {
+        let mut buf = [0u8; 256];
+        // SAFETY: gethostname writes at most buf.len() bytes.
+        let ok = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) } == 0;
+        let len = buf.iter().position(|b| *b == 0).unwrap_or(buf.len());
+        let name = String::from_utf8_lossy(&buf[..len]).trim().to_string();
+        // Android reports "localhost".
+        return (ok && !name.is_empty() && name != "localhost").then_some(name);
+    }
+    #[allow(unreachable_code)]
+    None
 }

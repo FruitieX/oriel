@@ -160,6 +160,22 @@ pub(crate) fn set_immersive(on: bool) {
     });
 }
 
+/// The device name the user sees in Settings → About phone.
+pub(crate) fn device_name() -> Option<String> {
+    APP.get()?;
+    with_activity(|env, activity| {
+        let obj = env
+            .call_method(activity, "deviceName", "()Ljava/lang/String;", &[])?
+            .l()?;
+        if obj.is_null() {
+            return Ok(None);
+        }
+        Ok(Some(env.get_string(&JString::from(obj))?.into()))
+    })
+    .flatten()
+    .filter(|s: &String| !s.trim().is_empty())
+}
+
 /// Send the app to the background (Back on the start page).
 pub(crate) fn move_to_back() {
     with_activity(|env, activity| {
