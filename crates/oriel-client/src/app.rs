@@ -186,6 +186,8 @@ struct Viewer {
     grabbed: bool,
 
     menu_open: bool,
+    /// The menu button's quick actions are showing.
+    quick_menu_open: bool,
     /// The settings, and those currently in force (see `sync`).
     config: ClientConfig,
     in_force: Effective,
@@ -265,6 +267,7 @@ impl Viewer {
             grabbed: false,
             // Debugging aid for screenshots.
             menu_open: std::env::var_os("ORIEL_DEBUG_MENU").is_some(),
+            quick_menu_open: false,
             in_force: options.config.effective(Some(&options.target)),
             shortcuts: options.config.bindings(),
             config: options.config.clone(),
@@ -331,9 +334,9 @@ impl Viewer {
     }
 
     /// Keys go to the host except while the menu records a shortcut (it
-    /// has no text fields).
+    /// has no text fields) or the quick actions show.
     fn keys_to_host(&self) -> bool {
-        self.forwarding() && !(self.menu_open && self.panel.is_recording())
+        self.forwarding() && !(self.menu_open && self.panel.is_recording()) && !self.quick_menu_open
     }
 
     /// The pointer is over the menu or the menu button.
@@ -342,9 +345,10 @@ impl Viewer {
     }
 
     /// Capture the pointer and shortcuts for the host (not while the menu
-    /// is open, so it can be used).
+    /// or the quick actions are open, so they can be used, and Alt+Tab
+    /// reaches this computer).
     fn captured(&self) -> bool {
-        self.forwarding() && !self.menu_open
+        self.forwarding() && !self.menu_open && !self.quick_menu_open
     }
 
     fn relative(&self) -> bool {
@@ -973,6 +977,12 @@ impl Viewer {
         });
         if self.menu_open {
             self.menu_placed = true;
+        }
+        let quick = egui::Popup::is_any_open(&ctx);
+        if quick != self.quick_menu_open {
+            self.quick_menu_open = quick;
+            self.release_all();
+            self.update_cursor();
         }
         let gfx = self.gfx.as_mut().unwrap();
         if let Err(e) = gfx.renderer.render(viewport, &ctx, output) {
@@ -1666,7 +1676,8 @@ impl ApplicationHandler<UiEvent> for Viewer {
         // egui-winit asks for a repaint on nearly every event (including
         // redraws themselves). Video frames drive redraws; the overlay only
         // needs extra ones while the menu is open or the pointer is on it.
-        let overlay_active = self.menu_open || self.pointer_over_ui || self.closed.is_some();
+        let overlay_active =
+            self.menu_open || self.quick_menu_open || self.pointer_over_ui || self.closed.is_some();
         let pointer_only = matches!(event, WindowEvent::CursorMoved { .. });
         if response.repaint
             && !matches!(event, WindowEvent::RedrawRequested)

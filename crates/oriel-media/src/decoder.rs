@@ -117,6 +117,10 @@ pub struct DmabufFrame {
     /// Identifies the decoder surface: the same surface always exports the
     /// same memory, so its imported textures can be reused.
     pub surface: usize,
+    /// Identifies the memory behind it (the DMA-BUF's inode). FFmpeg can
+    /// replace its surface pool mid-stream (a new sequence header after the
+    /// host reopens its encoder), and the new surfaces may reuse old IDs.
+    pub buffer: u64,
     pub width: u32,
     pub height: u32,
     /// Luma (R8) and interleaved chroma (GR88).
@@ -394,9 +398,16 @@ impl FfDecoder {
                 ff::av_frame_free(&mut map);
                 bail!("unsupported DRM layout {formats:08x?}");
             }
+            let buffer = {
+                use std::os::{fd::FromRawFd, unix::fs::MetadataExt};
+                // Borrowed: the mapping owns the descriptor.
+                let file = std::mem::ManuallyDrop::new(std::fs::File::from_raw_fd(planes[0].fd));
+                file.metadata().map(|m| m.ino()).unwrap_or(0)
+            };
             let frame = DmabufFrame {
                 frame: map,
                 surface: (*src).data[3] as usize,
+                buffer,
                 width: (*src).width as u32,
                 height: (*src).height as u32,
                 planes: [planes[0], planes[1]],

@@ -93,7 +93,8 @@ const GPU_SETS: usize = 4 + crate::playout::MAX_QUEUED;
 #[cfg(target_os = "linux")]
 struct DmabufImports {
     interop: Arc<crate::interop::VkInterop>,
-    sets: std::collections::HashMap<usize, Arc<crate::interop::PlaneSet>>,
+    /// Surface → (the memory it was imported from, its textures).
+    sets: std::collections::HashMap<usize, (u64, Arc<crate::interop::PlaneSet>)>,
 }
 
 enum VideoDecoder {
@@ -196,13 +197,27 @@ impl VideoDecoder {
                 Some(Frame::Cpu(frame)) => Ok(Some(Picture::Cpu(frame))),
                 Some(Frame::Dmabuf(frame)) => {
                     let set = match imports.sets.get(&frame.surface) {
-                        Some(set) if set.size == (frame.width, frame.height) => set.clone(),
+                        Some((buffer, set))
+                            if *buffer == frame.buffer
+                                && set.size == (frame.width, frame.height) =>
+                        {
+                            set.clone()
+                        }
                         _ => {
+                            tracing::debug!(
+                                surface = frame.surface,
+                                buffer = frame.buffer,
+                                "importing decoder surface"
+                            );
                             let set = imports.interop.import_dmabuf(&frame).map_err(|e| {
                                 anyhow::Error::new(ZeroCopyFailed(format!("{e:#}")))
                             })?;
                             let set = Arc::new(set);
-                            imports.sets.insert(frame.surface, set.clone());
+                            // Replaces a stale import of a reused surface ID,
+                            // which would show an old picture.
+                            imports
+                                .sets
+                                .insert(frame.surface, (frame.buffer, set.clone()));
                             set
                         }
                     };
