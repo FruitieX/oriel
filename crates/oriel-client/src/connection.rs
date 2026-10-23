@@ -227,9 +227,30 @@ pub async fn pair(paths: &Paths, address: &str, pin: &str, name: Option<&str>) -
     Ok(name)
 }
 
+/// What the platform calls this device, where the environment does not
+/// say: macOS has no /etc/hostname (and shells do not export HOSTNAME), and
+/// Android has neither.
+fn platform_name() -> Option<String> {
+    #[cfg(target_os = "macos")]
+    return std::process::Command::new("scutil")
+        .args(["--get", "ComputerName"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty());
+    #[cfg(target_os = "android")]
+    return android_system_properties::AndroidSystemProperties::new()
+        .get("ro.product.model")
+        .filter(|s| !s.is_empty());
+    #[allow(unreachable_code)]
+    None
+}
+
 pub fn device_name() -> String {
     std::env::var("ORIEL_NAME")
         .ok()
+        .or_else(platform_name)
         .or_else(|| std::env::var("HOSTNAME").ok())
         .or_else(|| std::env::var("COMPUTERNAME").ok())
         .or_else(|| {

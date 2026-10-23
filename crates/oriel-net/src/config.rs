@@ -99,9 +99,61 @@ impl TrustStore {
         self.peers.push(peer);
     }
 
+    /// Add a peer that may share another's name (two devices that call
+    /// themselves the same): replace only the same fingerprint, and number
+    /// the name if it is taken ("laptop (2)").
+    pub fn add_distinct(&mut self, mut peer: TrustedPeer) -> String {
+        self.peers.retain(|p| p.fingerprint != peer.fingerprint);
+        let base = peer.name.clone();
+        let mut n = 2;
+        while self
+            .peers
+            .iter()
+            .any(|p| p.name.eq_ignore_ascii_case(&peer.name))
+        {
+            peer.name = format!("{base} ({n})");
+            n += 1;
+        }
+        let name = peer.name.clone();
+        self.peers.push(peer);
+        name
+    }
+
     pub fn remove(&mut self, name: &str) -> bool {
         let before = self.peers.len();
         self.peers.retain(|p| !p.name.eq_ignore_ascii_case(name));
         before != self.peers.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn peer(name: &str, fp: u8) -> TrustedPeer {
+        TrustedPeer {
+            name: name.into(),
+            fingerprint: Fingerprint([fp; 32]),
+            address: None,
+        }
+    }
+
+    #[test]
+    fn same_named_clients_both_stay() {
+        let mut store = TrustStore::default();
+        assert_eq!(store.add_distinct(peer("oriel-client", 1)), "oriel-client");
+        assert_eq!(
+            store.add_distinct(peer("oriel-client", 2)),
+            "oriel-client (2)"
+        );
+        assert_eq!(
+            store.add_distinct(peer("Oriel-Client", 3)),
+            "Oriel-Client (3)"
+        );
+        assert_eq!(store.peers.len(), 3);
+        // Pairing the same device again replaces its entry.
+        assert_eq!(store.add_distinct(peer("phone", 2)), "phone");
+        assert_eq!(store.peers.len(), 3);
+        assert!(store.by_fingerprint(&Fingerprint([1; 32])).is_some());
     }
 }

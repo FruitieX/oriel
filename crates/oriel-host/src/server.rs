@@ -426,7 +426,8 @@ impl Host {
             return Ok(());
         }
         let mut trusted = TrustStore::load(&self.paths.trusted_clients())?;
-        trusted.upsert(TrustedPeer {
+        // Another device may use the same name; never drop it for this one.
+        let name = trusted.add_distinct(TrustedPeer {
             name: name.clone(),
             fingerprint: client_fp,
             address: None,
