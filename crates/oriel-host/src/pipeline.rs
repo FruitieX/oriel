@@ -55,6 +55,9 @@ pub enum Event {
         y: i32,
     },
     Notice(String),
+    /// A display was captured, but nothing showed up (no monitor attached
+    /// or switched to another input): the session may use a virtual one.
+    NoPicture,
     /// The last second's frames (loss is the session's to add).
     Health(oriel_proto::HostHealth),
     Clipboard(oriel_clipboard::Content),
@@ -197,6 +200,9 @@ const PYROWAVE_MAX_RTT: Duration = Duration::from_millis(3);
 /// long it must be still first.
 const REFRESH_FRAMES: u32 = 30;
 const REFRESH_AFTER: Duration = Duration::from_millis(150);
+/// Capture starts with the current image; none this long after opening
+/// means no monitor shows the display.
+const NO_PICTURE_AFTER: Duration = Duration::from_secs(4);
 
 /// A quarter second of streaming, for automatic bitrate.
 struct Quarter {
@@ -279,6 +285,9 @@ impl Pipeline {
                     if !reported && started.elapsed() >= Duration::from_millis(1500) {
                         reported = true;
                         self.send(Event::Notice(format!("Capture unavailable: {e:#}")))?;
+                        if matches!(self.config.target, capture::Target::Display(_)) {
+                            self.send(Event::NoPicture)?;
+                        }
                     }
                     let delay = Duration::from_millis((100 * failures as u64).min(1000));
                     match self.cmds.recv_timeout(delay) {
@@ -415,6 +424,9 @@ impl Pipeline {
         // What the encoder runs at, and when it was last reopened for that.
         let mut enc_kbps = self.video_kbps(*bitrate);
         let mut reopened = Instant::now();
+        // A display that shows nothing for this long has no monitor on it.
+        let opened = Instant::now();
+        let mut no_picture_reported = false;
 
         loop {
             while let Ok(cmd) = self.cmds.try_recv() {
@@ -510,6 +522,16 @@ impl Pipeline {
                     tracing::info!("capture interrupted: {e:#}");
                     return Ok(Flow::Continue);
                 }
+            }
+
+            if !has_frame
+                && !no_picture_reported
+                && opened.elapsed() >= NO_PICTURE_AFTER
+                && matches!(self.config.target, capture::Target::Display(_))
+            {
+                no_picture_reported = true;
+                tracing::info!("the captured display shows nothing");
+                self.send(Event::NoPicture)?;
             }
 
             if let Some(shape) = cap.cursor_shape() {

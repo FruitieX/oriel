@@ -69,6 +69,8 @@ pub async fn run(
 
     // A virtual monitor replaces the chosen display while set.
     let mut virtual_mode = settings.virtual_display;
+    // Switched to a virtual display because no monitor showed anything.
+    let mut auto_virtual = false;
     if virtual_mode.is_some() && !crate::capture::virtual_display_available(options.source) {
         virtual_mode = None;
         ctl.send(&HostMsg::Notice {
@@ -302,6 +304,30 @@ pub async fn run(
                     }
                     Some(Event::Notice(text)) => {
                         write_msg(&mut ctl_send, &HostMsg::Notice { text }).await?
+                    }
+                    // Nothing to see (monitors off or on another input):
+                    // stream a virtual display instead, once per session.
+                    Some(Event::NoPicture) => {
+                        // Windows only for now: GNOME's first frame can
+                        // take a moment to arrive.
+                        if cfg!(windows)
+                            && virtual_mode.is_none()
+                            && !auto_virtual
+                            && crate::capture::virtual_display_available(options.source)
+                        {
+                            auto_virtual = true;
+                            let (width, height) = resolution.unwrap_or((1920, 1080));
+                            let mode = VirtualMode { width, height, refresh_hz: 60 };
+                            tracing::info!(?mode, "no monitor shows a picture; using a virtual display");
+                            mode_guard = None;
+                            virtual_mode = Some(mode);
+                            let _ = cmd_tx.send(Cmd::Target(Target::Virtual(mode)));
+                            write_msg(&mut ctl_send, &HostMsg::Notice {
+                                text: "No monitor shows this computer's screen (switched off or on \
+                                       another input), so it streams an extra display instead"
+                                    .into(),
+                            }).await?;
+                        }
                     }
                     Some(Event::Health(mut health)) => {
                         let path = conn.stats().path;
