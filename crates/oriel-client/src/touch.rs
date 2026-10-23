@@ -197,11 +197,15 @@ impl Gestures {
                 out.push(Action::MoveTo(finger.pos.0, finger.pos.1));
                 out.push(Action::Button(MouseButton::Left, false));
             }
-            Mode::Multi { since, most, moved } if self.fingers.is_empty() => {
-                if !moved && most == 2 && now.duration_since(since) < MULTI_TAP {
-                    out.push(Action::Button(MouseButton::Right, true));
-                    out.push(Action::Button(MouseButton::Right, false));
-                }
+            // A quick two-finger tap.
+            Mode::Multi { since, most, moved }
+                if self.fingers.is_empty()
+                    && !moved
+                    && most == 2
+                    && now.duration_since(since) < MULTI_TAP =>
+            {
+                out.push(Action::Button(MouseButton::Right, true));
+                out.push(Action::Button(MouseButton::Right, false));
             }
             _ => {}
         }

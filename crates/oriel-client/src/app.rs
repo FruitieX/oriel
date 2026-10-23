@@ -165,6 +165,8 @@ struct Gfx {
     window: Arc<Window>,
     renderer: Renderer,
     egui: egui_winit::State,
+    // Android's clipboard goes through the activity instead.
+    #[cfg_attr(target_os = "android", allow(dead_code))]
     clipboard: egui_winit::clipboard::Clipboard,
     #[cfg(target_os = "linux")]
     inhibitor: Option<crate::inhibit::ShortcutInhibitor>,
@@ -711,6 +713,13 @@ impl Viewer {
     }
 
     fn handle_key(&mut self, event: &KeyEvent) {
+        // Android's Back opens (or closes) the menu.
+        if is_back(event) {
+            if event.state == ElementState::Pressed && !event.repeat {
+                self.set_menu(!self.menu_open);
+            }
+            return;
+        }
         let PhysicalKey::Code(code) = event.physical_key else {
             return;
         };
@@ -747,15 +756,15 @@ impl Viewer {
         if self.egui_ctx.text_edit_focused() {
             return;
         }
+        let input = crate::android::take_input();
         if !self.forwarding() {
-            crate::android::take_input();
             return;
         }
         let tap = |s: &Session, usage: u16| {
             s.input(InputEvent::Key { usage, down: true });
             s.input(InputEvent::Key { usage, down: false });
         };
-        for input in crate::android::take_input() {
+        for input in input {
             match input {
                 // With latched modifiers, letters go as keys (Ctrl+C).
                 TextInput::Text(text) if self.sticky.iter().any(|m| *m) => {
@@ -1703,7 +1712,7 @@ fn overlay(ctx: &egui::Context, s: &OverlayState, settings: &mut MenuSettings) -
             &s.host_name,
             Some(&format!(
                 "Connected · {} shows or hides this menu",
-                s.shortcut
+                if s.touch { "Back" } else { &s.shortcut }
             )),
         ) {
             actions.push(Action::CloseMenu);
@@ -2397,4 +2406,14 @@ fn touch_controls(ctx: &egui::Context, s: &OverlayState, actions: &mut Vec<Actio
                 });
             });
         });
+}
+
+/// Android's Back button (winit calls it BrowserBack).
+pub(crate) fn is_back(event: &KeyEvent) -> bool {
+    use winit::keyboard::{Key, NamedKey};
+    cfg!(target_os = "android")
+        && matches!(
+            event.logical_key,
+            Key::Named(NamedKey::BrowserBack | NamedKey::GoBack)
+        )
 }

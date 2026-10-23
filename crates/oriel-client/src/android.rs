@@ -152,6 +152,14 @@ pub(crate) fn show_keyboard(show: bool) {
     });
 }
 
+/// Send the app to the background (Back on the start page).
+pub(crate) fn move_to_back() {
+    with_activity(|env, activity| {
+        env.call_method(activity, "moveTaskToBack", "(Z)Z", &[JValue::Bool(1)])
+            .map(|_| ())
+    });
+}
+
 pub(crate) fn clipboard_text() -> Option<String> {
     with_activity(|env, activity| {
         let obj = env

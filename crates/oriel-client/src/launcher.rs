@@ -1223,6 +1223,19 @@ impl ApplicationHandler<UiEvent> for Launcher {
                 renderer.resize(size.width, size.height);
                 window.request_redraw();
             }
+            // Android's Back closes a dialog, else leaves (to the background).
+            #[cfg(target_os = "android")]
+            WindowEvent::KeyboardInput { event, .. }
+                if crate::app::is_back(&event) && event.state.is_pressed() =>
+            {
+                if self.settings.is_some() || self.pair_dialog.is_some() {
+                    self.settings = None;
+                    self.pair_dialog = None;
+                    window.request_redraw();
+                } else {
+                    crate::android::move_to_back();
+                }
+            }
             WindowEvent::RedrawRequested => {
                 #[allow(unused_mut)]
                 let mut input = egui.take_egui_input(window);
