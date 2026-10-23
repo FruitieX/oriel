@@ -63,7 +63,7 @@ impl ViewerOptions {
         paths: Option<oriel_net::Paths>,
     ) -> Self {
         let e = config.effective(Some(target));
-        let (codecs, auto_codec) = crate::config::codec_choice(&e.codec);
+        let (codecs, auto_codec) = offered_codecs(&e.codec);
         Self {
             target: target.to_string(),
             settings: StreamSettings {
@@ -1089,7 +1089,7 @@ impl Viewer {
         }
         let s = &self.session;
         if old.codec != new.codec {
-            let (codecs, auto_codec) = crate::config::codec_choice(&new.codec);
+            let (codecs, auto_codec) = offered_codecs(&new.codec);
             s.send(ClientMsg::SetCodecs { codecs, auto_codec });
         }
         if old.bitrate_kbps != new.bitrate_kbps {
@@ -2430,4 +2430,16 @@ pub(crate) fn is_back(event: &KeyEvent) -> bool {
             event.logical_key,
             Key::Named(NamedKey::BrowserBack | NamedKey::GoBack)
         )
+}
+
+/// The codecs to ask the host for: the choice, minus PyroWave where this
+/// client cannot decode it (macOS, Android, or the library is missing).
+fn offered_codecs(choice: &str) -> (Vec<oriel_proto::Codec>, bool) {
+    let (mut codecs, auto) = crate::config::codec_choice(choice);
+    if codecs.contains(&oriel_proto::Codec::PyroWave) && !oriel_media::pyrowave_available() {
+        tracing::info!("PyroWave cannot be decoded here; not offering it");
+        codecs.retain(|c| *c != oriel_proto::Codec::PyroWave);
+        return (codecs, false);
+    }
+    (codecs, auto)
 }

@@ -24,7 +24,8 @@ use crate::{ColorMatrix, PlaneFormat};
 
 /// A decoded picture in CPU memory (tightly packed planes).
 pub struct DecodedFrame {
-    planes: Vec<Vec<u8>>,
+    /// Each plane's bytes and row stride.
+    planes: Vec<(Vec<u8>, usize)>,
     width: u32,
     height: u32,
     pub format: PlaneFormat,
@@ -55,7 +56,7 @@ impl DecodedFrame {
 
     /// Bytes of plane `i` and its row stride.
     pub fn plane(&self, i: usize) -> (&[u8], usize) {
-        (&self.planes[i], self.plane_size(i).0 as usize)
+        (&self.planes[i].0, self.planes[i].1)
     }
 }
 
@@ -246,52 +247,88 @@ impl Decoder {
         }
     }
 
-    /// Copy a YUV_420_888 image into tightly packed I420 planes.
+    /// Copy a YUV_420_888 image out: NV12 row by row when the chroma is
+    /// interleaved (what hardware decoders produce), else I420 sample by
+    /// sample.
     fn copy(&self, image: &Image) -> Result<DecodedFrame> {
         let err = |e| anyhow::anyhow!("read image: {e:?}");
         let (w, h) = (
             self.size.0.min(image.width().map_err(err)? as u32),
             self.size.1.min(image.height().map_err(err)? as u32),
         );
-        let mut planes = Vec::with_capacity(3);
-        for i in 0..3 {
-            let (pw, ph) = if i == 0 {
-                (w as usize, h as usize)
-            } else {
-                (w.div_ceil(2) as usize, h.div_ceil(2) as usize)
-            };
-            let data = image.plane_data(i).map_err(err)?;
-            let row = image.plane_row_stride(i).map_err(err)? as usize;
-            let pixel = image.plane_pixel_stride(i).map_err(err)? as usize;
-            let mut out = vec![0u8; pw * ph];
-            for y in 0..ph {
-                let src = &data[(y * row).min(data.len())..];
-                let dst = &mut out[y * pw..(y + 1) * pw];
-                if pixel == 1 {
-                    let n = pw.min(src.len());
-                    dst[..n].copy_from_slice(&src[..n]);
-                } else {
-                    for (x, d) in dst.iter_mut().enumerate() {
-                        if let Some(v) = src.get(x * pixel) {
-                            *d = *v;
-                        }
-                    }
-                }
+        let (cw, ch) = (w.div_ceil(2) as usize, h.div_ceil(2) as usize);
+        let rows = |data: &[u8], stride: usize, width: usize, height: usize| {
+            let mut out = vec![0u8; width * height];
+            for y in 0..height {
+                let src = &data[(y * stride).min(data.len())..];
+                let n = width.min(src.len());
+                out[y * width..y * width + n].copy_from_slice(&src[..n]);
             }
-            planes.push(out);
-        }
-        Ok(DecodedFrame {
+            out
+        };
+        let luma = rows(
+            image.plane_data(0).map_err(err)?,
+            image.plane_row_stride(0).map_err(err)? as usize,
+            w as usize,
+            h as usize,
+        );
+        let (u, v) = (
+            image.plane_data(1).map_err(err)?,
+            image.plane_data(2).map_err(err)?,
+        );
+        let (u_px, v_px) = (
+            image.plane_pixel_stride(1).map_err(err)?,
+            image.plane_pixel_stride(2).map_err(err)?,
+        );
+        let (u_row, v_row) = (
+            image.plane_row_stride(1).map_err(err)? as usize,
+            image.plane_row_stride(2).map_err(err)? as usize,
+        );
+        let matrix = if h > 576 {
+            ColorMatrix::Bt709
+        } else {
+            ColorMatrix::Bt601
+        };
+        let frame = |planes, format| DecodedFrame {
             planes,
             width: w,
             height: h,
-            format: PlaneFormat::Yuv420p,
-            matrix: if h > 576 {
-                ColorMatrix::Bt709
-            } else {
-                ColorMatrix::Bt601
-            },
+            format,
+            matrix,
             full_range: false,
-        })
+        };
+        if u_px == 2 && v_px == 2 && u_row == v_row && v.as_ptr() == u.as_ptr().wrapping_add(1) {
+            // NV12: the U plane's bytes run U V U V ...; its last V is the V
+            // plane's last byte, one past the U slice.
+            let len = (u.len() + 1).min((ch - 1) * u_row + cw * 2);
+            // SAFETY: those bytes lie within the V plane, which follows.
+            let uv = unsafe { std::slice::from_raw_parts(u.as_ptr(), len) };
+            let chroma = rows(uv, u_row, cw * 2, ch);
+            return Ok(frame(
+                vec![(luma, w as usize), (chroma, cw * 2)],
+                PlaneFormat::Nv12,
+            ));
+        }
+        let gather = |data: &[u8], row: usize, pixel: usize| {
+            let mut out = vec![0u8; cw * ch];
+            for y in 0..ch {
+                let src = &data[(y * row).min(data.len())..];
+                for (x, d) in out[y * cw..(y + 1) * cw].iter_mut().enumerate() {
+                    if let Some(v) = src.get(x * pixel) {
+                        *d = *v;
+                    }
+                }
+            }
+            out
+        };
+        Ok(frame(
+            vec![
+                (luma, w as usize),
+                (gather(u, u_row, u_px as usize), cw),
+                (gather(v, v_row, v_px as usize), cw),
+            ],
+            PlaneFormat::Yuv420p,
+        ))
     }
 }
 
