@@ -2,3 +2,5 @@
 
 #[cfg(target_os = "android")]
 mod app;
+#[cfg(target_os = "android")]
+mod share;

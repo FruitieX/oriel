@@ -9,6 +9,8 @@ use parking_lot::Mutex;
 
 use crate::cursor::CursorPos;
 
+#[cfg(target_os = "android")]
+mod android;
 #[cfg(windows)]
 mod dxgi;
 #[cfg(target_os = "linux")]
@@ -108,6 +110,8 @@ pub fn list_displays(source: SourceKind) -> Vec<DisplayInfo> {
             tracing::warn!("cannot enumerate displays: {e:#}");
             Vec::new()
         }),
+        #[cfg(target_os = "android")]
+        SourceKind::Auto => android::display().into_iter().collect(),
         _ => vec![test_pattern::display()],
     }
 }
@@ -159,6 +163,11 @@ pub fn set_display_mode(
 
 pub fn open(source: SourceKind, target: Target, test: &TestState) -> Result<Box<dyn Capturer>> {
     match source {
+        #[cfg(target_os = "android")]
+        SourceKind::Auto => {
+            let _ = target;
+            Ok(Box::new(android::ScreenShare::open()?))
+        }
         #[cfg(windows)]
         SourceKind::Auto => match target {
             Target::Display(display) => Ok(Box::new(dxgi::DxgiCapturer::open(display)?)),

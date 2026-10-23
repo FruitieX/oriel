@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="accessibility_description">Lets paired devices control this phone while you share it with oriel: taps, swipes, Back and Home, and typing. oriel does nothing with it while not sharing.</string>
+</resources>

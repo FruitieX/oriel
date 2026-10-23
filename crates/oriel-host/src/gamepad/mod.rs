@@ -34,6 +34,7 @@ trait VirtualPad {
 
 /// Run the virtual pads until `cmds` closes. `notice` reports problems
 /// to the user (once).
+#[cfg_attr(target_os = "android", allow(unused_variables))]
 pub fn spawn(
     cmds: crossbeam_channel::Receiver<Cmd>,
     rumble: RumbleFn,

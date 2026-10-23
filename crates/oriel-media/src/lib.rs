@@ -39,8 +39,9 @@ pub use pyrowave::{
 mod android;
 #[cfg(target_os = "android")]
 pub use android::{
-    DecodedFrame, Decoder, EXTERNAL_MEMORY_HANDLE as PYROWAVE_EXTERNAL_MEMORY, ExternalPlane,
-    Frame, PyroDecoder, available as pyrowave_available,
+    DecodedFrame, Decoder, EXTERNAL_MEMORY_HANDLE as PYROWAVE_EXTERNAL_MEMORY, EncodedFrame,
+    Encoder, EncoderConfig, EncoderInput, ExternalPlane, Frame, HwDevice, PyroDecoder,
+    available as pyrowave_available, available_codecs, share,
 };
 
 /// Route FFmpeg's log output through `tracing` at a quiet level.

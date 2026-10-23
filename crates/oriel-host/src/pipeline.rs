@@ -685,7 +685,12 @@ impl Pipeline {
                         force_key,
                     )
                 }
-                #[cfg(not(windows))]
+                // The phone's screen share encodes itself.
+                #[cfg(target_os = "android")]
+                {
+                    enc.encode(EncoderInput::Prepared, force_key)
+                }
+                #[cfg(not(any(windows, target_os = "android")))]
                 unreachable!("only D3D11 encoders take GPU input")
             };
             match result {

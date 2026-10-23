@@ -16,10 +16,12 @@ fn run() -> anyhow::Result<()> {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
+    let host: Box<dyn oriel_client::launcher::HostControl> =
+        Box::new(crate::share::PhoneHost::new(paths.clone())?);
     oriel_client::launcher::run(
         rt,
         paths,
-        None,
+        Some(host),
         oriel_client::launcher::GuiOptions::default(),
     )
 }
@@ -164,4 +166,37 @@ extern "system" fn Java_org_fruitiex_oriel_OrielActivity_nativeInsets(
         bars: [left as f32, top as f32, right as f32, bottom as f32],
         keyboard: keyboard as f32,
     });
+}
+
+#[unsafe(no_mangle)]
+extern "system" fn Java_org_fruitiex_oriel_OrielActivity_nativeShareStarted(
+    _env: JNIEnv,
+    _class: JClass,
+    width: jint,
+    height: jint,
+) {
+    tracing::info!(width, height, "screen share started");
+    oriel_media::share::set_screen_size(Some((width as u32, height as u32)));
+}
+
+#[unsafe(no_mangle)]
+extern "system" fn Java_org_fruitiex_oriel_OrielActivity_nativeShareStopped(
+    _env: JNIEnv,
+    _class: JClass,
+) {
+    tracing::info!("screen share stopped");
+    oriel_media::share::set_screen_size(None);
+}
+
+#[unsafe(no_mangle)]
+extern "system" fn Java_org_fruitiex_oriel_OrielActivity_nativeEncodedFrame(
+    env: JNIEnv,
+    _class: JClass,
+    data: jni::objects::JByteArray,
+    keyframe: jboolean,
+    encode_us: jint,
+) {
+    if let Ok(bytes) = env.convert_byte_array(&data) {
+        oriel_media::share::push(bytes, keyframe != 0, encode_us.max(0) as u32);
+    }
 }

@@ -375,3 +375,219 @@ impl PyroDecoder {
 pub fn available() -> bool {
     false
 }
+
+// Encoding (the phone as a host): the screen is captured and encoded on
+// the Java side (MediaProjection into a MediaCodec encoder's input
+// surface); `share` passes the encoded frames to the host pipeline, whose
+// "encoder" here just hands them on.
+
+pub enum HwDevice {
+    None,
+}
+
+pub struct EncoderConfig {
+    pub codec: Codec,
+    pub width: u32,
+    pub height: u32,
+    pub fps: u32,
+    pub bitrate_kbps: u32,
+    pub device: HwDevice,
+    pub encoder: Option<String>,
+}
+
+pub enum EncoderInput<'a> {
+    Bgra {
+        data: &'a [u8],
+        stride: usize,
+    },
+    /// The frame the screen share encoded already.
+    Prepared,
+}
+
+#[derive(Debug)]
+pub struct EncodedFrame {
+    pub data: Vec<u8>,
+    pub keyframe: bool,
+    pub encode_us: u32,
+}
+
+/// What this device encodes in hardware.
+pub fn available_codecs() -> Vec<Codec> {
+    vec![Codec::Hevc, Codec::H264]
+}
+
+pub struct Encoder {
+    _codec: Codec,
+}
+
+impl Encoder {
+    pub fn open(config: &EncoderConfig) -> Result<Self> {
+        if !matches!(config.codec, Codec::Hevc | Codec::H264) {
+            bail!(
+                "{} encoding is not available on Android",
+                config.codec.name()
+            );
+        }
+        share::clear();
+        share::control()
+            .context("the screen is not being shared")?
+            .start(
+                config.codec,
+                config.width,
+                config.height,
+                config.fps,
+                config.bitrate_kbps,
+            )?;
+        Ok(Self {
+            _codec: config.codec,
+        })
+    }
+
+    pub fn wants_cpu_input(&self) -> bool {
+        false
+    }
+
+    pub fn set_bitrate(&mut self, kbps: u32) -> bool {
+        if let Some(c) = share::control() {
+            c.bitrate(kbps);
+        }
+        true
+    }
+
+    pub fn encode(
+        &mut self,
+        _input: EncoderInput<'_>,
+        keyframe: bool,
+    ) -> Result<Option<EncodedFrame>> {
+        if keyframe && let Some(c) = share::control() {
+            c.keyframe();
+        }
+        Ok(share::pop())
+    }
+}
+
+impl Drop for Encoder {
+    fn drop(&mut self) {
+        if let Some(c) = share::control() {
+            c.stop();
+        }
+    }
+}
+
+pub mod share {
+    //! The bridge between the Java screen share and the host pipeline.
+
+    use std::{
+        collections::VecDeque,
+        sync::{Arc, Condvar, Mutex},
+        time::Duration,
+    };
+
+    use oriel_proto::Codec;
+
+    use super::EncodedFrame;
+
+    /// Implemented by the app (over JNI).
+    pub trait Control: Send + Sync {
+        /// Start encoding the shared screen.
+        fn start(
+            &self,
+            codec: Codec,
+            width: u32,
+            height: u32,
+            fps: u32,
+            kbps: u32,
+        ) -> anyhow::Result<()>;
+        fn stop(&self);
+        fn keyframe(&self);
+        fn bitrate(&self, kbps: u32);
+    }
+
+    #[derive(Default)]
+    struct Queue {
+        frames: VecDeque<EncodedFrame>,
+        /// Frames were dropped: wait for a keyframe.
+        need_key: bool,
+        size: Option<(u32, u32)>,
+    }
+
+    static CONTROL: Mutex<Option<Arc<dyn Control>>> = Mutex::new(None);
+    static QUEUE: Mutex<Option<Queue>> = Mutex::new(None);
+    static READY: Condvar = Condvar::new();
+    /// More than this waiting: the host fell behind.
+    const MAX_QUEUED: usize = 8;
+
+    fn with<T>(f: impl FnOnce(&mut Queue) -> T) -> T {
+        f(QUEUE.lock().unwrap().get_or_insert_with(Default::default))
+    }
+
+    pub fn set_control(control: Option<Arc<dyn Control>>) {
+        *CONTROL.lock().unwrap() = control;
+    }
+
+    pub fn control() -> Option<Arc<dyn Control>> {
+        CONTROL.lock().unwrap().clone()
+    }
+
+    /// The shared screen's size (`None` while not shared).
+    pub fn set_screen_size(size: Option<(u32, u32)>) {
+        with(|q| q.size = size);
+        READY.notify_all();
+    }
+
+    pub fn screen_size() -> Option<(u32, u32)> {
+        with(|q| q.size)
+    }
+
+    /// An encoded frame from the screen share (codec configuration
+    /// prepended to keyframes).
+    pub fn push(data: Vec<u8>, keyframe: bool, encode_us: u32) {
+        let mut ask_key = false;
+        with(|q| {
+            if q.need_key && !keyframe {
+                return;
+            }
+            q.need_key = false;
+            if q.frames.len() >= MAX_QUEUED {
+                q.frames.clear();
+                if !keyframe {
+                    q.need_key = true;
+                    ask_key = true;
+                    return;
+                }
+            }
+            q.frames.push_back(EncodedFrame {
+                data,
+                keyframe,
+                encode_us,
+            });
+        });
+        if ask_key && let Some(c) = control() {
+            c.keyframe();
+        }
+        READY.notify_all();
+    }
+
+    /// Wait up to `timeout` for a frame.
+    pub fn wait(timeout: Duration) -> bool {
+        let guard = QUEUE.lock().unwrap();
+        let (guard, _) = READY
+            .wait_timeout_while(guard, timeout, |q| {
+                q.as_ref()
+                    .is_none_or(|q| q.frames.is_empty() && q.size.is_some())
+            })
+            .unwrap();
+        guard.as_ref().is_some_and(|q| !q.frames.is_empty())
+    }
+
+    pub fn pop() -> Option<EncodedFrame> {
+        with(|q| q.frames.pop_front())
+    }
+
+    pub fn clear() {
+        with(|q| {
+            q.frames.clear();
+            q.need_key = false;
+        });
+    }
+}

@@ -35,6 +35,8 @@ pub fn native_hosting_available() -> bool {
     return true;
     #[cfg(target_os = "linux")]
     return gnome::GnomeSession::available();
+    #[cfg(target_os = "android")]
+    return true;
     #[allow(unreachable_code)]
     false
 }

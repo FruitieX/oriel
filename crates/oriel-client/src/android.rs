@@ -121,7 +121,9 @@ pub(crate) fn keyboard_shown() -> bool {
 }
 
 /// Run `f` with the JNI environment and the activity object.
-fn with_activity<T>(f: impl FnOnce(&mut JNIEnv, &JObject) -> jni::errors::Result<T>) -> Option<T> {
+pub fn with_activity<T>(
+    f: impl FnOnce(&mut JNIEnv, &JObject) -> jni::errors::Result<T>,
+) -> Option<T> {
     let app = app();
     let vm = unsafe { JavaVM::from_raw(app.vm_as_ptr().cast()) }.ok()?;
     let mut env = vm.attach_current_thread().ok()?;

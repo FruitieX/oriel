@@ -54,7 +54,8 @@ javac --release 11 -nowarn -classpath "$android_jar" -d "$out/classes" \
 "$build_tools/d8" --min-api "$api" --lib "$android_jar" --output "$out/apk" \
   $(find "$out/classes" -name '*.class')
 
-# Resources: the launcher icon in a few densities.
+# Resources: android/res, and the launcher icon in a few densities.
+cp -r android/res/. "$out/res/"
 for d in mdpi:48 hdpi:72 xhdpi:96 xxhdpi:144 xxxhdpi:192; do
   mkdir -p "$out/res/mipmap-${d%%:*}"
   resvg -w "${d##*:}" -h "${d##*:}" assets/oriel.svg "$out/res/mipmap-${d%%:*}/ic_launcher.png"
