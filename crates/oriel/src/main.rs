@@ -746,6 +746,13 @@ struct ServiceHost {
     pin: Option<(String, std::time::Instant)>,
     /// Cached status: (running, when asked).
     running: std::cell::Cell<Option<(bool, std::time::Instant)>>,
+    /// Cached sessions the service published, and when they were read.
+    clients: std::cell::RefCell<
+        Option<(
+            Vec<oriel_client::launcher::SharedClient>,
+            std::time::Instant,
+        )>,
+    >,
 }
 
 #[cfg(windows)]
@@ -833,10 +840,35 @@ impl oriel_client::launcher::HostControl for ServiceHost {
     }
 
     fn clients(&self) -> Vec<oriel_client::launcher::SharedClient> {
-        Vec::new()
+        // Asked every frame; the service's list is read once a second.
+        if let Some((clients, at)) = &*self.clients.borrow()
+            && at.elapsed() < std::time::Duration::from_secs(1)
+        {
+            return clients.clone();
+        }
+        let clients: Vec<_> = if self.is_running() {
+            oriel_host::service::sessions()
+                .into_iter()
+                .map(|c| oriel_client::launcher::SharedClient {
+                    id: c.id,
+                    name: c.name,
+                    address: c.address.ip().to_string(),
+                    codec: c.codec,
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        *self.clients.borrow_mut() = Some((clients.clone(), std::time::Instant::now()));
+        clients
     }
 
-    fn kick(&self, _id: usize) {}
+    fn kick(&self, id: usize) {
+        if let Err(e) = oriel_host::service::kick(id) {
+            tracing::warn!("cannot disconnect the client: {e:#}");
+        }
+        *self.clients.borrow_mut() = None;
+    }
 
     fn allow_pairing(&mut self) -> Option<String> {
         let path = std::env::temp_dir().join(format!("oriel-pin-{}", std::process::id()));

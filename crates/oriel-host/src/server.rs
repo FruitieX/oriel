@@ -144,6 +144,76 @@ const MAX_PAIR_FAILURES: u32 = 5;
 pub fn pin_file(config_dir: &std::path::Path) -> std::path::PathBuf {
     config_dir.join("pairing").join("pin")
 }
+/// The service's open sessions, one per line: id, name, address, codec
+/// (tab separated), for the signed-in user's tray icon.
+pub fn sessions_file(config_dir: &std::path::Path) -> std::path::PathBuf {
+    config_dir.join("pairing").join("sessions")
+}
+
+/// Session ids to disconnect, one per line, written by the tray icon.
+pub fn kick_file(config_dir: &std::path::Path) -> std::path::PathBuf {
+    config_dir.join("pairing").join("kick")
+}
+
+impl ClientInfo {
+    fn to_line(&self) -> String {
+        let clean = |s: &str| s.replace(['\t', '\n', '\r'], " ");
+        format!(
+            "{}\t{}\t{}\t{}",
+            self.id,
+            clean(&self.name),
+            self.address,
+            clean(self.codec.as_deref().unwrap_or(""))
+        )
+    }
+
+    pub fn parse_line(line: &str) -> Option<Self> {
+        let mut parts = line.split('\t');
+        Some(Self {
+            id: parts.next()?.parse().ok()?,
+            name: parts.next()?.to_string(),
+            address: parts.next()?.parse().ok()?,
+            codec: parts.next().filter(|c| !c.is_empty()).map(str::to_string),
+        })
+    }
+}
+
+/// Where the pairing directory exists (the service's), publish the open
+/// sessions there and act on disconnect requests, for the tray icon of a
+/// user who cannot talk to the service otherwise.
+fn publish_sessions(config_dir: std::path::PathBuf, control: HostControl) {
+    if !config_dir.join("pairing").is_dir() {
+        return;
+    }
+    tokio::spawn(async move {
+        let sessions = sessions_file(&config_dir);
+        let kick = kick_file(&config_dir);
+        let _ = std::fs::remove_file(&kick);
+        let mut written: Option<String> = None;
+        loop {
+            let text: String = control
+                .status()
+                .clients
+                .iter()
+                .map(|c| c.to_line() + "\n")
+                .collect();
+            if written.as_ref() != Some(&text) {
+                if let Err(e) = std::fs::write(&sessions, &text) {
+                    tracing::debug!("cannot publish sessions: {e:#}");
+                }
+                written = Some(text);
+            }
+            if let Ok(ids) = std::fs::read_to_string(&kick) {
+                let _ = std::fs::remove_file(&kick);
+                for id in ids.lines().filter_map(|l| l.trim().parse().ok()) {
+                    control.kick(id);
+                }
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    });
+}
+
 /// A PIN pairs one device, within this time.
 const PIN_VALIDITY: Duration = Duration::from_secs(600);
 
@@ -180,6 +250,7 @@ pub async fn run_with(paths: Paths, options: HostOptions, control: HostControl) 
             "Pairing enabled. On the client run:\n  oriel pair <this-host-address> --pin {pin}"
         );
     }
+    publish_sessions(paths.config_dir.clone(), control.clone());
     let host = Arc::new(Host {
         pairing: control.pairing.clone(),
         status: control.status.clone(),
@@ -390,4 +461,25 @@ async fn finish(conn: &quinn::Connection, ctl: &mut ControlStream) {
     let _ = ctl.send.finish();
     let _ = tokio::time::timeout(Duration::from_secs(2), ctl.send.stopped()).await;
     conn.close(0u32.into(), b"done");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ClientInfo;
+
+    #[test]
+    fn session_lines_roundtrip() {
+        let c = ClientInfo {
+            id: 7,
+            name: "tan\tgelo".into(),
+            address: "192.168.6.5:4433".parse().unwrap(),
+            codec: Some("HEVC".into()),
+        };
+        let back = ClientInfo::parse_line(&c.to_line()).unwrap();
+        assert_eq!((back.id, back.name.as_str()), (7, "tan gelo"));
+        assert_eq!(back.address, c.address);
+        assert_eq!(back.codec.as_deref(), Some("HEVC"));
+        let none = ClientInfo { codec: None, ..c };
+        assert_eq!(ClientInfo::parse_line(&none.to_line()).unwrap().codec, None);
+    }
 }

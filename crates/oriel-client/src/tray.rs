@@ -22,7 +22,11 @@ pub enum TrayAction {
 
 pub struct Tray {
     icon: TrayIcon,
+    menu: Menu,
     status: MenuItem,
+    /// Shown only while pairing is allowed (an empty item would show as a
+    /// blank row).
+    pin_shown: bool,
     pin: MenuItem,
     clients_menu: Submenu,
     client_items: Vec<(MenuItem, usize)>,
@@ -53,7 +57,6 @@ impl Tray {
             &open,
             &PredefinedMenuItem::separator(),
             &status,
-            &pin,
             &clients_menu,
             &PredefinedMenuItem::separator(),
             &share,
@@ -64,13 +67,15 @@ impl Tray {
         ])?;
         let (rgba, n) = icon_rgba();
         let icon = TrayIconBuilder::new()
-            .with_menu(Box::new(menu))
+            .with_menu(Box::new(menu.clone()))
             .with_tooltip("oriel")
             .with_icon(Icon::from_rgba(rgba, n, n)?)
             .build()?;
         Ok(Self {
             icon,
+            menu,
             status,
+            pin_shown: false,
             pin,
             clients_menu,
             client_items: Vec::new(),
@@ -132,8 +137,18 @@ impl Tray {
         } else {
             "Allow pairing…"
         });
-        self.pin
-            .set_text(pin.map(|p| format!("Pairing PIN: {p}")).unwrap_or_default());
+        if let Some(p) = &pin {
+            self.pin.set_text(format!("Pairing PIN: {p}"));
+        }
+        if pin.is_some() != self.pin_shown {
+            // Right below the status line.
+            let _ = if pin.is_some() {
+                self.menu.insert(&self.pin, 3)
+            } else {
+                self.menu.remove(&self.pin)
+            };
+            self.pin_shown = pin.is_some();
+        }
         if clients != self.shown_clients {
             for (item, _) in self.client_items.drain(..) {
                 let _ = self.clients_menu.remove(&item);

@@ -580,6 +580,27 @@ pub fn stop_pairing() -> Result<()> {
     }
 }
 
+/// The sessions the service has open (see `server::sessions_file`).
+pub fn sessions() -> Vec<crate::server::ClientInfo> {
+    std::fs::read_to_string(crate::server::sessions_file(&data_dir()))
+        .unwrap_or_default()
+        .lines()
+        .filter_map(crate::server::ClientInfo::parse_line)
+        .collect()
+}
+
+/// Ask the service to end a session; it checks once a second.
+pub fn kick(id: usize) -> Result<()> {
+    use std::io::Write;
+    let path = crate::server::kick_file(&data_dir());
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .and_then(|mut f| writeln!(f, "{id}"))
+        .with_context(|| format!("write {}", path.display()))
+}
+
 /// Whether a pairing PIN is set; `None` when this user cannot tell.
 pub fn pairing_allowed() -> Option<bool> {
     let path = crate::server::pin_file(&data_dir());
