@@ -125,14 +125,7 @@ pub async fn run(
     // The display mode chosen by the client, restored when dropped.
     let mut mode_guard: Option<crate::capture::ModeGuard> = None;
     if let Some(res) = settings.resolution.filter(|_| virtual_mode.is_none()) {
-        match crate::capture::set_display_mode(options.source, settings.display, res) {
-            Ok(g) => mode_guard = Some(g),
-            Err(e) => {
-                let _ = ev_tx_audio.send(Event::Notice(format!(
-                    "Cannot change the resolution: {e:#}"
-                )));
-            }
-        }
+        mode_guard = set_mode(options.source, settings.display, res, &ev_tx_audio);
     }
     let mut display = settings.display;
     // The client's resolution, applied to whichever display is streamed.
@@ -276,9 +269,17 @@ pub async fn run(
 
     // Packets sent and lost so far, for the loss in each health report.
     let mut packets = (0u64, 0u64);
+    // Windows resets a monitor's mode when it sleeps or reconnects.
+    let mut mode_check = tokio::time::interval(Duration::from_secs(2));
+    mode_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let result: Result<()> = async {
         loop {
             tokio::select! {
+                _ = mode_check.tick() => {
+                    if mode_guard.as_ref().is_some_and(|g| g.reapply()) {
+                        tracing::info!("display mode set again");
+                    }
+                }
                 event = ev_rx.recv() => match event {
                     None => break,
                     Some(Event::Frame(header, data)) => send_frame(&conn, header, data, &shared).await,
@@ -334,12 +335,7 @@ pub async fn run(
                         display = Some(id);
                         virtual_mode = None;
                         if let Some(res) = resolution {
-                            match crate::capture::set_display_mode(options.source, display, res) {
-                                Ok(g) => mode_guard = Some(g),
-                                Err(e) => write_msg(&mut ctl_send, &HostMsg::Notice {
-                                    text: format!("Cannot change the resolution: {e:#}"),
-                                }).await?,
-                            }
+                            mode_guard = set_mode(options.source, display, res, &ev_tx_audio);
                         }
                         let _ = cmd_tx.send(Cmd::Target(Target::Display(display)));
                     }
@@ -355,12 +351,7 @@ pub async fn run(
                         mode_guard = None;
                         virtual_mode = mode;
                         if let (None, Some(res)) = (mode, resolution) {
-                            match crate::capture::set_display_mode(options.source, display, res) {
-                                Ok(g) => mode_guard = Some(g),
-                                Err(e) => write_msg(&mut ctl_send, &HostMsg::Notice {
-                                    text: format!("Cannot change the resolution: {e:#}"),
-                                }).await?,
-                            }
+                            mode_guard = set_mode(options.source, display, res, &ev_tx_audio);
                         }
                         let target = match mode {
                             Some(m) => Target::Virtual(m),
@@ -383,12 +374,7 @@ pub async fn run(
                         resolution = res;
                         mode_guard = None;
                         if let Some(res) = res {
-                            match crate::capture::set_display_mode(options.source, display, res) {
-                                Ok(g) => mode_guard = Some(g),
-                                Err(e) => write_msg(&mut ctl_send, &HostMsg::Notice {
-                                    text: format!("Cannot change the resolution: {e:#}"),
-                                }).await?,
-                            }
+                            mode_guard = set_mode(options.source, display, res, &ev_tx_audio);
                         }
                     }
                     Some(ClientMsg::SetBitrate { kbps }) => { let _ = cmd_tx.send(Cmd::Bitrate(kbps)); }
@@ -458,6 +444,34 @@ pub async fn run(
 
 /// Open the frame's stream now (stream IDs must follow frame order), and
 /// write it in the background.
+/// Switch the display to the client's resolution (or the closest it
+/// supports), telling the client when that is not what it asked for.
+fn set_mode(
+    source: crate::capture::SourceKind,
+    display: Option<u32>,
+    res: (u32, u32),
+    events: &tmpsc::UnboundedSender<Event>,
+) -> Option<crate::capture::ModeGuard> {
+    match crate::capture::set_display_mode(source, display, res) {
+        Ok(g) => {
+            let (w, h) = g.size();
+            if (w, h) != res {
+                let _ = events.send(Event::Notice(format!(
+                    "This display cannot show {}×{}; using {w}×{h}",
+                    res.0, res.1
+                )));
+            }
+            Some(g)
+        }
+        Err(e) => {
+            let _ = events.send(Event::Notice(format!(
+                "Cannot change the resolution: {e:#}"
+            )));
+            None
+        }
+    }
+}
+
 async fn send_frame(
     conn: &quinn::Connection,
     header: FrameHeader,

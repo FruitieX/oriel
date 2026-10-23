@@ -112,8 +112,34 @@ pub fn list_displays(source: SourceKind) -> Vec<DisplayInfo> {
     }
 }
 
-/// Something that restores the display mode when dropped.
-pub type ModeGuard = Box<dyn std::any::Any + Send>;
+/// A display mode set for the session, restored when dropped.
+pub trait DisplayMode: Send {
+    /// The size actually set (the closest the display supports).
+    fn size(&self) -> (u32, u32);
+    /// Set the mode again if Windows dropped it (a monitor that slept or
+    /// reconnected comes back in its own mode). True when it did.
+    fn reapply(&self) -> bool;
+}
+
+pub type ModeGuard = Box<dyn DisplayMode>;
+
+/// Of the sizes a display supports, the one closest to `want`: the same
+/// shape first, then the nearest size.
+pub fn closest_mode(modes: &[(u32, u32)], want: (u32, u32)) -> Option<(u32, u32)> {
+    let ln = |a: f64, b: f64| (a / b).ln().abs();
+    let cost = |&(w, h): &(u32, u32)| {
+        let shape = ln(w as f64 / h as f64, want.0 as f64 / want.1 as f64);
+        let area = ln((w * h) as f64, (want.0 * want.1) as f64);
+        // A 2% different shape still counts as the same.
+        let shape = if shape < 0.02 { 0.0 } else { 10.0 + shape };
+        shape + area
+    };
+    modes
+        .iter()
+        .filter(|(w, h)| *w > 0 && *h > 0)
+        .min_by(|a, b| cost(a).total_cmp(&cost(b)))
+        .copied()
+}
 
 /// Switch the host display's resolution for the session.
 pub fn set_display_mode(
@@ -151,5 +177,34 @@ pub fn open(source: SourceKind, target: Target, test: &TestState) -> Result<Box<
             let _ = target;
             Ok(Box::new(test_pattern::TestPattern::new(test.clone())))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::closest_mode;
+
+    #[test]
+    fn closest_mode_keeps_the_shape() {
+        let modes = [
+            (3840, 2160),
+            (2560, 1440),
+            (1920, 1200),
+            (1920, 1080),
+            (1680, 1050),
+            (1280, 1024),
+            (1280, 720),
+            (800, 600),
+        ];
+        assert_eq!(closest_mode(&modes, (1920, 1080)), Some((1920, 1080)));
+        // Half of a 2560×1440 screen: 16:9 again.
+        assert_eq!(closest_mode(&modes, (1280, 720)), Some((1280, 720)));
+        // 16:10 at a size the display lacks: the nearest 16:10 one.
+        assert_eq!(closest_mode(&modes, (1440, 900)), Some((1680, 1050)));
+        // Tiny: the smallest of that shape.
+        assert_eq!(closest_mode(&modes, (256, 144)), Some((1280, 720)));
+        // No mode of that shape: the nearest size.
+        assert_eq!(closest_mode(&modes, (1000, 1000)), Some((1280, 1024)));
+        assert_eq!(closest_mode(&[], (1000, 1000)), None);
     }
 }

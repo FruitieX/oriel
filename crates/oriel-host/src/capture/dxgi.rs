@@ -154,7 +154,11 @@ fn display_modes(device_name: &[u16; 32]) -> Vec<(u32, u32)> {
 /// A temporary display mode, restored when dropped.
 pub struct ModeGuard {
     device: [u16; 32],
+    mode: DEVMODEW,
 }
+
+// DEVMODEW holds no pointers.
+unsafe impl Send for ModeGuard {}
 
 impl Drop for ModeGuard {
     fn drop(&mut self) {
@@ -171,8 +175,58 @@ impl Drop for ModeGuard {
     }
 }
 
-/// Switch `display` to `width`×`height` (highest refresh rate available)
-/// until the guard is dropped.
+impl super::DisplayMode for ModeGuard {
+    fn size(&self) -> (u32, u32) {
+        (self.mode.dmPelsWidth, self.mode.dmPelsHeight)
+    }
+
+    fn reapply(&self) -> bool {
+        let mut current = DEVMODEW {
+            dmSize: size_of::<DEVMODEW>() as u16,
+            ..Default::default()
+        };
+        // Fails while the monitor is gone (asleep on DisplayPort).
+        let ok = unsafe {
+            EnumDisplaySettingsW(
+                PCWSTR(self.device.as_ptr()),
+                ENUM_CURRENT_SETTINGS,
+                &mut current,
+            )
+        };
+        let wanted = (
+            self.mode.dmPelsWidth,
+            self.mode.dmPelsHeight,
+            self.mode.dmDisplayFrequency,
+        );
+        let now = (
+            current.dmPelsWidth,
+            current.dmPelsHeight,
+            current.dmDisplayFrequency,
+        );
+        if !ok.as_bool() || current.dmPelsWidth == 0 || now == wanted {
+            return false;
+        }
+        let result = unsafe {
+            ChangeDisplaySettingsExW(
+                PCWSTR(self.device.as_ptr()),
+                Some(&self.mode),
+                None,
+                CDS_FULLSCREEN,
+                None,
+            )
+        };
+        tracing::info!(
+            ?now,
+            ?wanted,
+            ?result,
+            "the display mode was reset; set it again"
+        );
+        result == DISP_CHANGE_SUCCESSFUL
+    }
+}
+
+/// Switch `display` to `width`×`height`, or the closest size it supports
+/// (highest refresh rate available), until the guard is dropped.
 pub fn set_display_mode(display: Option<u32>, width: u32, height: u32) -> Result<ModeGuard> {
     crate::win::follow_input_desktop();
     let outputs = outputs()?;
@@ -184,7 +238,7 @@ pub fn set_display_mode(display: Option<u32>, width: u32, height: u32) -> Result
         None => outputs.into_iter().next().context("no displays attached")?,
     };
     let device = entry.desc.DeviceName;
-    let mut best: Option<DEVMODEW> = None;
+    let mut modes: Vec<DEVMODEW> = Vec::new();
     for i in 0.. {
         let mut mode = DEVMODEW {
             dmSize: size_of::<DEVMODEW>() as u16,
@@ -200,15 +254,21 @@ pub fn set_display_mode(display: Option<u32>, width: u32, height: u32) -> Result
         if !ok.as_bool() {
             break;
         }
-        if (mode.dmPelsWidth, mode.dmPelsHeight) == (width, height)
-            && mode.dmBitsPerPel == 32
-            && best.is_none_or(|b| mode.dmDisplayFrequency > b.dmDisplayFrequency)
-        {
-            best = Some(mode);
+        if mode.dmBitsPerPel == 32 {
+            modes.push(mode);
         }
     }
-    let mut mode =
-        best.with_context(|| format!("{width}×{height} is not supported by this display"))?;
+    let sizes: Vec<(u32, u32)> = modes
+        .iter()
+        .map(|m| (m.dmPelsWidth, m.dmPelsHeight))
+        .collect();
+    let size =
+        super::closest_mode(&sizes, (width, height)).context("the display lists no modes")?;
+    let mut mode = modes
+        .into_iter()
+        .filter(|m| (m.dmPelsWidth, m.dmPelsHeight) == size)
+        .max_by_key(|m| m.dmDisplayFrequency)
+        .expect("a mode of the chosen size");
     mode.dmFields = DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYFREQUENCY | DM_BITSPERPEL;
     let result = unsafe {
         ChangeDisplaySettingsExW(
@@ -220,15 +280,17 @@ pub fn set_display_mode(display: Option<u32>, width: u32, height: u32) -> Result
         )
     };
     if result != DISP_CHANGE_SUCCESSFUL {
-        bail!("Windows refused {width}×{height} ({result:?})");
+        bail!("Windows refused {}×{} ({result:?})", size.0, size.1);
     }
     tracing::info!(
-        width,
-        height,
+        device = %wide_to_string(&device),
+        asked = ?(width, height),
+        width = size.0,
+        height = size.1,
         hz = mode.dmDisplayFrequency,
         "changed the display mode"
     );
-    Ok(ModeGuard { device })
+    Ok(ModeGuard { device, mode })
 }
 
 pub fn list_displays() -> Result<Vec<DisplayInfo>> {
