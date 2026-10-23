@@ -25,6 +25,8 @@ pub enum UiEvent {
     /// Android: typed text, insets or the keyboard changed (see
     /// `crate::android`).
     Platform,
+    /// Background work (the hub account) has news for the launcher.
+    Refresh,
     /// Keys were taken by the Windows keyboard hook.
     HookKeys,
     /// The connection ended. `retry` when it was lost (timeout, network)

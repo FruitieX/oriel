@@ -2158,6 +2158,7 @@ impl ApplicationHandler<UiEvent> for Viewer {
                 #[cfg(windows)]
                 self.handle_hook_keys();
             }
+            UiEvent::Refresh => {}
             UiEvent::Host(msg) => self.handle_host(event_loop, msg),
             UiEvent::CursorPosition { x, y } => {
                 if let Some(c) = &mut self.host_cursor {

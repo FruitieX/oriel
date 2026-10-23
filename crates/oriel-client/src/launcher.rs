@@ -199,6 +199,10 @@ pub fn run(
         opened: Instant::now(),
         screenshot_taken: false,
     };
+    let proxy = std::sync::Mutex::new(event_loop.create_proxy());
+    launcher.hub.set_wake(Arc::new(move || {
+        let _ = proxy.lock().unwrap().send_event(UiEvent::Refresh);
+    }));
     launcher.reload_hosts();
     // Debugging aid for screenshots.
     match std::env::var("ORIEL_DEBUG_DIALOG").as_deref() {
@@ -1342,9 +1346,14 @@ impl ApplicationHandler<UiEvent> for Launcher {
         }
     }
 
-    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: UiEvent) {
-        // Insets or the keyboard changed.
-        if matches!(event, UiEvent::Platform)
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UiEvent) {
+        // Take the news before the redraw: it can come before
+        // `about_to_wait`.
+        if matches!(event, UiEvent::Refresh) {
+            self.poll(event_loop);
+        }
+        // Insets or the keyboard changed, or background work has news.
+        if matches!(event, UiEvent::Platform | UiEvent::Refresh)
             && let Some((window, ..)) = &self.gfx
         {
             window.request_redraw();

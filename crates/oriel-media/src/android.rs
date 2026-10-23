@@ -73,6 +73,8 @@ pub struct Decoder {
     /// Presentation timestamps, only to keep them increasing.
     pts: u64,
     started: bool,
+    /// The picture size differing from the stream's was logged.
+    warned_size: std::cell::Cell<bool>,
 }
 
 // MediaCodec and AImageReader may be used from any one thread at a time.
@@ -155,6 +157,7 @@ impl Decoder {
             size: (width, height),
             pts: 0,
             started: true,
+            warned_size: Default::default(),
         })
     }
 
@@ -250,12 +253,30 @@ impl Decoder {
     /// Copy a YUV_420_888 image out: NV12 row by row when the chroma is
     /// interleaved (what hardware decoders produce), else I420 sample by
     /// sample.
+    ///
+    /// Only the crop rectangle holds the picture: the buffer can be larger
+    /// than what the decoder wrote, and the rest is stale memory.
     fn copy(&self, image: &Image) -> Result<DecodedFrame> {
         let err = |e| anyhow::anyhow!("read image: {e:?}");
-        let (w, h) = (
-            self.size.0.min(image.width().map_err(err)? as u32),
-            self.size.1.min(image.height().map_err(err)? as u32),
+        let (iw, ih) = (
+            image.width().map_err(err)? as u32,
+            image.height().map_err(err)? as u32,
         );
+        let crop = image.crop_rect().map_err(err)?;
+        let (left, top) = (crop.left.max(0) as u32 & !1, crop.top.max(0) as u32 & !1);
+        let (right, bottom) = (crop.right.max(0) as u32, crop.bottom.max(0) as u32);
+        let (left, top, w, h) = if right > left && bottom > top {
+            (left, top, right.min(iw) - left, bottom.min(ih) - top)
+        } else {
+            (0, 0, self.size.0.min(iw), self.size.1.min(ih))
+        };
+        if (w, h) != self.size && !self.warned_size.replace(true) {
+            tracing::info!(
+                "decoded picture is {w}x{h} (buffer {iw}x{ih}), the stream {}x{}",
+                self.size.0,
+                self.size.1
+            );
+        }
         let (cw, ch) = (w.div_ceil(2) as usize, h.div_ceil(2) as usize);
         let rows = |data: &[u8], stride: usize, width: usize, height: usize| {
             let mut out = vec![0u8; width * height];
@@ -266,9 +287,14 @@ impl Decoder {
             }
             out
         };
+        let skip = |data: &'_ [u8], row: usize, pixel: usize, x: u32, y: u32| -> usize {
+            (y as usize * row + x as usize * pixel).min(data.len())
+        };
+        let luma_row = image.plane_row_stride(0).map_err(err)? as usize;
+        let luma_data = image.plane_data(0).map_err(err)?;
         let luma = rows(
-            image.plane_data(0).map_err(err)?,
-            image.plane_row_stride(0).map_err(err)? as usize,
+            &luma_data[skip(luma_data, luma_row, 1, left, top)..],
+            luma_row,
             w as usize,
             h as usize,
         );
@@ -284,6 +310,9 @@ impl Decoder {
             image.plane_row_stride(1).map_err(err)? as usize,
             image.plane_row_stride(2).map_err(err)? as usize,
         );
+        let (cx, cy) = (left / 2, top / 2);
+        let u = &u[skip(u, u_row, u_px as usize, cx, cy)..];
+        let v = &v[skip(v, v_row, v_px as usize, cx, cy)..];
         let matrix = if h > 576 {
             ColorMatrix::Bt709
         } else {

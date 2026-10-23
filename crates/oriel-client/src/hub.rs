@@ -1,7 +1,8 @@
 //! The hub account in the app: logging in (the device flow: show a code,
 //! approve on any browser with a passkey), and keeping the account's
 //! device list fresh, which adds its hosts to the known hosts (see
-//! `oriel_net::hub`). Network calls run on the runtime; the UI polls.
+//! `oriel_net::hub`). Network calls run on the runtime, wake the UI when
+//! they finish, and the UI polls.
 
 use std::{
     path::PathBuf,
@@ -66,7 +67,11 @@ pub struct HubState {
     shared: Arc<Mutex<Shared>>,
     cancel: Arc<AtomicBool>,
     synced: Option<Instant>,
+    wake: Wake,
 }
+
+/// Asks the UI to poll again.
+pub type Wake = Arc<dyn Fn() + Send + Sync>;
 
 impl HubState {
     pub fn new(paths: Paths, extra: Option<PathBuf>) -> Self {
@@ -89,7 +94,12 @@ impl HubState {
             shared: Default::default(),
             cancel: Default::default(),
             synced: None,
+            wake: Arc::new(|| {}),
         }
+    }
+
+    pub fn set_wake(&mut self, wake: Wake) {
+        self.wake = wake;
     }
 
     pub fn logged_in(&self) -> bool {
@@ -127,6 +137,7 @@ impl HubState {
     pub fn sync(&mut self, rt: &tokio::runtime::Handle) {
         self.synced = Some(Instant::now());
         let (paths, shared, extra) = (self.paths.clone(), self.shared.clone(), self.extra.clone());
+        let wake = self.wake.clone();
         rt.spawn_blocking(move || {
             let Some(account) = hub::account(&paths) else {
                 return;
@@ -146,6 +157,7 @@ impl HubState {
                 }
                 Err(e) => tracing::debug!("hub sync: {e:#}"),
             }
+            wake();
         });
     }
 
@@ -174,7 +186,7 @@ impl HubState {
         rt: &tokio::runtime::Handle,
         f: impl FnOnce(&hub::Account) -> anyhow::Result<()> + Send + 'static,
     ) {
-        let (paths, shared) = (self.paths.clone(), self.shared.clone());
+        let (paths, shared, wake) = (self.paths.clone(), self.shared.clone(), self.wake.clone());
         self.synced = None;
         rt.spawn_blocking(move || {
             if let Some(account) = hub::account(&paths)
@@ -182,6 +194,7 @@ impl HubState {
             {
                 shared.lock().error = Some(format!("{e:#}"));
             }
+            wake();
         });
     }
 
@@ -198,8 +211,9 @@ impl HubState {
             self.cancel.clone(),
             self.extra.clone(),
         );
+        let wake = self.wake.clone();
         rt.spawn(async move {
-            let result = login(paths, url, shared.clone(), cancel, extra).await;
+            let result = login(paths, url, shared.clone(), cancel, extra, wake.clone()).await;
             let mut s = shared.lock();
             s.login = None;
             match result {
@@ -210,6 +224,8 @@ impl HubState {
                 Ok(None) => {}
                 Err(e) => s.error = Some(format!("{e:#}")),
             }
+            drop(s);
+            wake();
         });
     }
 }
@@ -234,6 +250,7 @@ async fn login(
     shared: Arc<Mutex<Shared>>,
     cancel: Arc<AtomicBool>,
     extra: Option<PathBuf>,
+    wake: Wake,
 ) -> anyhow::Result<Option<String>> {
     let fingerprint = oriel_net::Identity::load_or_create(&paths.config_dir)?.fingerprint;
     let name = crate::connection::device_name();
@@ -247,6 +264,7 @@ async fn login(
             .clone()
             .unwrap_or_else(|| started.verification_uri.clone()),
     });
+    wake();
     let deadline = Instant::now() + Duration::from_secs(started.expires_in);
     let interval = Duration::from_secs(started.interval.max(2));
     while Instant::now() < deadline {
