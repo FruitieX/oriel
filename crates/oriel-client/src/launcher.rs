@@ -967,7 +967,11 @@ impl Launcher {
                 if connecting {
                     let spin =
                         egui::Rect::from_center_size(screen.center(), egui::vec2(22.0, 22.0));
-                    ui.put(spin, egui::Spinner::new().color(egui::Color32::WHITE));
+                    // Painted only: placing a widget would move the next
+                    // tile in the wrapping row.
+                    egui::Spinner::new()
+                        .color(egui::Color32::WHITE)
+                        .paint_at(ui, spin);
                 }
                 // A "more" button in the corner opens the same menu as a
                 // right click.
