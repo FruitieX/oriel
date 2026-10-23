@@ -155,6 +155,11 @@ fn display_modes(device_name: &[u16; 32]) -> Vec<(u32, u32)> {
 pub struct ModeGuard {
     device: [u16; 32],
     mode: DEVMODEW,
+    /// Times the mode was set again without sticking, and when to look
+    /// next: each change restarts capture, so a mode Windows keeps
+    /// dropping must not be retried every few seconds.
+    retries: std::cell::Cell<u32>,
+    next_try: std::cell::Cell<std::time::Instant>,
 }
 
 // DEVMODEW holds no pointers.
@@ -193,19 +198,26 @@ impl super::DisplayMode for ModeGuard {
                 &mut current,
             )
         };
-        let wanted = (
-            self.mode.dmPelsWidth,
-            self.mode.dmPelsHeight,
-            self.mode.dmDisplayFrequency,
-        );
-        let now = (
-            current.dmPelsWidth,
-            current.dmPelsHeight,
-            current.dmDisplayFrequency,
-        );
-        if !ok.as_bool() || current.dmPelsWidth == 0 || now == wanted {
+        // The size alone: drivers may report the refresh rate slightly
+        // differently from what was set.
+        let wanted = (self.mode.dmPelsWidth, self.mode.dmPelsHeight);
+        let now = (current.dmPelsWidth, current.dmPelsHeight);
+        if !ok.as_bool() || current.dmPelsWidth == 0 {
             return false;
         }
+        if now == wanted {
+            self.retries.set(0);
+            return false;
+        }
+        let t = std::time::Instant::now();
+        if t < self.next_try.get() {
+            return false;
+        }
+        let retries = self.retries.get() + 1;
+        self.retries.set(retries);
+        // 2 s, 4 s, 8 s ... up to 5 minutes between attempts.
+        let wait = std::time::Duration::from_secs((1u64 << retries.min(8)).min(300));
+        self.next_try.set(t + wait);
         let result = unsafe {
             ChangeDisplaySettingsExW(
                 PCWSTR(self.device.as_ptr()),
@@ -290,7 +302,12 @@ pub fn set_display_mode(display: Option<u32>, width: u32, height: u32) -> Result
         hz = mode.dmDisplayFrequency,
         "changed the display mode"
     );
-    Ok(ModeGuard { device, mode })
+    Ok(ModeGuard {
+        device,
+        mode,
+        retries: Default::default(),
+        next_try: std::cell::Cell::new(std::time::Instant::now()),
+    })
 }
 
 pub fn list_displays() -> Result<Vec<DisplayInfo>> {
