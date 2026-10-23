@@ -131,6 +131,13 @@ stats = "Ctrl+Alt+Shift+S"
 disconnect = "Ctrl+Alt+Shift+Q"
 ```
 
+## Hub (optional)
+
+Instead of pairing every client with every host, devices can log in to a
+hub (Settings → App → Account): every logged-in device reaches every
+computer shared under the account, and connections that cannot be made
+directly go through the hub's relay. See [docs/hub.md](docs/hub.md).
+
 ## Android
 
 The Android app (Android 9 and newer) connects to hosts; it does not

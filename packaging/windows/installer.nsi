@@ -106,7 +106,7 @@ SectionEnd
 
 Section "Share this computer" SecService
   ; Registers and starts the service, the firewall rules (UDP 48600 on
-  ; private networks, and from the local subnet on public ones) and
+  ; private networks, and from private addresses on public ones) and
   ; Ctrl+Alt+Del for services.
   DetailPrint "Installing the oriel service…"
   nsExec::ExecToLog '"$INSTDIR\oriel.exe" service install'

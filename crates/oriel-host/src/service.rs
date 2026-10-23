@@ -171,9 +171,17 @@ pub fn install(host_args: &[String]) -> Result<()> {
         "netsh",
         &["advfirewall", "firewall", "delete", "rule", "name=oriel"],
     );
-    // Home networks are often marked Public; there, only the local subnet.
-    // (Both rules share the name, so deleting "oriel" removes both.)
-    for (profile, remote) in [("private,domain", "any"), ("public", "localsubnet")] {
+    // Home networks are often marked Public; there, only private addresses:
+    // the local subnet, other home subnets (VPN clients, the hub's relay
+    // on the homelab network). Both rules share the name, so deleting
+    // "oriel" removes both.
+    for (profile, remote) in [
+        ("private,domain", "any"),
+        (
+            "public",
+            "localsubnet,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16",
+        ),
+    ] {
         run(
             "netsh",
             &[
