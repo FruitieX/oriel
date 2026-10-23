@@ -805,7 +805,14 @@ impl Launcher {
                     self.host_tiles(ui, &mut actions);
                     if self.host.is_some() {
                         ui.add_space(20.0);
-                        section_title(ui, "This computer");
+                        section_title(
+                            ui,
+                            if cfg!(target_os = "android") {
+                                "This phone"
+                            } else {
+                                "This computer"
+                            },
+                        );
                         self.sharing_card(ui, &mut actions);
                     }
                 });
@@ -1022,7 +1029,7 @@ impl Launcher {
                     let (r, _) =
                         ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
                     ui.painter().circle_filled(r.center(), 5.0, dot);
-                    ui.label(egui::RichText::new(text).size(17.0).strong());
+                    // The button first, so a long name gives way to it.
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if running {
                             if ui.button("Stop sharing").clicked() {
@@ -1031,6 +1038,12 @@ impl Launcher {
                         } else if ui.add(primary_button("Share")).clicked() {
                             actions.push(Action::StartHosting);
                         }
+                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                            ui.add(
+                                egui::Label::new(egui::RichText::new(text).size(17.0).strong())
+                                    .truncate(),
+                            );
+                        });
                     });
                 });
                 ui.label(egui::RichText::new(host.description()).color(MUTED));

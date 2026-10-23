@@ -212,7 +212,7 @@ impl oriel_client::launcher::HostControl for PhoneHost {
         };
         if !control {
             text.push_str(
-                " To be controlled too, turn on oriel under Settings → Accessibility \
+                " To be controlled too, turn on oriel under Settings, Accessibility \
                  (sharing asks for it).",
             );
         }
