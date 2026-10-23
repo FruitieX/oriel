@@ -62,8 +62,13 @@ impl Capturer for ScreenShare {
         bail!("the phone's screen share is encoded already")
     }
 
+    /// A phone draws no cursor: report one without an image, so clients
+    /// keep showing their own pointer.
     fn cursor(&mut self) -> CursorPos {
-        CursorPos::default()
+        CursorPos {
+            visible: true,
+            ..Default::default()
+        }
     }
 
     fn cursor_shape(&mut self) -> Option<CursorShape> {
