@@ -62,8 +62,46 @@
           lib = pkgs.lib;
           pyrowave = pkgs.callPackage ./nix/pyrowave.nix { };
         in
-        {
+        rec {
           inherit pyrowave;
+          # The optional hub service (crates/oriel-hub), and its container
+          # for the homelab (published by .github/workflows/hub.yml).
+          hub = pkgs.rustPlatform.buildRustPackage {
+            pname = "oriel-hub";
+            version = "0.1.0";
+            src = lib.cleanSource ./.;
+            cargoLock.lockFile = ./Cargo.lock;
+            cargoBuildFlags = [
+              "-p"
+              "oriel-hub"
+            ];
+            cargoTestFlags = [
+              "-p"
+              "oriel-hub"
+            ];
+            meta.mainProgram = "oriel-hub";
+          };
+          hub-container = pkgs.dockerTools.buildLayeredImage {
+            name = "ghcr.io/fruitiex/oriel-hub";
+            tag = "main";
+            contents = [ pkgs.cacert ];
+            extraCommands = "mkdir -p data tmp; chmod 1777 tmp";
+            fakeRootCommands = "chown 10001:10001 data";
+            config = {
+              User = "10001:10001";
+              Entrypoint = [ "${hub}/bin/oriel-hub" ];
+              Env = [
+                "ORIEL_HUB_BIND=0.0.0.0:8080"
+                "ORIEL_HUB_DATA_DIR=/data"
+                "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
+              ];
+              ExposedPorts = {
+                "8080/tcp" = { };
+                "48700/udp" = { };
+              };
+              Volumes."/data" = { };
+            };
+          };
           default = pkgs.rustPlatform.buildRustPackage {
             pname = "oriel";
             version = "0.1.0";

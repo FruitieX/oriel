@@ -1,0 +1,55 @@
+name: Hub
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - crates/oriel-hub/**
+      - crates/oriel-proto/**
+      - Cargo.lock
+      - flake.nix
+      - flake.lock
+      - .github/workflows/hub.yml
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: oriel-hub-${{ github.ref }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      packages: write
+    env:
+      HAS_DISPATCH_TOKEN: ${{ secrets.HOMELAB_DISPATCH_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      # Builds the hub and runs its tests.
+      - run: nix build .#hub-container --out-link result-container
+      - name: Publish container
+        id: publish
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          docker load -i result-container
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker tag ghcr.io/fruitiex/oriel-hub:main ghcr.io/fruitiex/oriel-hub:${{ github.sha }}
+          docker push ghcr.io/fruitiex/oriel-hub:main
+          docker push ghcr.io/fruitiex/oriel-hub:${{ github.sha }}
+          digest=$(docker inspect --format='{{index .RepoDigests 0}}' ghcr.io/fruitiex/oriel-hub:main | cut -d@ -f2)
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      - name: Deploy to homelab
+        if: steps.publish.outputs.digest != '' && env.HAS_DISPATCH_TOKEN == 'true'
+        uses: peter-evans/repository-dispatch@28959ce8df70de7be546dd1250a005dd32156697 # v4.0.1
+        with:
+          token: ${{ secrets.HOMELAB_DISPATCH_TOKEN }}
+          repository: FruitieX/homelab
+          event-type: image-update
+          client-payload: |
+            {"image": "ghcr.io/fruitiex/oriel-hub", "digest": "${{ steps.publish.outputs.digest }}", "revision": "${{ github.sha }}"}
