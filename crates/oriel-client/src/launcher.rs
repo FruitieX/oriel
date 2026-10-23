@@ -27,8 +27,8 @@ use crate::{
     render::Renderer,
     session::UiEvent,
     theme::{
-        AMBER, BG, BLUE, CARD, CARD_HOVER, DEEP_BLUE, FRAME, GREEN, MUTED, dialog_frame,
-        paint_logo, primary_button, section_title, style,
+        AMBER, BG, BLUE, CARD, CARD_HOVER, DEEP_BLUE, GREEN, MUTED, dialog_frame, paint_logo,
+        primary_button, section_title, style,
     },
 };
 
@@ -284,6 +284,9 @@ struct Reconnect {
 }
 
 const DIM_SCREEN: egui::Color32 = egui::Color32::from_rgb(0x3a, 0x3f, 0x50);
+/// The monitor glyph's bezel and stand, lighter than the tile behind them.
+const BEZEL: egui::Color32 = egui::Color32::from_rgb(0x48, 0x51, 0x6e);
+const BEZEL_HOVER: egui::Color32 = egui::Color32::from_rgb(0x5c, 0x68, 0x8c);
 
 const PROBE_INTERVAL: Duration = Duration::from_secs(15);
 
@@ -835,7 +838,8 @@ impl Launcher {
                 // Unreachable hosts are dimmed but can still be tried.
                 let dim = matches!(reach, Some(Reach::Offline)) && !connecting;
                 let (rect, response) = ui.allocate_exact_size(tile, egui::Sense::click());
-                let hovered = response.hovered() && !busy;
+                // Also while over the "more" button on top of it.
+                let hovered = (response.hovered() || ui.rect_contains_pointer(rect)) && !busy;
                 let painter = ui.painter();
                 painter.rect_filled(rect, 14, if hovered { CARD_HOVER } else { CARD });
                 if hovered {
@@ -851,7 +855,8 @@ impl Launcher {
                     rect.center_top() + egui::vec2(0.0, 52.0),
                     egui::vec2(78.0, 48.0),
                 );
-                painter.rect_filled(screen, 6, FRAME);
+                let bezel = if hovered { BEZEL_HOVER } else { BEZEL };
+                painter.rect_filled(screen, 6, bezel);
                 painter.rect_filled(
                     screen.shrink(5.0),
                     3,
@@ -875,7 +880,7 @@ impl Launcher {
                     screen.center_bottom() + egui::vec2(0.0, 8.0),
                     egui::vec2(30.0, 4.0),
                 );
-                painter.rect_filled(stand, 2, FRAME);
+                painter.rect_filled(stand, 2, bezel);
                 painter.text(
                     rect.center_top() + egui::vec2(0.0, 108.0),
                     egui::Align2::CENTER_CENTER,

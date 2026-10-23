@@ -7,8 +7,9 @@ use oriel_proto::{Codec, VirtualMode};
 
 use crate::{
     config::{
-        CODEC_CHOICES, ClientConfig, HostPrefs, MENU_BUTTON_STYLES, MOUSE_MODES, SMOOTHING_CHOICES,
-        WARNING_STYLES, codec_choice_strings, format_resolution, format_virtual_mode,
+        CODEC_CHOICES, ClientConfig, HostPrefs, MENU_BUTTON_STYLES, MOUSE_MODES, Resolution,
+        SMOOTHING_CHOICES, WARNING_STYLES, codec_choice_strings, format_resolution,
+        format_virtual_mode,
     },
     keymap::{Command, Shortcut},
     theme::{self, AMBER},
@@ -414,24 +415,77 @@ fn display_tab(ui: &mut Ui, rows: &mut Rows, live: Option<&Live>) {
             } else if !live.modes.is_empty() {
                 ui.label("Resolution")
                     .on_hover_text("Switches the host's display for the session");
-                let label = |r: Option<(u32, u32)>| match r {
-                    Some((w, h)) => format!("{w}×{h}"),
-                    None => "Host's own".to_string(),
+                let label = |r: Resolution| match r {
+                    Resolution::Fixed(w, h) => format!("{w}×{h}"),
+                    Resolution::Client(_) => "This computer's".to_string(),
+                    Resolution::Host => "Host's own".to_string(),
                 };
-                let mut value = effective.resolution;
+                let current = effective.resolution;
+                let scale = match current {
+                    Resolution::Client(s) => s,
+                    _ => 1.0,
+                };
+                let mut value = current;
                 egui::ComboBox::from_id_salt("resolution")
                     .width(rows.field)
                     .selected_text(label(value))
                     .show_ui(ui, |ui| {
-                        for r in std::iter::once(None).chain(live.modes.iter().copied().map(Some)) {
+                        let choices = [Resolution::Host, Resolution::Client(scale)]
+                            .into_iter()
+                            .chain(live.modes.iter().map(|&(w, h)| Resolution::Fixed(w, h)));
+                        for r in choices {
                             ui.selectable_value(&mut value, r, label(r));
                         }
-                    });
+                    })
+                    .response
+                    .on_hover_text(
+                        "This computer's: this screen's resolution, scaled. Displays that \
+                         cannot show it get the closest size they support.",
+                    );
                 ui.label("");
                 ui.end_row();
-                if value != effective.resolution {
-                    rows.config.host_mut(&host).resolution =
-                        value.map(|r| format_resolution(Some(r)));
+                if let Resolution::Client(scale) = current {
+                    ui.label("Scale").on_hover_text(
+                        "Lower resolutions are lighter on the network and both computers",
+                    );
+                    // Applied once dragging ends: each change switches the
+                    // host's display mode.
+                    let id = ui.make_persistent_id("resolution-scale");
+                    let mut v = ui.data(|d| d.get_temp::<f32>(id)).unwrap_or(scale);
+                    let slider = ui.add(
+                        egui::Slider::new(&mut v, crate::config::RESOLUTION_SCALE)
+                            .step_by(0.05)
+                            .custom_formatter(|v, _| format!("{:.0} %", v * 100.0))
+                            .custom_parser(|s| {
+                                s.trim_end_matches(['%', ' '])
+                                    .parse::<f64>()
+                                    .ok()
+                                    .map(|v| v / 100.0)
+                            }),
+                    );
+                    if slider.dragged() {
+                        ui.data_mut(|d| d.insert_temp(id, v));
+                    } else {
+                        ui.data_mut(|d| d.remove::<f32>(id));
+                        if (v - scale).abs() > 0.001 {
+                            value = Resolution::Client(v);
+                        }
+                    }
+                    ui.label("");
+                    ui.end_row();
+                }
+                if value != current {
+                    let h = rows.config.host_mut(&host);
+                    match value {
+                        Resolution::Host => h.resolution = None,
+                        Resolution::Client(scale) => {
+                            h.resolution = Some("client".into());
+                            h.resolution_scale = Some(scale);
+                        }
+                        Resolution::Fixed(w, h2) => {
+                            h.resolution = Some(format_resolution(Some((w, h2))))
+                        }
+                    }
                     rows.outcome.changed = true;
                 }
             }
@@ -638,6 +692,26 @@ fn interface_tab(ui: &mut Ui, rows: &mut Rows) {
                 rows.outcome.changed = true;
             }
         });
+        ui.label("");
+        ui.end_row();
+        ui.label("Button size");
+        let scale = &mut rows.config.menu_button_scale;
+        if ui
+            .add(
+                egui::Slider::new(scale, 0.5..=2.5)
+                    .step_by(0.05)
+                    .custom_formatter(|v, _| format!("{:.0} %", v * 100.0))
+                    .custom_parser(|s| {
+                        s.trim_end_matches(['%', ' '])
+                            .parse::<f64>()
+                            .ok()
+                            .map(|v| v / 100.0)
+                    }),
+            )
+            .changed()
+        {
+            rows.outcome.changed = true;
+        }
         ui.label("");
         ui.end_row();
         rows.choice(

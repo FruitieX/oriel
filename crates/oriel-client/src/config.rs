@@ -52,6 +52,8 @@ pub struct ClientConfig {
     /// Where the menu button's center sits, as fractions of the window
     /// (unset: bottom right).
     pub menu_button_pos: Option<[f32; 2]>,
+    /// The menu button's size, 1 being the default.
+    pub menu_button_scale: f32,
     /// Warnings that explain a slow stream: "detailed" (with what to try),
     /// "short" or "off".
     pub warnings: String,
@@ -92,12 +94,15 @@ pub struct HostPrefs {
     pub menu_button: Option<String>,
     pub warnings: Option<String>,
     // Only meaningful per host:
-    /// "native" or "WIDTHxHEIGHT".
+    /// "native", "client" (this computer's screen, times
+    /// `resolution_scale`) or "WIDTHxHEIGHT".
     pub resolution: Option<String>,
     /// The host output to hear; unset follows the host's default.
     pub audio_device: Option<String>,
     /// Use this window as an extra display of the host, "WIDTHxHEIGHT@HZ".
     pub virtual_display: Option<String>,
+    /// For the "client" resolution: 0.1–1.
+    pub resolution_scale: Option<f32>,
 }
 
 /// The settings in force for one host: its overrides over the defaults.
@@ -119,7 +124,7 @@ pub struct Effective {
     pub show_stats: bool,
     pub menu_button: String,
     pub warnings: String,
-    pub resolution: Option<(u32, u32)>,
+    pub resolution: Resolution,
     pub audio_device: Option<String>,
     pub virtual_display: Option<oriel_proto::VirtualMode>,
 }
@@ -223,6 +228,46 @@ pub fn codec_choice(key: &str) -> (Vec<Codec>, bool) {
     }
 }
 
+/// The resolution to ask the host's display for.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Resolution {
+    /// Leave the host's display as it is.
+    Host,
+    /// This computer's screen, scaled (0.1–1).
+    Client(f32),
+    Fixed(u32, u32),
+}
+
+pub const RESOLUTION_SCALE: std::ops::RangeInclusive<f32> = 0.1..=1.0;
+
+impl Resolution {
+    pub fn parse(s: Option<&str>, scale: Option<f32>) -> Self {
+        match s {
+            Some("client") => Self::Client(
+                scale
+                    .unwrap_or(1.0)
+                    .clamp(*RESOLUTION_SCALE.start(), *RESOLUTION_SCALE.end()),
+            ),
+            Some(s) => parse_resolution(s).map_or(Self::Host, |(w, h)| Self::Fixed(w, h)),
+            None => Self::Host,
+        }
+    }
+
+    /// The size to ask for, given this computer's screen (physical pixels).
+    pub fn size(self, screen: Option<(u32, u32)>) -> Option<(u32, u32)> {
+        match self {
+            Self::Host => None,
+            Self::Fixed(w, h) => Some((w, h)),
+            Self::Client(scale) => {
+                let (w, h) = screen?;
+                // Even sizes, which encoders need.
+                let even = |v: u32| ((v as f32 * scale / 2.0).round() as u32 * 2).max(2);
+                Some((even(w), even(h)))
+            }
+        }
+    }
+}
+
 pub fn parse_resolution(s: &str) -> Option<(u32, u32)> {
     let (w, h) = s.split_once(['x', '×'])?;
     Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
@@ -256,6 +301,7 @@ impl Default for ClientConfig {
             gamepads: true,
             menu_button: "full".into(),
             menu_button_pos: None,
+            menu_button_scale: 1.0,
             warnings: "detailed".into(),
             microphone: false,
             microphone_device: None,
@@ -293,7 +339,7 @@ impl ClientConfig {
                 .clone()
                 .unwrap_or_else(|| self.menu_button.clone()),
             warnings: h.warnings.clone().unwrap_or_else(|| self.warnings.clone()),
-            resolution: h.resolution.as_deref().and_then(parse_resolution),
+            resolution: Resolution::parse(h.resolution.as_deref(), h.resolution_scale),
             audio_device: h.audio_device.clone().filter(|d| !d.is_empty()),
             virtual_display: h.virtual_display.as_deref().and_then(parse_virtual_mode),
         }
@@ -426,7 +472,18 @@ mod tests {
         let e = c.effective(Some("pc"));
         assert_eq!(e.max_fps, 144);
         assert_eq!(e.playback_device, None);
-        assert_eq!(e.resolution, Some((2560, 1440)));
+        assert_eq!(e.resolution, Resolution::Fixed(2560, 1440));
+        let h = c.host_mut("pc");
+        h.resolution = Some("client".into());
+        h.resolution_scale = Some(0.5);
+        let e = c.effective(Some("pc"));
+        assert_eq!(e.resolution, Resolution::Client(0.5));
+        assert_eq!(e.resolution.size(Some((2560, 1600))), Some((1280, 800)));
+        assert_eq!(e.resolution.size(None), None);
+        assert_eq!(
+            Resolution::Client(0.1).size(Some((1366, 768))),
+            Some((136, 76))
+        );
         // Other hosts and the defaults are unaffected.
         assert_eq!(c.effective(Some("other")).max_fps, 60);
         assert_eq!(

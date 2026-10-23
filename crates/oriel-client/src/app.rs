@@ -26,7 +26,7 @@ use winit::{
 };
 
 use crate::{
-    config::{ClientConfig, Effective},
+    config::{ClientConfig, Effective, Resolution},
     connection,
     keymap::{Bindings, Command, hid_usage},
     render::{Renderer, Viewport, letterbox},
@@ -74,7 +74,8 @@ impl ViewerOptions {
                 audio: e.audio,
                 auto_codec,
                 pyrowave_kbps: e.pyrowave_kbps,
-                resolution: e.resolution,
+                // This computer's screen is known once the window is.
+                resolution: e.resolution.size(None),
                 audio_device: e.audio_device.clone(),
                 virtual_display: e.virtual_display,
             },
@@ -178,6 +179,8 @@ struct Viewer {
 
     surface: Option<SurfaceInfo>,
     sized_window: bool,
+    /// The resolution last asked of the host.
+    sent_resolution: Option<(u32, u32)>,
     shapes: HashMap<u64, CursorShape>,
     os_cursors: HashMap<u64, CustomCursor>,
     egui_cursors: HashMap<u64, egui::TextureHandle>,
@@ -259,6 +262,7 @@ impl Viewer {
             egui_ctx,
             surface: None,
             sized_window: false,
+            sent_resolution: options.settings.resolution,
             shapes: HashMap::new(),
             os_cursors: HashMap::new(),
             egui_cursors: HashMap::new(),
@@ -513,7 +517,11 @@ impl Viewer {
 
     /// Size the window to the remote surface the first time we learn it.
     fn fit_window(&mut self) {
-        if self.sized_window || self.in_force.fullscreen {
+        // The window stays as it is when the stream follows the screen.
+        if self.sized_window
+            || self.in_force.fullscreen
+            || matches!(self.in_force.resolution, Resolution::Client(_))
+        {
             return;
         }
         let (Some(window), Some(surface)) = (self.window(), self.surface.as_ref()) else {
@@ -735,11 +743,32 @@ impl Viewer {
     }
 
     /// Look for problems that explain a slow stream, once a second.
+    /// Ask the host for the resolution the settings want, which for "this
+    /// computer's" follows the screen the window is on.
+    fn update_resolution(&mut self) {
+        let screen = self
+            .window()
+            .and_then(|w| w.current_monitor())
+            .map(|m| (m.size().width, m.size().height));
+        let wanted = self.in_force.resolution.size(screen);
+        if matches!(self.in_force.resolution, Resolution::Client(_)) && screen.is_none() {
+            return;
+        }
+        if wanted != self.sent_resolution {
+            tracing::info!(?wanted, "asking the host for a resolution");
+            self.sent_resolution = wanted;
+            self.sized_window = false;
+            self.session
+                .send(ClientMsg::SetResolution { resolution: wanted });
+        }
+    }
+
     fn diagnose(&mut self) {
         let now = Instant::now();
         if now.duration_since(self.diagnosed) < Duration::from_secs(1) || self.closed.is_some() {
             return;
         }
+        self.update_resolution();
         let elapsed = now.duration_since(self.diagnosed).as_secs_f32();
         self.diagnosed = now;
         let (summary, codec, software, jitter_ms) = {
@@ -869,12 +898,6 @@ impl Viewer {
         if old.max_fps != new.max_fps {
             s.send(ClientMsg::SetMaxFps { fps: new.max_fps });
         }
-        if old.resolution != new.resolution {
-            self.sized_window = false;
-            s.send(ClientMsg::SetResolution {
-                resolution: new.resolution,
-            });
-        }
         if old.virtual_display != new.virtual_display {
             self.sized_window = false;
             s.send(ClientMsg::SetVirtualDisplay {
@@ -912,6 +935,7 @@ impl Viewer {
         if old.mouse != new.mouse {
             self.update_cursor();
         }
+        self.update_resolution();
         self.request_redraw();
     }
 
@@ -1125,6 +1149,7 @@ struct OverlayState {
     remote_cursor: Option<(egui::TextureId, egui::Vec2, egui::Pos2)>,
     menu_button: String,
     menu_button_pos: Option<[f32; 2]>,
+    menu_button_scale: f32,
     /// Place the menu this frame: where it was dragged, else centered.
     place_menu: Option<Option<[f32; 2]>>,
     menu_generation: u32,
@@ -1221,6 +1246,7 @@ impl From<&Viewer> for OverlayState {
             remote_cursor,
             menu_button: v.in_force.menu_button.clone(),
             menu_button_pos: v.config.menu_button_pos,
+            menu_button_scale: v.config.menu_button_scale.clamp(0.5, 2.5),
             place_menu: (!v.menu_placed).then_some(v.menu_pos),
             menu_generation: v.menu_generation,
             menu_center: v.menu_pos.and_then(|[fx, fy]| {
@@ -1482,11 +1508,16 @@ fn menu_button(ctx: &egui::Context, s: &OverlayState, actions: &mut Vec<Action>)
         let logo = matches!(s.menu_button.as_str(), "full" | "logo");
         let galley = ui.painter().layout_no_wrap(
             text.clone(),
-            egui::FontId::proportional(13.0),
+            egui::FontId::proportional(13.0 * s.menu_button_scale),
             egui::Color32::WHITE,
         );
-        let (h, pad, logo_size) = (30.0, 12.0, 18.0);
-        let gap = if logo && !text.is_empty() { 8.0 } else { 0.0 };
+        let k = s.menu_button_scale;
+        let (h, pad, logo_size) = (30.0 * k, 12.0 * k, 18.0 * k);
+        let gap = if logo && !text.is_empty() {
+            8.0 * k
+        } else {
+            0.0
+        };
         let w = if text.is_empty() {
             h
         } else {
@@ -1555,41 +1586,55 @@ fn menu_button(ctx: &egui::Context, s: &OverlayState, actions: &mut Vec<Action>)
 /// The menu button's quick actions; the full menu is one of them.
 fn quick_menu(ui: &mut egui::Ui, s: &OverlayState, actions: &mut Vec<Action>) {
     ui.set_min_width(220.0);
-    let item = |ui: &mut egui::Ui, label: &str, command: Option<Command>, selected: bool| {
-        let mut button = egui::Button::new(label).selected(selected);
+    let item = |ui: &mut egui::Ui, label: &str, command: Option<Command>, mark: Mark| {
+        // Room on the left for the check or radio mark (painted: the font
+        // has no check glyph).
+        let mut button = egui::Button::new(format!("      {label}"));
         if let Some(key) = command.and_then(|c| s.shortcuts.get(c)) {
             button = button.shortcut_text(key.to_string());
         }
-        ui.add(button).clicked()
+        let response = ui.add(button);
+        paint_mark(ui, &response, mark);
+        response.clicked()
     };
-    if item(ui, "Settings…", Some(Command::Menu), false) {
+    if item(ui, "Settings…", Some(Command::Menu), Mark::None) {
         actions.push(Action::OpenMenu);
         ui.close();
     }
     ui.separator();
     if s.displays.len() > 1 {
         for (id, name) in &s.displays {
-            if item(ui, name, None, s.display == Some(*id)) {
+            if item(ui, name, None, Mark::Radio(s.display == Some(*id))) {
                 actions.push(Action::SelectDisplay(*id));
                 ui.close();
             }
         }
         ui.separator();
     }
-    if item(ui, "Full screen", Some(Command::Fullscreen), s.fullscreen) {
+    if item(
+        ui,
+        "Full screen",
+        Some(Command::Fullscreen),
+        Mark::Check(s.fullscreen),
+    ) {
         actions.push(Action::Run(Command::Fullscreen));
         ui.close();
     }
-    if item(ui, "Statistics overlay", Some(Command::Stats), s.show_stats) {
+    if item(
+        ui,
+        "Statistics overlay",
+        Some(Command::Stats),
+        Mark::Check(s.show_stats),
+    ) {
         actions.push(Action::Run(Command::Stats));
         ui.close();
     }
-    if item(ui, "Send Ctrl+Alt+Del", None, false) {
+    if item(ui, "Send Ctrl+Alt+Del", None, Mark::None) {
         actions.push(Action::SecureAttention);
         ui.close();
     }
     ui.separator();
-    let disconnect = egui::RichText::new("Disconnect").color(crate::theme::RED);
+    let disconnect = egui::RichText::new("      Disconnect").color(crate::theme::RED);
     let mut button = egui::Button::new(disconnect);
     if let Some(key) = s.shortcuts.get(Command::Disconnect) {
         button = button.shortcut_text(key.to_string());
@@ -1597,6 +1642,50 @@ fn quick_menu(ui: &mut egui::Ui, s: &OverlayState, actions: &mut Vec<Action>) {
     if ui.add(button).clicked() {
         actions.push(Action::Disconnect);
         ui.close();
+    }
+}
+
+/// What a quick-menu item shows on its left.
+#[derive(Clone, Copy)]
+enum Mark {
+    None,
+    /// An on/off option.
+    Check(bool),
+    /// One of several (the displays).
+    Radio(bool),
+}
+
+fn paint_mark(ui: &egui::Ui, response: &egui::Response, mark: Mark) {
+    let (on, round) = match mark {
+        Mark::None => return,
+        Mark::Check(on) => (on, false),
+        Mark::Radio(on) => (on, true),
+    };
+    let visuals = ui.style().interact(response);
+    let size = 13.0;
+    let center = egui::pos2(
+        response.rect.left() + ui.spacing().button_padding.x + size / 2.0,
+        response.rect.center().y,
+    );
+    let rect = egui::Rect::from_center_size(center, egui::vec2(size, size));
+    let painter = ui.painter();
+    let accent = ui.visuals().selection.bg_fill;
+    let stroke = egui::Stroke::new(1.0, visuals.fg_stroke.color.gamma_multiply(0.7));
+    if round {
+        painter.circle_stroke(center, size / 2.0, stroke);
+        if on {
+            painter.circle_filled(center, size / 2.0 - 3.0, accent);
+        }
+    } else if on {
+        painter.rect_filled(rect, 3.0, accent);
+        let tick = [
+            egui::pos2(rect.left() + 3.0, center.y),
+            egui::pos2(center.x - 1.0, rect.bottom() - 3.5),
+            egui::pos2(rect.right() - 3.0, rect.top() + 3.5),
+        ];
+        painter.line(tick.to_vec(), egui::Stroke::new(1.8, egui::Color32::WHITE));
+    } else {
+        painter.rect_stroke(rect, 3.0, stroke, egui::StrokeKind::Inside);
     }
 }
 

@@ -14,7 +14,12 @@ display) and the client (connects to hosts).
 - A menu button opens quick actions (displays, full screen, statistics,
   Ctrl+Alt+Del, disconnect, settings); its shortcut (default
   **Ctrl+Alt+Shift+M**) opens the full menu. Drag it anywhere; Settings →
-  Window picks its look (logo and shortcut, shortcut, logo) or hides it.
+  Interface picks its look (logo and shortcut, shortcut, logo) and size, or
+  hides it. While either is open, keys and shortcuts (Alt+Tab) stay local.
+- The host's display can switch to a resolution for the session: one it
+  lists, or this computer's screen scaled 10–100 % (the closest mode the
+  display supports, preferring the same shape). Windows hosts set it again
+  when a monitor that slept comes back in its own mode.
 - System audio (Opus) from the host output you pick in the menu, played on
   the local output chosen in Settings; text clipboard sync; display
   selection.
@@ -115,7 +120,7 @@ audio = true
 
 [hosts.watermelon]  # overrides for one computer
 max_fps = 144
-resolution = "2560x1440"
+resolution = "2560x1440"  # or "client" with resolution_scale = 0.5
 
 [shortcuts]         # defaults shown; "" disables one
 fullscreen = "Ctrl+Alt+Shift+F"
