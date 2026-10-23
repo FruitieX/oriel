@@ -178,6 +178,14 @@ impl Renderer {
             }),
         )?;
 
+        // A failed surface reconfigure (seen on Android when the GPU is
+        // busy) is retried on the next frame; in release builds log GPU
+        // errors instead of ending the app. Debug builds keep panicking.
+        if !cfg!(debug_assertions) {
+            device.on_uncaptured_error(std::sync::Arc::new(|e: wgpu::Error| {
+                tracing::error!("GPU error: {e}");
+            }));
+        }
         #[cfg(zero_copy)]
         let interop = crate::interop::VkInterop::new(&adapter, &device);
         let caps = surface.get_capabilities(&adapter);
