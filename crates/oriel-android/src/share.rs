@@ -122,20 +122,21 @@ impl Gestures for JavaGestures {
     }
 }
 
-/// Hosting on the phone, as the start window sees it.
+/// Hosting on the phone, as the start window sees it. The host server runs
+/// while the screen is shared, however sharing started (the start window,
+/// or a wake-up's notification).
 pub struct PhoneHost {
-    paths: Paths,
     options: oriel_host::HostOptions,
     rt: tokio::runtime::Runtime,
     control: oriel_host::HostControl,
-    task: Option<tokio::task::JoinHandle<()>>,
+    task: Arc<std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
 
 impl PhoneHost {
     pub fn new(paths: Paths) -> Result<Self> {
         share::set_control(Some(Arc::new(JavaShare)));
         oriel_host::input::android::set_gestures(Some(Arc::new(JavaGestures)));
-        Ok(Self {
+        let host = Self {
             control: oriel_host::HostControl::new(None),
             options: oriel_host::HostOptions {
                 listen: std::net::SocketAddr::from(([0, 0, 0, 0], oriel_proto::DEFAULT_PORT)),
@@ -146,13 +147,41 @@ impl PhoneHost {
                 codec: None,
                 default_bitrate_kbps: 20_000,
             },
-            paths,
             rt: tokio::runtime::Builder::new_multi_thread()
                 .worker_threads(2)
                 .enable_all()
                 .build()?,
-            task: None,
-        })
+            task: Default::default(),
+        };
+        // Follow the screen share.
+        let (task, options, control) = (
+            host.task.clone(),
+            host.options.clone(),
+            host.control.clone(),
+        );
+        host.rt.spawn(async move {
+            loop {
+                let sharing = share::screen_size().is_some();
+                {
+                    let mut t = task.lock().unwrap();
+                    let running = t.as_ref().is_some_and(|t| !t.is_finished());
+                    if sharing && !running {
+                        let (paths, options, control) =
+                            (paths.clone(), options.clone(), control.clone());
+                        *t = Some(tokio::spawn(async move {
+                            if let Err(e) = oriel_host::run_with(paths, options, control).await {
+                                tracing::error!("host stopped: {e:#}");
+                            }
+                        }));
+                    } else if !sharing && let Some(old) = t.take() {
+                        old.abort();
+                        control.stop_pairing();
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            }
+        });
+        Ok(host)
     }
 }
 
@@ -161,32 +190,15 @@ impl oriel_client::launcher::HostControl for PhoneHost {
         // Asks for the screen (Android's consent dialog) and, the first
         // time, for the accessibility service that controls the phone.
         call("requestScreenShare", "()V", &[]);
-        if self.is_running() {
-            return Ok(());
-        }
-        let (paths, options, control) = (
-            self.paths.clone(),
-            self.options.clone(),
-            self.control.clone(),
-        );
-        self.task = Some(self.rt.spawn(async move {
-            if let Err(e) = oriel_host::run_with(paths, options, control).await {
-                tracing::error!("host stopped: {e:#}");
-            }
-        }));
         Ok(())
     }
 
     fn stop(&mut self) {
         call("stopScreenShare", "()V", &[]);
-        if let Some(task) = self.task.take() {
-            task.abort();
-        }
-        self.control.stop_pairing();
     }
 
     fn is_running(&self) -> bool {
-        self.task.as_ref().is_some_and(|t| !t.is_finished())
+        share::screen_size().is_some()
     }
 
     fn description(&self) -> String {
@@ -240,4 +252,26 @@ impl oriel_client::launcher::HostControl for PhoneHost {
     fn stop_pairing(&mut self) {
         self.control.stop_pairing();
     }
+}
+
+/// The phone's push token: the hub wakes it with this. Told to the hub
+/// while not sharing (sharing reports where the host listens instead).
+pub fn push_token(paths: Paths, token: String) {
+    std::thread::spawn(move || {
+        let Some(account) = oriel_net::hub::account(&paths) else {
+            return;
+        };
+        if share::screen_size().is_some() {
+            return;
+        }
+        let presence = oriel_proto::hub::Presence {
+            name: oriel_client::connection::device_name(),
+            platform: std::env::consts::OS.into(),
+            host: None,
+            push_token: Some(token),
+        };
+        if let Err(e) = account.presence(&presence) {
+            tracing::warn!("cannot give the hub the push token: {e:#}");
+        }
+    });
 }

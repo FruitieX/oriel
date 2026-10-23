@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
-# The Android app: builds the Rust library (arm64 phones, x86_64 emulators),
-# the Java glue, and a signed APK in dist/. Run inside `nix develop .#android`.
+# The Android app: the Rust library (arm64 phones, x86_64 emulators) and
+# the launcher icon into target/android, then the Gradle project in
+# android/ (Kotlin) builds the APK; it lands in dist/. Run inside
+# `nix develop .#android`.
 #
 #   scripts/build-android.sh [--release] [--abi arm64-v8a|x86_64] [--install]
 #
-# Signs with ORIEL_ANDROID_KEYSTORE (+ _PASS, _ALIAS) when set, else with
-# the local debug keystore (~/.android/debug.keystore, created if missing).
+# Signs with ORIEL_ANDROID_KEYSTORE (+ _PASS, _ALIAS) when set (see
+# android-release.sh), else with the debug key (~/.android/debug.keystore).
+# Push wake-ups need the Firebase config: ORIEL_GOOGLE_SERVICES_JSON, or
+# android/app/google-services.json.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -22,75 +26,32 @@ while [ $# -gt 0 ]; do
   shift
 done
 : "${ANDROID_HOME:?run inside nix develop .#android}"
-api=28
-target_api=35
-build_tools="$ANDROID_HOME/build-tools/35.0.0"
-android_jar="$ANDROID_HOME/platforms/android-$target_api/android.jar"
-strip="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
 
 out=target/android
-rm -rf "$out/apk" "$out/classes" "$out/res"
-mkdir -p "$out/apk" "$out/classes" "$out/res" dist
+rm -rf "$out/jniLibs" "$out/icons"
+mkdir -p "$out/icons" dist
 
 # Rust
 cargo_flags=(-p oriel-android)
 [ "$profile" = release ] && cargo_flags+=(--release)
 targets=()
 for abi in "${abis[@]}"; do targets+=(-t "$abi"); done
-cargo ndk -P "$api" "${targets[@]}" -o "$out/jniLibs" build "${cargo_flags[@]}"
-for abi in "${abis[@]}"; do
-  mkdir -p "$out/apk/lib/$abi"
-  "$strip" --strip-debug -o "$out/apk/lib/$abi/liboriel_android.so" \
-    "$out/jniLibs/$abi/liboriel_android.so"
-done
-# Only the ABIs built this time.
-for dir in "$out"/jniLibs/*; do
-  [[ " ${abis[*]} " == *" $(basename "$dir") "* ]] || rm -rf "$dir"
-done
+cargo ndk -P 28 "${targets[@]}" -o "$out/jniLibs" build "${cargo_flags[@]}"
 
-# Java glue
-javac --release 11 -nowarn -classpath "$android_jar" -d "$out/classes" \
-  $(find android/java -name '*.java')
-"$build_tools/d8" --min-api "$api" --lib "$android_jar" --output "$out/apk" \
-  $(find "$out/classes" -name '*.class')
-
-# Resources: android/res, and the launcher icon in a few densities.
-cp -r android/res/. "$out/res/"
+# The launcher icon in a few densities.
 for d in mdpi:48 hdpi:72 xhdpi:96 xxhdpi:144 xxxhdpi:192; do
-  mkdir -p "$out/res/mipmap-${d%%:*}"
-  resvg -w "${d##*:}" -h "${d##*:}" assets/oriel.svg "$out/res/mipmap-${d%%:*}/ic_launcher.png"
+  mkdir -p "$out/icons/mipmap-${d%%:*}"
+  resvg -w "${d##*:}" -h "${d##*:}" assets/oriel.svg "$out/icons/mipmap-${d%%:*}/ic_launcher.png"
 done
-"$build_tools/aapt2" compile --dir "$out/res" -o "$out/res.zip"
-version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)
-code=$(git rev-list --count HEAD)
-"$build_tools/aapt2" link -o "$out/base.apk" -I "$android_jar" \
-  --manifest android/AndroidManifest.xml "$out/res.zip" \
-  --min-sdk-version "$api" --target-sdk-version "$target_api" \
-  --version-name "$version" --version-code "$code" \
-  $([ "$profile" = debug ] && echo --debug-mode)
 
-# Assemble, align, sign
-cp "$out/base.apk" "$out/unsigned.apk"
-(cd "$out/apk" && zip -qr ../unsigned.apk classes.dex lib)
-"$build_tools/zipalign" -f -P 16 4 "$out/unsigned.apk" "$out/aligned.apk"
+version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)
+export ORIEL_VERSION_NAME="$version"
+ORIEL_VERSION_CODE=$(git rev-list --count HEAD)
+export ORIEL_VERSION_CODE
+task=$([ "$profile" = release ] && echo assembleRelease || echo assembleDebug)
+(cd android && ./gradlew --quiet --console=plain "$task")
 apk="dist/oriel-$version-android.apk"
-if [ -n "${ORIEL_ANDROID_KEYSTORE:-}" ]; then
-  "$build_tools/apksigner" sign --ks "$ORIEL_ANDROID_KEYSTORE" \
-    --ks-pass "env:ORIEL_ANDROID_KEYSTORE_PASS" --key-pass "env:ORIEL_ANDROID_KEYSTORE_PASS" \
-    --ks-key-alias "${ORIEL_ANDROID_KEYSTORE_ALIAS:-oriel}" \
-    --out "$apk" "$out/aligned.apk"
-else
-  ks="$HOME/.android/debug.keystore"
-  if [ ! -f "$ks" ]; then
-    mkdir -p "$(dirname "$ks")"
-    keytool -genkeypair -keystore "$ks" -storepass android -keypass android \
-      -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 \
-      -dname "CN=Android Debug,O=Android,C=US"
-  fi
-  "$build_tools/apksigner" sign --ks "$ks" --ks-pass pass:android \
-    --out "$apk" "$out/aligned.apk"
-fi
-rm -f "$apk.idsig"
+cp "android/app/build/outputs/apk/$profile/app-$profile.apk" "$apk"
 ls -l "$apk"
 
 if $install; then

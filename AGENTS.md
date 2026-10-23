@@ -30,22 +30,30 @@ Read [docs/architecture.md](docs/architecture.md) first.
 ## Android
 
 - `nix develop .#android` has the SDK, NDK and Rust's Android targets.
-  `scripts/build-android.sh` builds without Gradle: `cargo ndk` for the
-  library (`crates/oriel-android`, API 28+), `javac` + `d8` for
-  `android/java/.../OrielActivity.java`, `aapt2` for the manifest and
-  icon, then `zipalign` and `apksigner`. Debug builds are debuggable
+  `scripts/build-android.sh` builds the Rust library with `cargo ndk`
+  (`crates/oriel-android`, API 28+) and the launcher icon into
+  `target/android`, then the Gradle project in `android/` (Kotlin, AGP;
+  `./gradlew` fetches Gradle) packages them. Debug builds are debuggable
   (`run-as` works) and signed with `~/.android/debug.keystore`;
   `scripts/android-release.sh` signs with the release key from 1Password
   (op-agent, Agents vault). A release install cannot be updated by a
   debug-signed APK or the reverse: uninstall in between (which loses
   the app's pairings).
 - The app is a NativeActivity: Rust runs in `android_main`, winit drives
-  it. Java exists only for what the NDK lacks: soft keyboard text (an
-  invisible editor view passes commits and composing changes on as
-  diffs), window insets (edge to edge is forced from Android 15),
-  immersive mode and the clipboard. The JNI calls are in
-  `oriel-client/src/android.rs`, the native methods in
-  `oriel-android/src/app.rs`.
+  it. Kotlin (`android/app/src/main/kotlin`) does what the NDK lacks: soft
+  keyboard text (an invisible editor view passes commits and composing
+  changes on as diffs), window insets (edge to edge is forced from Android
+  15), full screen, the clipboard, sharing the screen (`ShareService`:
+  MediaProjection into a MediaCodec encoder) and being controlled
+  (`OrielAccessibilityService`). Rust calls the activity's public methods
+  over JNI (`oriel-client/src/android.rs`, `oriel-android/src/share.rs`);
+  the native methods are in `oriel-android/src/app.rs`. Keep the
+  signatures in step.
+- Push wake-ups (`Push.kt`) need the Firebase config from
+  `google-services.json` (`ORIEL_GOOGLE_SERVICES_JSON` or
+  `android/app/google-services.json`, not in git); without it push is off.
+  A wake-up shows a notification that starts sharing, since Android asks
+  the user before every screen share.
 - Android sends winit's `Resumed` only when its single window first
   appears: the launcher and viewer create their window on
   `StartCause::Init` when it already exists, drop the GPU surface on
@@ -60,6 +68,9 @@ Read [docs/architecture.md](docs/architecture.md) first.
   (`ro.hardware` = ranchu). A host on honeydew is `10.0.2.2` from the
   emulator. `adb shell input tap/swipe/keyevent` drive it; `input text`
   sends key events, not the soft keyboard (tap its keys for that).
+  The emulator's UDP forwarding (`adb emu redir add udp:…`) carries plain
+  datagrams but not oriel's QUIC: test a shared phone from the emulator's
+  own client (pair with 127.0.0.1), or on a real phone.
   Shut the emulator down afterwards (`adb emu kill`).
 - Logs: `adb logcat -s oriel` (tracing, debug level in debug builds).
 

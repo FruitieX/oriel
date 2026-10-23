@@ -1,0 +1,10 @@
+[versions]
+agp = "8.11.0"
+kotlin = "2.1.21"
+
+[libraries]
+firebase-messaging = { module = "com.google.firebase:firebase-messaging", version = "25.1.3" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }

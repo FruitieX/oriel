@@ -200,3 +200,17 @@ extern "system" fn Java_org_fruitiex_oriel_OrielActivity_nativeEncodedFrame(
         oriel_media::share::push(bytes, keyframe != 0, encode_us.max(0) as u32);
     }
 }
+
+#[unsafe(no_mangle)]
+extern "system" fn Java_org_fruitiex_oriel_OrielActivity_nativePushToken(
+    mut env: JNIEnv,
+    _class: JClass,
+    token: JString,
+) {
+    let Ok(token) = env.get_string(&token).map(String::from) else {
+        return;
+    };
+    if let Ok(dir) = oriel_client::android::data_dir() {
+        crate::share::push_token(oriel_net::Paths { config_dir: dir }, token);
+    }
+}
