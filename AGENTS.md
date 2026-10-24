@@ -51,9 +51,12 @@ Read [docs/architecture.md](docs/architecture.md) first.
   signatures in step.
 - Push wake-ups (`Push.kt`) need the Firebase config from
   `google-services.json` (`ORIEL_GOOGLE_SERVICES_JSON` or
-  `android/app/google-services.json`, not in git); without it push is off.
-  A wake-up shows a notification that starts sharing, since Android asks
-  the user before every screen share.
+  `android/app/google-services.json`, not in git; `android-release.sh`
+  fetches it from 1Password otherwise); without it push is off. A wake-up
+  starts sharing unattended when the phone has the two adb grants in
+  `docs/hub.md`, else shows a notification that starts it.
+- The op-agent service account is rate limited: fetch 1Password items by
+  ID, once per build, never in a retry loop.
 - Android sends winit's `Resumed` only when its single window first
   appears: the launcher and viewer create their window on
   `StartCause::Init` when it already exists, drop the GPU surface on
