@@ -14,6 +14,14 @@ mod windows;
 
 pub trait Injector {
     fn inject(&mut self, event: InputEvent, geometry: Geometry) -> Result<()>;
+
+    /// When [`Injector::tick`] should next run: injectors whose platform
+    /// does not repeat held keys repeat them themselves.
+    fn next_tick(&self) -> Option<std::time::Instant> {
+        None
+    }
+
+    fn tick(&mut self) {}
 }
 
 /// Feeds input to the test pattern, which draws it.

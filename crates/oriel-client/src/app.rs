@@ -2453,8 +2453,6 @@ pub(crate) fn is_back(event: &KeyEvent) -> bool {
         )
 }
 
-/// The codecs to ask the host for: the choice, minus PyroWave where this
-/// client cannot decode it (macOS, Android, or the library is missing).
 /// The codecs to ask for at 4:4:4: those FFmpeg decodes here (in hardware
 /// where it can, else in software). Not on Android, whose decoders rarely
 /// can, nor for PyroWave (4:2:0 only for now).
@@ -2466,6 +2464,8 @@ fn full_chroma_codecs(wanted: bool) -> Vec<oriel_proto::Codec> {
     }
 }
 
+/// The codecs to ask the host for: the choice, minus PyroWave where this
+/// client cannot decode it (macOS, Android, or the library is missing).
 fn offered_codecs(choice: &str) -> (Vec<oriel_proto::Codec>, bool) {
     let (mut codecs, auto) = crate::config::codec_choice(choice);
     if codecs.contains(&oriel_proto::Codec::PyroWave) && !oriel_media::pyrowave_available() {

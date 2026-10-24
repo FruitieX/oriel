@@ -343,6 +343,12 @@ pub struct DxgiCapturer {
     have_image: bool,
     new_shape: Option<CursorShape>,
     shape_buf: Vec<u8>,
+    /// Whether duplication last reported the pointer visible on this
+    /// output. Windows draws a software cursor into the image instead (some
+    /// display modes and setups): duplication then reports it hidden.
+    dup_pointer_visible: Option<bool>,
+    /// The cursor was last found drawn into the image (logged on change).
+    cursor_in_image: bool,
     /// The virtual monitor being captured, kept while this capturer lives.
     virtual_monitor: Option<std::sync::Arc<super::sudovda::VirtualMonitor>>,
 }
@@ -432,6 +438,8 @@ impl DxgiCapturer {
             have_image: false,
             new_shape: None,
             shape_buf: Vec::new(),
+            dup_pointer_visible: None,
+            cursor_in_image: false,
             virtual_monitor,
         })
     }
@@ -575,6 +583,9 @@ impl Capturer for DxgiCapturer {
             if info.PointerShapeBufferSize > 0 {
                 self.read_pointer_shape(info.PointerShapeBufferSize)?;
             }
+            if info.LastMouseUpdateTime != 0 {
+                self.dup_pointer_visible = Some(info.PointerPosition.Visible.as_bool());
+            }
             if info.LastPresentTime == 0 {
                 return Ok(false);
             }
@@ -660,11 +671,24 @@ impl Capturer for DxgiCapturer {
             }
         };
         let origin = self.desc.DesktopCoordinates;
+        let (x, y) = (
+            info.ptScreenPos.x - origin.left,
+            info.ptScreenPos.y - origin.top,
+        );
+        // Showing, on this output, yet hidden to duplication: it is in the
+        // picture already. Report it hidden so that clients do not draw a
+        // second one (with the wrong shape: duplication sends none).
+        let on_output = (0..self.size.0 as i32).contains(&x) && (0..self.size.1 as i32).contains(&y);
+        let in_image = visible && on_output && self.dup_pointer_visible == Some(false);
+        if in_image != self.cursor_in_image {
+            self.cursor_in_image = in_image;
+            tracing::info!(in_image, "cursor drawn into the picture by Windows");
+        }
         CursorPos {
-            visible,
+            visible: visible && !in_image,
             captured: !visible && clipped,
-            x: info.ptScreenPos.x - origin.left,
-            y: info.ptScreenPos.y - origin.top,
+            x,
+            y,
         }
     }
 

@@ -167,7 +167,23 @@ pub async fn run(
                     return;
                 }
             };
-            while let Ok(event) = input_rx.recv() {
+            loop {
+                let event = match injector.next_tick() {
+                    Some(at) => match input_rx.recv_timeout(
+                        at.saturating_duration_since(std::time::Instant::now()),
+                    ) {
+                        Ok(event) => event,
+                        Err(mpsc::RecvTimeoutError::Timeout) => {
+                            injector.tick();
+                            continue;
+                        }
+                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    },
+                    None => match input_rx.recv() {
+                        Ok(event) => event,
+                        Err(_) => break,
+                    },
+                };
                 let geometry = *injector_shared.geometry.lock();
                 if let Err(e) = injector.inject(event, geometry) {
                     tracing::debug!("inject failed: {e:#}");

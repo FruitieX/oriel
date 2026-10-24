@@ -1,6 +1,9 @@
 //! Input injection with `SendInput`.
 
-use std::collections::HashSet;
+use std::{
+    collections::HashSet,
+    time::{Duration, Instant},
+};
 
 use anyhow::{Result, bail};
 use oriel_proto::{InputEvent, MouseButton, keys};
@@ -15,7 +18,8 @@ use windows::Win32::UI::{
     },
     WindowsAndMessaging::{
         GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
-        SM_YVIRTUALSCREEN,
+        SM_YVIRTUALSCREEN, SPI_GETKEYBOARDDELAY, SPI_GETKEYBOARDSPEED,
+        SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SystemParametersInfoW,
     },
 };
 
@@ -28,6 +32,33 @@ const XBUTTON2: i32 = 2;
 pub struct SendInputInjector {
     keys: HashSet<u16>,
     buttons: HashSet<MouseButton>,
+    /// Injected keys do not auto-repeat as a keyboard's do: the key held
+    /// last, when it next repeats, and how often.
+    repeat: Option<(u16, Instant, Duration)>,
+}
+
+/// The repeat delay and interval set in Windows' keyboard settings.
+fn repeat_timing() -> (Duration, Duration) {
+    let get = |action| {
+        let mut v = 0u32;
+        let ok = unsafe {
+            SystemParametersInfoW(
+                action,
+                0,
+                Some((&mut v as *mut u32).cast()),
+                SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+            )
+        };
+        ok.is_ok().then_some(v)
+    };
+    // 0–3: 250 ms steps from 250 ms. 0–31: about 2.5 to 30 per second.
+    let delay = get(SPI_GETKEYBOARDDELAY).unwrap_or(1).min(3);
+    let speed = get(SPI_GETKEYBOARDSPEED).unwrap_or(31).min(31);
+    let per_second = 2.5 + speed as f64 * 27.5 / 31.0;
+    (
+        Duration::from_millis(250 * (delay as u64 + 1)),
+        Duration::from_secs_f64(1.0 / per_second),
+    )
 }
 
 impl SendInputInjector {
@@ -36,6 +67,7 @@ impl SendInputInjector {
         Self {
             keys: HashSet::new(),
             buttons: HashSet::new(),
+            repeat: None,
         }
     }
 
@@ -121,8 +153,16 @@ impl SendInputInjector {
         };
         if down {
             self.keys.insert(usage);
+            // Modifiers (left/right Ctrl, Shift, Alt, GUI) do not repeat.
+            if !(0xE0..=0xE7).contains(&usage) && self.repeat.is_none_or(|(u, ..)| u != usage) {
+                let (delay, interval) = repeat_timing();
+                self.repeat = Some((usage, Instant::now() + delay, interval));
+            }
         } else {
             self.keys.remove(&usage);
+            if self.repeat.is_some_and(|(u, ..)| u == usage) {
+                self.repeat = None;
+            }
         }
         self.send(&[INPUT {
             r#type: INPUT_KEYBOARD,
@@ -168,6 +208,27 @@ impl SendInputInjector {
 }
 
 impl Injector for SendInputInjector {
+    fn next_tick(&self) -> Option<Instant> {
+        self.repeat.map(|(_, at, _)| at)
+    }
+
+    fn tick(&mut self) {
+        let Some((usage, at, interval)) = self.repeat else {
+            return;
+        };
+        if Instant::now() < at {
+            return;
+        }
+        // Keep to the schedule, unless far behind it.
+        let now = Instant::now();
+        let next = if at + interval > now { at + interval } else { now + interval };
+        self.repeat = Some((usage, next, interval));
+        if let Err(e) = self.key(usage, true) {
+            tracing::debug!("key repeat failed: {e:#}");
+            self.repeat = None;
+        }
+    }
+
     fn inject(&mut self, event: InputEvent, geometry: Geometry) -> Result<()> {
         match event {
             InputEvent::MouseMove { x, y, .. } => {
