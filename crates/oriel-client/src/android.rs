@@ -157,8 +157,13 @@ pub(crate) fn show_keyboard(show: bool) {
 /// Hide (or show again) the status and navigation bars.
 pub(crate) fn set_immersive(on: bool) {
     with_activity(|env, activity| {
-        env.call_method(activity, "setFullScreen", "(Z)V", &[JValue::Bool(on.into())])
-            .map(|_| ())
+        env.call_method(
+            activity,
+            "setFullScreen",
+            "(Z)V",
+            &[JValue::Bool(on.into())],
+        )
+        .map(|_| ())
     });
 }
 

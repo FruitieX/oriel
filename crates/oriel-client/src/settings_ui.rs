@@ -7,9 +7,9 @@ use oriel_proto::{Codec, VirtualMode};
 
 use crate::{
     config::{
-        CAPTURE_CHOICES, CODEC_CHOICES, CODER_CHOICES, ClientConfig, HostPrefs, MENU_BUTTON_STYLES, MOUSE_MODES, Resolution,
-        SMOOTHING_CHOICES, WARNING_STYLES, codec_choice_strings, format_resolution,
-        format_virtual_mode,
+        CAPTURE_CHOICES, CODEC_CHOICES, CODER_CHOICES, ClientConfig, HostPrefs, MENU_BUTTON_STYLES,
+        MOUSE_MODES, Resolution, SMOOTHING_CHOICES, WARNING_STYLES, codec_choice_strings,
+        format_resolution, format_virtual_mode,
     },
     keymap::{Command, Shortcut},
     theme::{self, AMBER},
@@ -611,27 +611,56 @@ fn video_tab(ui: &mut Ui, rows: &mut Rows, live: Option<&Live>) {
             |h| &mut h.codec,
             &codecs,
         );
-        rows.mbps(
-            ui,
-            "Bitrate",
-            "For HEVC, H.264 and AV1; the most it uses when automatic",
-            2..=500,
-            |c| c.bitrate_kbps,
-            |c, v| c.bitrate_kbps = v,
-            |h| &mut h.bitrate_kbps,
-        );
-        rows.toggle(
-            ui,
-            "Automatic bitrate",
-            "Follow the network",
-            "Lowers the bitrate within a fraction of a second when the network \
+        // One bitrate per codec family, remembered separately: PyroWave
+        // needs far more. Automatic switches between them, so it shows both.
+        let codec = rows.config.effective(rows.host).codec;
+        if codec != "pyrowave" {
+            rows.mbps(
+                ui,
+                if codec == "auto" {
+                    "HEVC bitrate"
+                } else {
+                    "Bitrate"
+                },
+                "The most it uses when automatic bitrate is on",
+                2..=500,
+                |c| c.bitrate_kbps,
+                |c, v| c.bitrate_kbps = v,
+                |h| &mut h.bitrate_kbps,
+            );
+        }
+        if codec == "pyrowave" || codec == "auto" {
+            rows.mbps(
+                ui,
+                if codec == "auto" {
+                    "PyroWave bitrate"
+                } else {
+                    "Bitrate"
+                },
+                "PyroWave needs far more bandwidth than the other codecs; this is \
+                 remembered apart from theirs",
+                50..=1500,
+                |c| c.pyrowave_kbps,
+                |c, v| c.pyrowave_kbps = v,
+                |h| &mut h.pyrowave_kbps,
+            );
+        }
+        // PyroWave keeps its bitrate and is 4:2:0 only.
+        let pyrowave = codec == "pyrowave";
+        if !pyrowave {
+            rows.toggle(
+                ui,
+                "Automatic bitrate",
+                "Follow the network",
+                "Lowers the bitrate within a fraction of a second when the network \
              cannot carry it, and raises it again once it can",
-            |c| c.auto_bitrate,
-            |c, v| c.auto_bitrate = v,
-            |h| &mut h.auto_bitrate,
-        );
+                |c| c.auto_bitrate,
+                |c, v| c.auto_bitrate = v,
+                |h| &mut h.auto_bitrate,
+            );
+        }
         // Android decoders rarely handle 4:4:4.
-        if !cfg!(target_os = "android") {
+        if !cfg!(target_os = "android") && !pyrowave {
             rows.toggle(
                 ui,
                 "Colour detail",
@@ -643,6 +672,8 @@ fn video_tab(ui: &mut Ui, rows: &mut Rows, live: Option<&Live>) {
                 |c, v| c.full_chroma = v,
                 |h| &mut h.full_chroma,
             );
+        }
+        if !cfg!(target_os = "android") {
             rows.choice(
                 ui,
                 "Decoding",
@@ -673,15 +704,6 @@ fn video_tab(ui: &mut Ui, rows: &mut Rows, live: Option<&Live>) {
             |c, v| c.capture = v,
             |h| &mut h.capture,
             &CAPTURE_CHOICES,
-        );
-        rows.mbps(
-            ui,
-            "PyroWave bitrate",
-            "PyroWave needs far more bandwidth than the other codecs",
-            50..=1500,
-            |c| c.pyrowave_kbps,
-            |c, v| c.pyrowave_kbps = v,
-            |h| &mut h.pyrowave_kbps,
         );
         rows.choice(
             ui,

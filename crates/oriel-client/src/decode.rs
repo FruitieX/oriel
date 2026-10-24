@@ -303,8 +303,7 @@ pub fn spawn(
             let path = |codec: Codec| usize::from(codec != Codec::PyroWave);
             // Whether this codec can decode zero-copy with the current
             // renderer.
-            let hardware_now =
-                || hardware_setting.load(std::sync::atomic::Ordering::Relaxed);
+            let hardware_now = || hardware_setting.load(std::sync::atomic::Ordering::Relaxed);
             #[cfg(target_os = "linux")]
             let zero_copy_possible = |codec: Codec, full_chroma: bool, hardware: bool| {
                 interop.lock().as_ref().is_some_and(|i| {
