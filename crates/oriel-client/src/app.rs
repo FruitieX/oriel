@@ -730,6 +730,20 @@ impl Viewer {
             }
             return;
         }
+        // Esc closes the menu, like a dialog, unless it cancels recording a
+        // shortcut or closes a drop-down first.
+        if pressed
+            && self.menu_open
+            && code == winit::keyboard::KeyCode::Escape
+            && self.modifiers.is_empty()
+            && !self.panel.is_recording()
+            && !self.egui_ctx.any_popup_open()
+        {
+            if !event.repeat {
+                self.set_menu(false);
+            }
+            return;
+        }
         if !self.keys_to_host() || event.repeat {
             return;
         }
