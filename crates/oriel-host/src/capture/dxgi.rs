@@ -359,6 +359,8 @@ pub struct DxgiCapturer {
     dup_pointer_visible: Option<bool>,
     /// The cursor was last found drawn into the image (logged on change).
     cursor_in_image: bool,
+    /// The cursor whose shape was last read from Win32 (as a number).
+    win32_cursor: usize,
     /// The virtual monitor being captured, kept while this capturer lives.
     virtual_monitor: Option<std::sync::Arc<super::sudovda::VirtualMonitor>>,
 }
@@ -450,6 +452,7 @@ impl DxgiCapturer {
             shape_buf: Vec::new(),
             dup_pointer_visible: None,
             cursor_in_image: false,
+            win32_cursor: 0,
             virtual_monitor,
         })
     }
@@ -550,6 +553,101 @@ fn convert_shape(info: &DXGI_OUTDUPL_POINTER_SHAPE_INFO, buf: &[u8]) -> Option<C
         info.HotSpot.y.max(0) as u32,
         rgba,
     ))
+}
+
+/// A cursor's image from Win32, converted like duplication's shapes.
+fn win32_shape(cursor: windows::Win32::UI::WindowsAndMessaging::HCURSOR) -> Option<CursorShape> {
+    use windows::Win32::{
+        Graphics::Gdi::{
+            BI_RGB, BITMAP, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS, DeleteObject, GetDC,
+            GetDIBits, GetObjectW, HBITMAP, HGDIOBJ, ReleaseDC,
+        },
+        UI::WindowsAndMessaging::{GetIconInfo, HICON, ICONINFO},
+    };
+    unsafe {
+        let mut icon = ICONINFO::default();
+        GetIconInfo(HICON(cursor.0), &mut icon).ok()?;
+        let (mask, color) = (icon.hbmMask, icon.hbmColor);
+        let size = |bm: HBITMAP| {
+            let mut b = BITMAP::default();
+            let n = GetObjectW(
+                HGDIOBJ(bm.0),
+                size_of::<BITMAP>() as i32,
+                Some((&mut b as *mut BITMAP).cast()),
+            );
+            (n != 0).then_some((b.bmWidth.max(0) as usize, b.bmHeight.max(0) as usize))
+        };
+        let dc = GetDC(None);
+        // Rows top-down, `bits` per pixel, DWORD-aligned.
+        let read = |bm: HBITMAP, (w, h): (usize, usize), bits: u16| -> Option<(Vec<u8>, usize)> {
+            let pitch = (w * bits as usize).div_ceil(32) * 4;
+            let mut buf = vec![0u8; pitch * h];
+            let mut bi = BITMAPINFO {
+                bmiHeader: BITMAPINFOHEADER {
+                    biSize: size_of::<BITMAPINFOHEADER>() as u32,
+                    biWidth: w as i32,
+                    biHeight: -(h as i32),
+                    biPlanes: 1,
+                    biBitCount: bits,
+                    biCompression: BI_RGB.0,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let rows = GetDIBits(
+                dc,
+                bm,
+                0,
+                h as u32,
+                Some(buf.as_mut_ptr().cast()),
+                &mut bi,
+                DIB_RGB_COLORS,
+            );
+            (rows == h as i32).then_some((buf, pitch))
+        };
+        let shape = (|| {
+            let mut info = DXGI_OUTDUPL_POINTER_SHAPE_INFO {
+                HotSpot: windows::Win32::Foundation::POINT {
+                    x: icon.xHotspot as i32,
+                    y: icon.yHotspot as i32,
+                },
+                ..Default::default()
+            };
+            if color.is_invalid() {
+                // Monochrome: the AND mask above the XOR mask.
+                let (w, h2) = size(mask)?;
+                let (buf, pitch) = read(mask, (w, h2), 1)?;
+                info.Type = DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME.0 as u32;
+                (info.Width, info.Height, info.Pitch) = (w as u32, h2 as u32, pitch as u32);
+                return convert_shape(&info, &buf);
+            }
+            let (w, h) = size(color)?;
+            let (mut buf, pitch) = read(color, (w, h), 32)?;
+            (info.Width, info.Height, info.Pitch) = (w as u32, h as u32, pitch as u32);
+            if buf.chunks_exact(4).any(|px| px[3] != 0) {
+                info.Type = DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR.0 as u32;
+            } else {
+                // No alpha: the AND mask says which pixels are XORed onto
+                // the screen (alpha 0xFF in a masked-colour shape).
+                let (m, mpitch) = read(mask, (w, h), 32)?;
+                for y in 0..h {
+                    for x in 0..w {
+                        if m[y * mpitch + x * 4] != 0 {
+                            buf[y * pitch + x * 4 + 3] = 0xFF;
+                        }
+                    }
+                }
+                info.Type = DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MASKED_COLOR.0 as u32;
+            }
+            convert_shape(&info, &buf)
+        })();
+        ReleaseDC(None, dc);
+        let _ = DeleteObject(HGDIOBJ(mask.0));
+        if !color.is_invalid() {
+            let _ = DeleteObject(HGDIOBJ(color.0));
+        }
+        shape
+    }
 }
 
 impl Capturer for DxgiCapturer {
@@ -685,17 +783,25 @@ impl Capturer for DxgiCapturer {
             info.ptScreenPos.x - origin.left,
             info.ptScreenPos.y - origin.top,
         );
-        // Showing, on this output, yet hidden to duplication: it is in the
-        // picture already. Report it hidden so that clients do not draw a
-        // second one (with the wrong shape: duplication sends none).
-        let on_output = (0..self.size.0 as i32).contains(&x) && (0..self.size.1 as i32).contains(&y);
+        // Showing, on this output, yet hidden to duplication: Windows draws
+        // it into the picture (a software cursor) and duplication sends no
+        // shape. Clients still show their own pointer, which follows the
+        // mouse without the stream's delay: read its shape from Win32.
+        let on_output =
+            (0..self.size.0 as i32).contains(&x) && (0..self.size.1 as i32).contains(&y);
         let in_image = visible && on_output && self.dup_pointer_visible == Some(false);
         if in_image != self.cursor_in_image {
             self.cursor_in_image = in_image;
+            self.win32_cursor = 0;
             tracing::info!(in_image, "cursor drawn into the picture by Windows");
         }
+        let handle = info.hCursor.0 as usize;
+        if in_image && handle != 0 && handle != self.win32_cursor && self.new_shape.is_none() {
+            self.win32_cursor = handle;
+            self.new_shape = win32_shape(info.hCursor);
+        }
         CursorPos {
-            visible: visible && !in_image,
+            visible,
             captured: !visible && clipped,
             x,
             y,
