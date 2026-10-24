@@ -78,6 +78,7 @@ impl ViewerOptions {
                 resolution: e.resolution.size(None),
                 audio_device: e.audio_device.clone(),
                 virtual_display: e.virtual_display,
+                full_chroma: full_chroma_codecs(e.full_chroma),
             },
             config,
             paths,
@@ -1102,9 +1103,13 @@ impl Viewer {
             return;
         }
         let s = &self.session;
-        if old.codec != new.codec {
+        if old.codec != new.codec || old.full_chroma != new.full_chroma {
             let (codecs, auto_codec) = offered_codecs(&new.codec);
-            s.send(ClientMsg::SetCodecs { codecs, auto_codec });
+            s.send(ClientMsg::SetCodecs {
+                codecs,
+                auto_codec,
+                full_chroma: full_chroma_codecs(new.full_chroma),
+            });
         }
         if old.bitrate_kbps != new.bitrate_kbps {
             s.send(ClientMsg::SetBitrate {
@@ -2450,6 +2455,17 @@ pub(crate) fn is_back(event: &KeyEvent) -> bool {
 
 /// The codecs to ask the host for: the choice, minus PyroWave where this
 /// client cannot decode it (macOS, Android, or the library is missing).
+/// The codecs to ask for at 4:4:4: those FFmpeg decodes here (in hardware
+/// where it can, else in software). Not on Android, whose decoders rarely
+/// can, nor for PyroWave (4:2:0 only for now).
+fn full_chroma_codecs(wanted: bool) -> Vec<oriel_proto::Codec> {
+    if wanted && !cfg!(target_os = "android") {
+        vec![oriel_proto::Codec::Hevc, oriel_proto::Codec::H264]
+    } else {
+        Vec::new()
+    }
+}
+
 fn offered_codecs(choice: &str) -> (Vec<oriel_proto::Codec>, bool) {
     let (mut codecs, auto) = crate::config::codec_choice(choice);
     if codecs.contains(&oriel_proto::Codec::PyroWave) && !oriel_media::pyrowave_available() {

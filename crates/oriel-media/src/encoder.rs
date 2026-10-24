@@ -37,6 +37,9 @@ pub struct EncoderConfig {
     pub device: HwDevice,
     /// Only try this FFmpeg encoder (e.g. `hevc_nvenc`).
     pub encoder: Option<String>,
+    /// Encode colour at full resolution (4:4:4) if the encoder can; see
+    /// [`Encoder::full_chroma`].
+    pub full_chroma: bool,
 }
 
 pub enum EncoderInput<'a> {
@@ -158,9 +161,19 @@ struct FfEncoder {
     kind: Kind,
     start: Instant,
     last_pts: i64,
+    full_chroma: bool,
 }
 
 unsafe impl Send for FfEncoder {}
+
+/// Encoders that take 4:4:4 here. Hardware encoders without it are still
+/// preferred over a software one with it.
+fn has_full_chroma(kind: Kind, codec: Codec) -> bool {
+    match kind {
+        Kind::Nvenc | Kind::X264 | Kind::X265 => matches!(codec, Codec::H264 | Codec::Hevc),
+        _ => false,
+    }
+}
 
 impl FfEncoder {
     fn open(config: &EncoderConfig) -> Result<Self> {
@@ -178,6 +191,7 @@ impl FfEncoder {
                         fps = config.fps,
                         kbps = config.bitrate_kbps,
                         zero_copy = !enc.wants_cpu_input(),
+                        full_chroma = enc.full_chroma,
                         "opened video encoder"
                     );
                     return Ok(enc);
@@ -243,6 +257,7 @@ impl FfEncoder {
             start: Instant::now(),
             kind,
             last_pts: -1,
+            full_chroma: config.full_chroma && has_full_chroma(kind, config.codec),
         };
         if enc.ctx.is_null() || enc.pkt.is_null() {
             bail!("out of memory");
@@ -272,9 +287,16 @@ impl FfEncoder {
             ctx.color_trc = ff::AVColorTransferCharacteristic::AVCOL_TRC_BT709;
             ctx.colorspace = ff::AVColorSpace::AVCOL_SPC_BT709;
             ctx.color_range = ff::AVColorRange::AVCOL_RANGE_MPEG;
+            if enc.full_chroma {
+                // Few clients decode 4:4:4 in hardware; slices let a
+                // software decoder use several threads without adding
+                // latency.
+                ctx.slices = 4;
+            }
         }
 
         let sw_format = match kind {
+            _ if enc.full_chroma => ff::AVPixelFormat::AV_PIX_FMT_YUV444P,
             Kind::X264 | Kind::X265 | Kind::SvtAv1 => ff::AVPixelFormat::AV_PIX_FMT_YUV420P,
             _ => ff::AVPixelFormat::AV_PIX_FMT_NV12,
         };
@@ -297,6 +319,18 @@ impl FfEncoder {
                 opts.set("delay", 0);
                 opts.set("rc", "cbr");
                 opts.set("forced-idr", 1);
+                if enc.full_chroma {
+                    // BGRA input (zero-copy) converts to 4:4:4 in NVENC.
+                    opts.set("rgb_mode", "yuv444");
+                    opts.set(
+                        "profile",
+                        if config.codec == Codec::H264 {
+                            "high444p"
+                        } else {
+                            "rext"
+                        },
+                    );
+                }
             }
             Kind::Amf => {
                 opts.set("usage", "ultralowlatency");
@@ -731,6 +765,14 @@ impl Encoder {
         match &self.0 {
             EncoderInner::Ff(e) => &e.name,
             EncoderInner::Pyro(_) => "pyrowave",
+        }
+    }
+
+    /// Whether colour is encoded at full resolution (4:4:4).
+    pub fn full_chroma(&self) -> bool {
+        match &self.0 {
+            EncoderInner::Ff(e) => e.full_chroma,
+            EncoderInner::Pyro(_) => false,
         }
     }
 

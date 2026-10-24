@@ -29,6 +29,9 @@ pub struct ClientConfig {
     /// "auto" (PyroWave when the link allows, else HEVC/H.264).
     pub codecs: Vec<String>,
     pub pyrowave_kbps: u32,
+    /// Ask for colour at full resolution (4:4:4) where the host's encoder
+    /// can: sharper coloured text, more bandwidth.
+    pub full_chroma: bool,
     /// "auto", "desktop" or "captured".
     pub mouse: String,
     pub audio: bool,
@@ -81,6 +84,7 @@ pub struct HostPrefs {
     pub auto_bitrate: Option<bool>,
     pub smoothing: Option<String>,
     pub pyrowave_kbps: Option<u32>,
+    pub full_chroma: Option<bool>,
     pub max_fps: Option<u32>,
     pub mouse: Option<String>,
     pub gamepads: Option<bool>,
@@ -114,6 +118,7 @@ pub struct Effective {
     pub auto_bitrate: bool,
     pub smoothing: String,
     pub pyrowave_kbps: u32,
+    pub full_chroma: bool,
     pub max_fps: u32,
     pub mouse: String,
     pub gamepads: bool,
@@ -290,6 +295,7 @@ impl Default for ClientConfig {
             max_fps: 120,
             codecs: vec!["hevc".into(), "h264".into()],
             pyrowave_kbps: 400_000,
+            full_chroma: false,
             mouse: "auto".into(),
             audio: true,
             fullscreen: false,
@@ -326,6 +332,7 @@ impl ClientConfig {
                 .clone()
                 .unwrap_or_else(|| self.smoothing.clone()),
             pyrowave_kbps: h.pyrowave_kbps.unwrap_or(self.pyrowave_kbps),
+            full_chroma: h.full_chroma.unwrap_or(self.full_chroma),
             max_fps: h.max_fps.unwrap_or(self.max_fps),
             mouse: h.mouse.clone().unwrap_or_else(|| self.mouse.clone()),
             gamepads: h.gamepads.unwrap_or(self.gamepads),

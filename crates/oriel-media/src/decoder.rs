@@ -137,7 +137,8 @@ struct FfDecoder {
     frame: *mut ff::AVFrame,
     device: *mut ff::AVBufferRef,
     hw_format: Option<ff::AVPixelFormat>,
-    /// Converts formats the renderer does not handle to YUV420P.
+    /// Converts formats the renderer does not handle to YUV420P (or
+    /// YUV444P, keeping full-resolution colour).
     sws: *mut ff::SwsContext,
     description: String,
     /// Hand out hardware frames as DMA-BUFs instead of downloading them.
@@ -332,8 +333,15 @@ impl FfDecoder {
                 PlaneFormat::Yuv420p
             } else if fmt == AV_PIX_FMT_YUV444P as c_int {
                 PlaneFormat::Yuv444p
+            } else if fmt == AV_PIX_FMT_YUVJ444P as c_int {
+                full_range = true;
+                PlaneFormat::Yuv444p
+            } else if full_chroma(fmt) {
+                // Hardware decoders hand 4:4:4 out packed (VUYX, NV24).
+                out = self.convert(out, AV_PIX_FMT_YUV444P)?;
+                PlaneFormat::Yuv444p
             } else {
-                out = self.convert_to_yuv420p(out)?;
+                out = self.convert(out, AV_PIX_FMT_YUV420P)?;
                 PlaneFormat::Yuv420p
             };
             let matrix = color_matrix(out);
@@ -404,7 +412,11 @@ impl FfDecoder {
         }
     }
 
-    unsafe fn convert_to_yuv420p(&mut self, src: *mut ff::AVFrame) -> Result<*mut ff::AVFrame> {
+    unsafe fn convert(
+        &mut self,
+        src: *mut ff::AVFrame,
+        to: ff::AVPixelFormat,
+    ) -> Result<*mut ff::AVFrame> {
         unsafe {
             let (w, h) = ((*src).width, (*src).height);
             self.sws = ff::sws_getCachedContext(
@@ -414,7 +426,7 @@ impl FfDecoder {
                 std::mem::transmute::<c_int, ff::AVPixelFormat>((*src).format),
                 w,
                 h,
-                ff::AVPixelFormat::AV_PIX_FMT_YUV420P,
+                to,
                 ff::SwsFlags::SWS_POINT as c_int,
                 ptr::null_mut(),
                 ptr::null_mut(),
@@ -426,7 +438,7 @@ impl FfDecoder {
                 bail!("unsupported decoded pixel format {}", (*src).format);
             }
             let mut dst = ff::av_frame_alloc();
-            (*dst).format = ff::AVPixelFormat::AV_PIX_FMT_YUV420P as c_int;
+            (*dst).format = to as c_int;
             (*dst).width = w;
             (*dst).height = h;
             let ret = ff::av_frame_get_buffer(dst, 0);
@@ -449,6 +461,18 @@ impl FfDecoder {
             }
             Ok(dst)
         }
+    }
+}
+
+/// Whether `format` (an `AVPixelFormat`) carries colour at full resolution.
+fn full_chroma(format: c_int) -> bool {
+    unsafe {
+        let desc = ff::av_pix_fmt_desc_get(std::mem::transmute::<c_int, ff::AVPixelFormat>(format));
+        !desc.is_null()
+            && (*desc).nb_components >= 3
+            && (*desc).log2_chroma_w == 0
+            && (*desc).log2_chroma_h == 0
+            && (*desc).flags & ff::AV_PIX_FMT_FLAG_RGB as u64 == 0
     }
 }
 
@@ -584,6 +608,7 @@ mod tests {
             bitrate_kbps: 4000,
             device: HwDevice::None,
             encoder: Some("hevc_vaapi".into()),
+            full_chroma: false,
         };
         let mut enc = match Encoder::open(&config) {
             Ok(e) => e,
@@ -636,6 +661,7 @@ mod tests {
             bitrate_kbps: 4000,
             device: HwDevice::None,
             encoder: Some(encoder.into()),
+            full_chroma: false,
         };
         let mut enc = match Encoder::open(&config) {
             Ok(e) => e,
@@ -739,6 +765,7 @@ mod refine_tests {
                 bitrate_kbps: 12_000,
                 device: HwDevice::None,
                 encoder: Some(encoder.into()),
+                full_chroma: false,
             };
             let Ok(mut enc) = Encoder::open(&config) else {
                 eprintln!("skipping: no {encoder}");
@@ -764,5 +791,55 @@ mod refine_tests {
             let (first, last) = (results[0].0, results.last().unwrap().0);
             assert!(last > first + 2.0, "{first:.1} dB → {last:.1} dB");
         }
+    }
+
+    /// One-pixel red and blue stripes survive 4:4:4 (in 4:2:0 they average
+    /// to purple).
+    #[test]
+    fn full_chroma_keeps_colour_detail() {
+        let (w, h) = (256usize, 64usize);
+        let mut bgra = vec![0u8; w * h * 4];
+        for (i, px) in bgra.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+            *px = if i % 2 == 0 { [0, 0, 255, 255] } else { [255, 0, 0, 255] };
+        }
+        let spread = |full_chroma: bool| -> Option<(PlaneFormat, f64)> {
+            let config = EncoderConfig {
+                codec: Codec::H264,
+                width: w as u32,
+                height: h as u32,
+                fps: 60,
+                bitrate_kbps: 20_000,
+                device: HwDevice::None,
+                encoder: Some("libx264".into()),
+                full_chroma,
+            };
+            let mut enc = Encoder::open(&config).ok()?;
+            assert_eq!(enc.full_chroma(), full_chroma);
+            let mut dec = Decoder::open(Codec::H264, w as u32, h as u32, false).unwrap();
+            let input = EncoderInput::Bgra {
+                data: &bgra,
+                stride: w * 4,
+            };
+            let out = enc.encode(input, true).unwrap().unwrap();
+            let frame = dec.decode(&out.data).unwrap().unwrap();
+            // Mean difference between neighbouring Cr samples of a row.
+            let (cr, stride) = frame.plane(2);
+            let (cw, _) = frame.plane_size(2);
+            let row = &cr[stride * 8..][..cw as usize];
+            let diff: f64 = row
+                .windows(2)
+                .map(|p| (p[0] as f64 - p[1] as f64).abs())
+                .sum::<f64>()
+                / (cw - 1) as f64;
+            Some((frame.format, diff))
+        };
+        let Some((format, sharp)) = spread(true) else {
+            eprintln!("skipping: no libx264");
+            return;
+        };
+        let (_, blurred) = spread(false).unwrap();
+        eprintln!("Cr spread: 4:4:4 {sharp:.1}, 4:2:0 {blurred:.1}");
+        assert_eq!(format, PlaneFormat::Yuv444p);
+        assert!(sharp > 100.0 && blurred < 20.0, "{sharp} vs {blurred}");
     }
 }

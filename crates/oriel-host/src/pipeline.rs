@@ -28,6 +28,8 @@ pub struct Config {
     pub max_fps: u32,
     pub encoder: Option<String>,
     pub auto_codec: bool,
+    /// Codecs to encode at 4:4:4 where the encoder can.
+    pub full_chroma: Vec<Codec>,
     pub pyrowave_kbps: u32,
     /// Adapt the bitrate to the network, up to `bitrate_kbps`.
     pub auto_bitrate: bool,
@@ -37,7 +39,8 @@ pub enum Cmd {
     Keyframe,
     /// Capture this target instead (display switch, virtual monitor).
     Target(capture::Target),
-    Codecs(Vec<Codec>, bool),
+    /// Codecs, automatic switching, and those wanted at 4:4:4.
+    Codecs(Vec<Codec>, bool, Vec<Codec>),
     Bitrate(u32),
     AutoBitrate(bool),
     MaxFps(u32),
@@ -330,6 +333,7 @@ impl Pipeline {
                 },
                 device: cap.hw_device(),
                 encoder: self.config.encoder.clone(),
+                full_chroma: self.config.full_chroma.contains(&codec),
             };
             match Encoder::open(&config) {
                 Ok(enc) => return Ok((enc, codec)),
@@ -375,6 +379,7 @@ impl Pipeline {
                     width,
                     height,
                     codec,
+                    full_chroma: enc.full_chroma(),
                 }))?;
                 match self.stream(cap.as_mut(), &mut enc, codec, &mut bitrate)? {
                     Flow::Stop => return Ok(()),
@@ -469,10 +474,11 @@ impl Pipeline {
                         }
                     }
                     Cmd::MaxFps(_) | Cmd::PyroWaveBitrate(_) => {}
-                    Cmd::Codecs(codecs, auto) => {
+                    Cmd::Codecs(codecs, auto, full_chroma) => {
                         if !codecs.is_empty() {
                             self.config.codecs = codecs;
                             self.config.auto_codec = auto;
+                            self.config.full_chroma = full_chroma;
                             self.auto.retry_at = Instant::now();
                             return Ok(Flow::Reencode);
                         }
@@ -707,6 +713,7 @@ impl Pipeline {
                         codec,
                         width,
                         height,
+                        full_chroma: enc.full_chroma(),
                     };
                     if force_key && !out.keyframe {
                         tracing::warn!("encoder ignored a keyframe request");

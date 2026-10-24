@@ -422,6 +422,8 @@ pub struct EncoderConfig {
     pub bitrate_kbps: u32,
     pub device: HwDevice,
     pub encoder: Option<String>,
+    /// The phone's encoder is 4:2:0 only.
+    pub full_chroma: bool,
 }
 
 pub enum EncoderInput<'a> {
@@ -470,6 +472,10 @@ impl Encoder {
         Ok(Self {
             _codec: config.codec,
         })
+    }
+
+    pub fn full_chroma(&self) -> bool {
+        false
     }
 
     pub fn wants_cpu_input(&self) -> bool {

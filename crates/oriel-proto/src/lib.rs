@@ -23,7 +23,7 @@ pub const ALPN: &[u8] = b"oriel/1";
 /// when it only checks whether the host is up.
 pub const PROBE_REASON: &[u8] = b"probe";
 
-pub const PROTOCOL_VERSION: u32 = 11;
+pub const PROTOCOL_VERSION: u32 = 12;
 pub const DEFAULT_PORT: u16 = 48600;
 /// Upper bound for a single control/input message.
 pub const MAX_MESSAGE_LEN: usize = 32 * 1024 * 1024;
@@ -101,6 +101,9 @@ pub struct StreamSettings {
     pub audio_device: Option<String>,
     /// Stream a new virtual monitor in this mode instead of `display`.
     pub virtual_display: Option<VirtualMode>,
+    /// Codecs to send with full colour resolution (4:4:4) where the host's
+    /// encoder can: sharper coloured text. Empty: 4:2:0 only.
+    pub full_chroma: Vec<Codec>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -109,6 +112,8 @@ pub struct SurfaceInfo {
     pub width: u32,
     pub height: u32,
     pub codec: Codec,
+    /// Colour at full resolution (4:4:4) rather than 4:2:0.
+    pub full_chroma: bool,
 }
 
 /// Pairing messages, run over the control stream before a session when the
@@ -143,6 +148,7 @@ pub enum ClientMsg {
     SetCodecs {
         codecs: Vec<Codec>,
         auto_codec: bool,
+        full_chroma: Vec<Codec>,
     },
     /// Change (or with `None` restore) the host display resolution.
     SetResolution {
@@ -404,6 +410,8 @@ pub struct FrameHeader {
     pub codec: Codec,
     pub width: u32,
     pub height: u32,
+    /// Colour at full resolution (4:4:4) rather than 4:2:0.
+    pub full_chroma: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -455,6 +463,7 @@ mod tests {
             resolution: None,
             audio_device: None,
             virtual_display: None,
+            full_chroma: vec![Codec::Hevc],
         });
         let bytes = encode_framed(&msg).unwrap();
         let len = u32::from_le_bytes(bytes[..4].try_into().unwrap()) as usize;

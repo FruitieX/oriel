@@ -131,10 +131,12 @@ impl VideoDecoder {
                 Err(e) => tracing::warn!("zero-copy PyroWave unavailable: {e:#}"),
             }
         }
+        // The DMA-BUF import takes NV12 only, not 4:4:4.
         #[cfg(target_os = "linux")]
         if zero_copy
             && hardware
             && header.codec != Codec::PyroWave
+            && !header.full_chroma
             && let Some(interop) = interop.lock().clone()
             && interop.dmabuf
         {
@@ -277,7 +279,8 @@ pub fn spawn(
     std::thread::Builder::new()
         .name("oriel-decode".into())
         .spawn(move || {
-            let mut decoder: Option<(VideoDecoder, Codec, (u32, u32))> = None;
+            // With the stream it was opened for: codec, size, 4:4:4.
+            let mut decoder: Option<(VideoDecoder, Codec, (u32, u32), bool)> = None;
             // Do not keep retrying zero-copy once it failed: [PyroWave,
             // VAAPI].
             // ORIEL_NO_ZERO_COPY=1 forces the CPU path (debugging aid).
@@ -286,15 +289,15 @@ pub fn spawn(
             // Whether this codec can decode zero-copy with the current
             // renderer.
             #[cfg(target_os = "linux")]
-            let zero_copy_possible = |codec: Codec| {
-                interop
-                    .lock()
-                    .as_ref()
-                    .is_some_and(|i| codec == Codec::PyroWave || (hardware && i.dmabuf))
+            let zero_copy_possible = |codec: Codec, full_chroma: bool| {
+                interop.lock().as_ref().is_some_and(|i| {
+                    codec == Codec::PyroWave || (hardware && i.dmabuf && !full_chroma)
+                })
             };
             #[cfg(not(target_os = "linux"))]
-            let zero_copy_possible =
-                |codec: Codec| codec == Codec::PyroWave && interop.lock().is_some();
+            let zero_copy_possible = |codec: Codec, _full_chroma: bool| {
+                codec == Codec::PyroWave && interop.lock().is_some()
+            };
             let mut need_keyframe = false;
             let mut last_request = Instant::now() - Duration::from_secs(1);
             while let Ok((header, data, received)) = rx.recv() {
@@ -308,12 +311,12 @@ pub fn spawn(
                 // is a keyframe).
                 let upgrade = header.keyframe
                     && !zero_copy_failed[path(header.codec)]
-                    && zero_copy_possible(header.codec)
+                    && zero_copy_possible(header.codec, header.full_chroma)
                     && decoder.as_ref().is_some_and(|(d, ..)| !d.is_zero_copy());
                 if upgrade
-                    || decoder
-                        .as_ref()
-                        .is_none_or(|(_, codec, s)| *codec != header.codec || *s != size)
+                    || decoder.as_ref().is_none_or(|(_, codec, s, full)| {
+                        *codec != header.codec || *s != size || *full != header.full_chroma
+                    })
                 {
                     // Free the old decoder's GPU resources first.
                     drop(decoder.take());
@@ -322,15 +325,21 @@ pub fn spawn(
                     {
                         Ok((d, description)) => {
                             tracing::info!(decoder = %description, "opened video decoder");
-                            if zero_copy_possible(header.codec) && !d.is_zero_copy() {
+                            if zero_copy_possible(header.codec, header.full_chroma)
+                                && !d.is_zero_copy()
+                            {
                                 zero_copy_failed[path(header.codec)] = true;
                             }
                             let mut s = stats.lock();
                             s.decoder = description;
-                            s.codec = header.codec.name().to_string();
+                            s.codec = if header.full_chroma {
+                                format!("{} 4:4:4", header.codec.name())
+                            } else {
+                                header.codec.name().to_string()
+                            };
                             s.codec_id = Some(header.codec);
                             s.resolution = size;
-                            Some((d, header.codec, size))
+                            Some((d, header.codec, size, header.full_chroma))
                         }
                         Err(e) => {
                             sink(UiEvent::Closed {
@@ -348,7 +357,7 @@ pub fn spawn(
                         last_request = Instant::now();
                     }
                 } else {
-                    let (dec, _, _) = decoder.as_mut().unwrap();
+                    let (dec, ..) = decoder.as_mut().unwrap();
                     let started = Instant::now();
                     match dec.decode(&data) {
                         Ok(Some(picture)) => {

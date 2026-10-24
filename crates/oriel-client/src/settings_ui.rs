@@ -630,6 +630,20 @@ fn video_tab(ui: &mut Ui, rows: &mut Rows, live: Option<&Live>) {
             |c, v| c.auto_bitrate = v,
             |h| &mut h.auto_bitrate,
         );
+        // Android decoders rarely handle 4:4:4.
+        if !cfg!(target_os = "android") {
+            rows.toggle(
+                ui,
+                "Colour detail",
+                "Full colour resolution (4:4:4)",
+                "Keeps coloured text and thin coloured lines crisp. Needs a host \
+                 that can encode it (NVIDIA, or software encoding) and takes more \
+                 bandwidth; this computer may decode it in software",
+                |c| c.full_chroma,
+                |c, v| c.full_chroma = v,
+                |h| &mut h.full_chroma,
+            );
+        }
         rows.mbps(
             ui,
             "PyroWave bitrate",
