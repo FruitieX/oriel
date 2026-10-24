@@ -208,6 +208,8 @@ struct Viewer {
     focused: bool,
     modifiers: ModifiersState,
     keys_down: HashSet<u16>,
+    /// When the held keys were last confirmed to the host.
+    keys_held_sent: Instant,
     buttons_down: HashSet<MouseButton>,
     pointer: Option<PhysicalPosition<f64>>,
     last_move: Option<(i32, i32)>,
@@ -296,6 +298,7 @@ impl Viewer {
             focused: false,
             modifiers: ModifiersState::empty(),
             keys_down: HashSet::new(),
+            keys_held_sent: Instant::now(),
             buttons_down: HashSet::new(),
             pointer: None,
             last_move: None,
@@ -2338,6 +2341,17 @@ impl ApplicationHandler<UiEvent> for Viewer {
         };
         // The next buffered frame.
         if let Some(due) = self.session.frames.next_due() {
+            wake = Some(wake.map_or(due, |w| w.min(due)));
+        }
+        // Keep confirming held keys, or the host stops repeating them.
+        if !self.keys_down.is_empty() {
+            if self.keys_held_sent.elapsed() >= oriel_proto::KEYS_HELD_INTERVAL {
+                self.session.input(InputEvent::KeysHeld {
+                    usages: self.keys_down.iter().copied().collect(),
+                });
+                self.keys_held_sent = Instant::now();
+            }
+            let due = self.keys_held_sent + oriel_proto::KEYS_HELD_INTERVAL;
             wake = Some(wake.map_or(due, |w| w.min(due)));
         }
         // A finger held still becomes a right click.

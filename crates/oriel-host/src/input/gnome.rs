@@ -104,6 +104,8 @@ impl Injector for GnomeInjector {
                 }
             }
             InputEvent::SecureAttention => {}
+            // The compositor repeats held keys itself.
+            InputEvent::KeysHeld { .. } => {}
             InputEvent::Text { text } => {
                 for c in text.chars() {
                     let sym = keysym(c);

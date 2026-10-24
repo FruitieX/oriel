@@ -63,6 +63,7 @@ impl State {
             }
             SecureAttention => {}
             Text { text } => tracing::info!(text, "typed"),
+            KeysHeld { .. } => {}
         }
     }
 }

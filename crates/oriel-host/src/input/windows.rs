@@ -35,7 +35,14 @@ pub struct SendInputInjector {
     /// Injected keys do not auto-repeat as a keyboard's do: the key held
     /// last, when it next repeats, and how often.
     repeat: Option<(u16, Instant, Duration)>,
+    /// When the client last said which keys it holds; clients that never
+    /// do (older ones) get repeats without the check.
+    held_at: Option<Instant>,
 }
+
+/// Repeats pause when the client has not confirmed its held keys for this
+/// long, and resume when it does.
+const HELD_TIMEOUT: Duration = Duration::from_millis(300);
 
 /// The repeat delay and interval set in Windows' keyboard settings.
 fn repeat_timing() -> (Duration, Duration) {
@@ -68,6 +75,7 @@ impl SendInputInjector {
             keys: HashSet::new(),
             buttons: HashSet::new(),
             repeat: None,
+            held_at: None,
         }
     }
 
@@ -153,6 +161,9 @@ impl SendInputInjector {
         };
         if down {
             self.keys.insert(usage);
+            if self.held_at.is_some() {
+                self.held_at = Some(Instant::now());
+            }
             // Modifiers (left/right Ctrl, Shift, Alt, GUI) do not repeat.
             if !(0xE0..=0xE7).contains(&usage) && self.repeat.is_none_or(|(u, ..)| u != usage) {
                 let (delay, interval) = repeat_timing();
@@ -227,6 +238,12 @@ impl Injector for SendInputInjector {
             now + interval
         };
         self.repeat = Some((usage, next, interval));
+        if self
+            .held_at
+            .is_some_and(|held| now.duration_since(held) > HELD_TIMEOUT)
+        {
+            return; // the client went quiet: wait for it
+        }
         if let Err(e) = self.key(usage, true) {
             tracing::debug!("key repeat failed: {e:#}");
             self.repeat = None;
@@ -278,6 +295,14 @@ impl Injector for SendInputInjector {
                 Ok(())
             }
             InputEvent::Text { text } => self.text(&text),
+            InputEvent::KeysHeld { usages } => {
+                self.held_at = Some(Instant::now());
+                // A release lost on the way (or never sent) ends the repeat.
+                if self.repeat.is_some_and(|(u, ..)| !usages.contains(&u)) {
+                    self.repeat = None;
+                }
+                Ok(())
+            }
             InputEvent::SecureAttention => {
                 // Only a service may send it; ask ours, or try directly.
                 if !crate::service::request_secure_attention() {

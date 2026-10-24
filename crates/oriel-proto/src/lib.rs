@@ -424,7 +424,16 @@ pub enum InputEvent {
     Text {
         text: String,
     },
+    /// Sent every [`KEYS_HELD_INTERVAL`] while keys are down, so a host
+    /// that repeats held keys itself stops when the client goes quiet
+    /// (a stalled connection) instead of repeating until it returns.
+    KeysHeld {
+        usages: Vec<u16>,
+    },
 }
+
+/// How often clients send [`InputEvent::KeysHeld`].
+pub const KEYS_HELD_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Datagram {
