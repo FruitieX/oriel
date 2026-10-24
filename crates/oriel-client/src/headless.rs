@@ -77,6 +77,7 @@ pub async fn run(
         .ok()
         .and_then(|v| u16::from_str_radix(v.trim_start_matches("0x"), 16).ok());
     let mut latency_ms = 0f32;
+    let trace_frames = std::env::var_os("ORIEL_DEBUG_FRAMES").is_some();
     while start.elapsed() < duration {
         let ev = match tokio::time::timeout(Duration::from_millis(100), rx.recv()).await {
             Ok(Some(ev)) => Some(ev),
@@ -87,6 +88,18 @@ pub async fn run(
             Some(UiEvent::FrameReady) => {
                 if let Some(ready) = s.frames.take(Instant::now()) {
                     frames += 1;
+                    // Debugging aid: ORIEL_DEBUG_FRAMES=1 prints each
+                    // frame's size and mean brightness (black frames).
+                    if trace_frames && let crate::decode::Picture::Cpu(f) = &ready.picture {
+                        println!(
+                            "frame {} {}x{} luma {:.0} at {:.2} s",
+                            ready.header.seq,
+                            f.width(),
+                            f.height(),
+                            mean_luma(f),
+                            start.elapsed().as_secs_f32()
+                        );
+                    }
                     if let Some(l) = s
                         .clock
                         .lock()
@@ -191,4 +204,19 @@ pub async fn run(
         bail!("no frames were decoded");
     }
     Ok(())
+}
+
+/// Mean of a sparse grid of luma samples.
+fn mean_luma(frame: &oriel_media::DecodedFrame) -> f32 {
+    let (y, stride) = frame.plane(0);
+    let (w, h) = (frame.width() as usize, frame.height() as usize);
+    let mut sum = 0u64;
+    let mut n = 0u64;
+    for row in (0..h).step_by(h.div_ceil(32).max(1)) {
+        for col in (0..w).step_by(w.div_ceil(32).max(1)) {
+            sum += y[row * stride + col] as u64;
+            n += 1;
+        }
+    }
+    sum as f32 / n.max(1) as f32
 }
