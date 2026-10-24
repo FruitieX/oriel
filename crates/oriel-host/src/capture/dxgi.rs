@@ -160,6 +160,8 @@ pub struct ModeGuard {
     /// dropping must not be retried every few seconds.
     retries: std::cell::Cell<u32>,
     next_try: std::cell::Cell<std::time::Instant>,
+    /// Restore the display's own mode when dropped.
+    restore: std::cell::Cell<bool>,
 }
 
 // DEVMODEW holds no pointers.
@@ -167,6 +169,9 @@ unsafe impl Send for ModeGuard {}
 
 impl Drop for ModeGuard {
     fn drop(&mut self) {
+        if !self.restore.get() {
+            return;
+        }
         unsafe {
             let _ = ChangeDisplaySettingsExW(
                 PCWSTR(self.device.as_ptr()),
@@ -183,6 +188,10 @@ impl Drop for ModeGuard {
 impl super::DisplayMode for ModeGuard {
     fn size(&self) -> (u32, u32) {
         (self.mode.dmPelsWidth, self.mode.dmPelsHeight)
+    }
+
+    fn keep(&self) {
+        self.restore.set(false);
     }
 
     fn reapply(&self) -> bool {
@@ -307,6 +316,7 @@ pub fn set_display_mode(display: Option<u32>, width: u32, height: u32) -> Result
         mode,
         retries: Default::default(),
         next_try: std::cell::Cell::new(std::time::Instant::now()),
+        restore: std::cell::Cell::new(true),
     })
 }
 

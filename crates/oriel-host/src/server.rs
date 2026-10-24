@@ -39,8 +39,6 @@ struct Host {
     pairing: Arc<Mutex<PairingState>>,
     status: Arc<Mutex<HostStatus>>,
     sessions: Arc<Mutex<Vec<quinn::Connection>>>,
-    /// The connection currently streaming, replaced by newer sessions.
-    active: Mutex<Option<quinn::Connection>>,
     /// Devices of the hub account this host is logged in to (see
     /// `oriel_net::hub`), and when the list was last fetched on demand.
     hub_devices: Arc<Mutex<HashSet<Fingerprint>>>,
@@ -326,7 +324,6 @@ pub async fn run_with(paths: Paths, options: HostOptions, control: HostControl) 
         paths,
         identity,
         test: TestState::default(),
-        active: Mutex::new(None),
         hub_devices,
         hub_fetched: Mutex::new(None),
     });
@@ -413,10 +410,8 @@ impl Host {
         })
         .await?;
 
-        // One streaming session at a time: the newest wins.
-        if let Some(previous) = self.active.lock().replace(conn.clone()) {
-            previous.close(1u32.into(), b"another session took over");
-        }
+        // Clients stream side by side; for what they share (a display's
+        // resolution) the latest one wins.
         let id = conn.stable_id();
         self.sessions.lock().push(conn.clone());
         self.status.lock().clients.push(ClientInfo {
@@ -434,14 +429,6 @@ impl Host {
             self.status.clone(),
         )
         .await;
-        let mut active = self.active.lock();
-        if active
-            .as_ref()
-            .is_some_and(|c| c.stable_id() == conn.stable_id())
-        {
-            *active = None;
-        }
-        drop(active);
         self.sessions.lock().retain(|c| c.stable_id() != id);
         self.status.lock().clients.retain(|c| c.id != id);
         conn.close(0u32.into(), b"bye");

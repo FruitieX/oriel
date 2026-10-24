@@ -7,6 +7,7 @@ mod gamepad;
 #[cfg(target_os = "linux")]
 mod gnome;
 pub mod input;
+mod modes;
 mod pipeline;
 mod ratecontrol;
 mod server;

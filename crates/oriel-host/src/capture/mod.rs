@@ -123,6 +123,8 @@ pub trait DisplayMode: Send {
     /// Set the mode again if Windows dropped it (a monitor that slept or
     /// reconnected comes back in its own mode). True when it did.
     fn reapply(&self) -> bool;
+    /// Leave the mode in place when dropped: another one replaced it.
+    fn keep(&self);
 }
 
 pub type ModeGuard = Box<dyn DisplayMode>;

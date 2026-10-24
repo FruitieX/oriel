@@ -125,8 +125,8 @@ pub async fn run(
         },
     );
 
-    // The display mode chosen by the client, restored when dropped.
-    let mut mode_guard: Option<crate::capture::ModeGuard> = None;
+    // The display mode chosen by the client, given up when dropped.
+    let mut mode_guard: Option<crate::modes::ModeClaim> = None;
     if let Some(res) = settings.resolution.filter(|_| virtual_mode.is_none()) {
         mode_guard = set_mode(options.source, settings.display, res, &ev_tx_audio);
     }
@@ -498,8 +498,8 @@ fn set_mode(
     display: Option<u32>,
     res: (u32, u32),
     events: &tmpsc::UnboundedSender<Event>,
-) -> Option<crate::capture::ModeGuard> {
-    match crate::capture::set_display_mode(source, display, res) {
+) -> Option<crate::modes::ModeClaim> {
+    match crate::modes::claim(source, display, res) {
         Ok(g) => {
             let (w, h) = g.size();
             if (w, h) != res {
