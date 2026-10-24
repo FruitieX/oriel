@@ -888,6 +888,22 @@ impl Capturer for DxgiCapturer {
                 return Ok(false);
             }
             let frame: ID3D11Texture2D = resource.context("no frame resource")?.cast()?;
+            // Duplicated just as the mode changed, the output may already
+            // send images of the new size without reporting the loss; a
+            // copy between textures of different sizes does nothing, and
+            // the stream would stay black.
+            let mut desc = D3D11_TEXTURE2D_DESC::default();
+            unsafe { frame.GetDesc(&mut desc) };
+            if (desc.Width, desc.Height) != shared.size {
+                s.dup = None;
+                bail!(
+                    "the display changed size ({}x{} → {}x{})",
+                    shared.size.0,
+                    shared.size.1,
+                    desc.Width,
+                    desc.Height
+                );
+            }
             unsafe { shared.context.CopyResource(&s.latest, &frame) };
             s.seq += 1;
             self.seen = s.seq;

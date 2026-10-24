@@ -76,6 +76,11 @@ pub async fn run(
     let mut press: Option<u16> = std::env::var("ORIEL_DEBUG_PRESS")
         .ok()
         .and_then(|v| u16::from_str_radix(v.trim_start_matches("0x"), 16).ok());
+    // Debugging aid: ask for this resolution ("WIDTHxHEIGHT") two seconds
+    // in, as a windowed client does once it knows its screen.
+    let mut switch = std::env::var("ORIEL_DEBUG_RESOLUTION")
+        .ok()
+        .and_then(|v| crate::config::parse_resolution(&v));
     let mut latency_ms = 0f32;
     let trace_frames = std::env::var_os("ORIEL_DEBUG_FRAMES").is_some();
     while start.elapsed() < duration {
@@ -140,6 +145,19 @@ pub async fn run(
             println!("pressing key {usage:#x}");
             s.input(InputEvent::Key { usage, down: true });
             s.input(InputEvent::Key { usage, down: false });
+        }
+        if start.elapsed() > Duration::from_secs(2)
+            && let Some(resolution) = switch.take()
+        {
+            println!(
+                "asking for {}x{} at {:.2} s",
+                resolution.0,
+                resolution.1,
+                start.elapsed().as_secs_f32()
+            );
+            s.send(oriel_proto::ClientMsg::SetResolution {
+                resolution: Some(resolution),
+            });
         }
         // Exercise the input path: the test pattern draws the pointer.
         // ORIEL_HEADLESS_STILL keeps the host's mouse still (on a real

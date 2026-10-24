@@ -427,10 +427,13 @@ pub async fn run(
                     }
                     Some(ClientMsg::SetResolution { resolution: res }) => {
                         resolution = res;
-                        mode_guard = None;
-                        if let Some(res) = res {
-                            mode_guard = set_mode(options.source, display, res, &ev_tx_audio);
-                        }
+                        // The new mode replaces the old directly: giving up
+                        // the old claim first would switch to the display's
+                        // own mode and back.
+                        mode_guard = match res {
+                            Some(res) => set_mode(options.source, display, res, &ev_tx_audio),
+                            None => None,
+                        };
                     }
                     Some(ClientMsg::SetBitrate { kbps }) => { let _ = cmd_tx.send(Cmd::Bitrate(kbps)); }
                     Some(ClientMsg::SetGraphicsCapture { enabled }) => {
