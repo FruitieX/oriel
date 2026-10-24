@@ -105,6 +105,7 @@ pub async fn run(
             auto_codec: settings.auto_codec,
             full_chroma: settings.full_chroma.clone(),
             software_encode: settings.software_encode,
+            graphics_capture: settings.graphics_capture,
             pyrowave_kbps: settings.pyrowave_kbps.max(10_000),
             // The client turns it on with SetAutoBitrate right after.
             auto_bitrate: false,
@@ -432,6 +433,9 @@ pub async fn run(
                         }
                     }
                     Some(ClientMsg::SetBitrate { kbps }) => { let _ = cmd_tx.send(Cmd::Bitrate(kbps)); }
+                    Some(ClientMsg::SetGraphicsCapture { enabled }) => {
+                        let _ = cmd_tx.send(Cmd::GraphicsCapture(enabled));
+                    }
                     Some(ClientMsg::SetAutoBitrate { enabled }) => { let _ = cmd_tx.send(Cmd::AutoBitrate(enabled)); }
                     Some(ClientMsg::ClipboardImage { png }) => {
                         if png.len() <= oriel_clipboard::MAX_IMAGE {

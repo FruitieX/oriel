@@ -80,6 +80,7 @@ impl ViewerOptions {
                 virtual_display: e.virtual_display,
                 full_chroma: full_chroma_codecs(e.full_chroma),
                 software_encode: e.encoding == "software",
+                graphics_capture: e.capture == "graphics",
             },
             hardware_decode: e.decoding != "software",
             config,
@@ -1122,6 +1123,11 @@ impl Viewer {
                 auto_codec,
                 full_chroma: full_chroma_codecs(new.full_chroma),
                 software_encode: new.encoding == "software",
+            });
+        }
+        if old.capture != new.capture {
+            s.send(ClientMsg::SetGraphicsCapture {
+                enabled: new.capture == "graphics",
             });
         }
         if old.decoding != new.decoding {

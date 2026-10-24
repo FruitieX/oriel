@@ -32,6 +32,8 @@ pub struct Config {
     pub full_chroma: Vec<Codec>,
     /// Encode in software where this host can.
     pub software_encode: bool,
+    /// Capture with Windows Graphics Capture (Windows hosts).
+    pub graphics_capture: bool,
     pub pyrowave_kbps: u32,
     /// Adapt the bitrate to the network, up to `bitrate_kbps`.
     pub auto_bitrate: bool,
@@ -44,6 +46,7 @@ pub enum Cmd {
     /// Codecs, automatic switching, those wanted at 4:4:4, and software
     /// encoding.
     Codecs(Vec<Codec>, bool, Vec<Codec>, bool),
+    GraphicsCapture(bool),
     Bitrate(u32),
     AutoBitrate(bool),
     MaxFps(u32),
@@ -169,6 +172,7 @@ pub fn spawn(
                 test,
                 cmds,
                 events,
+                graphics_capture_failed: false,
             };
             if let Err(e) = p.run() {
                 if p.events.is_closed() {
@@ -190,6 +194,9 @@ struct Pipeline {
     auto: AutoCodec,
     /// Automatic bitrate; kept across encoder and capturer reopens.
     rate: crate::ratecontrol::RateControl,
+    /// Windows Graphics Capture failed to start; not tried again until it
+    /// is asked for anew.
+    graphics_capture_failed: bool,
 }
 
 enum Flow {
@@ -274,7 +281,22 @@ impl Pipeline {
         let started = Instant::now();
         let mut reported = false;
         loop {
-            match capture::open(self.config.source, self.config.target, &self.test) {
+            let method = if self.config.graphics_capture && !self.graphics_capture_failed {
+                capture::Method::GraphicsCapture
+            } else {
+                capture::Method::Duplication
+            };
+            let opened = capture::open(self.config.source, self.config.target, method, &self.test);
+            if let (Err(e), capture::Method::GraphicsCapture) = (&opened, method) {
+                tracing::warn!("Windows Graphics Capture unavailable: {e:#}");
+                self.graphics_capture_failed = true;
+                self.send(Event::Notice(format!(
+                    "Windows Graphics Capture does not work here ({e:#}); using Desktop \
+                     Duplication"
+                )))?;
+                continue;
+            }
+            match opened {
                 Ok(c) => {
                     if reported {
                         self.send(Event::Notice("Capture resumed".into()))?;
@@ -510,6 +532,13 @@ impl Pipeline {
                             self.config.software_encode = software;
                             self.auto.retry_at = Instant::now();
                             return Ok(Flow::Reencode);
+                        }
+                    }
+                    Cmd::GraphicsCapture(on) => {
+                        if on != self.config.graphics_capture {
+                            self.config.graphics_capture = on;
+                            self.graphics_capture_failed = false;
+                            return Ok(Flow::Continue);
                         }
                     }
                     Cmd::Target(target) => {

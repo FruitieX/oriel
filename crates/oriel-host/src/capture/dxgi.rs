@@ -50,14 +50,63 @@ use windows::{
 use super::{Capturer, Geometry};
 use crate::cursor::{self, CursorPos};
 
-struct OutputEntry {
-    adapter: IDXGIAdapter1,
+pub(super) struct OutputEntry {
+    pub(super) adapter: IDXGIAdapter1,
     output: IDXGIOutput,
-    desc: DXGI_OUTPUT_DESC,
+    pub(super) desc: DXGI_OUTPUT_DESC,
     primary: bool,
 }
 
-fn outputs() -> Result<Vec<OutputEntry>> {
+/// A D3D11 device on `adapter`, safe to use from several threads
+/// (encoders run on their own).
+pub(super) fn create_device(adapter: &IDXGIAdapter1) -> Result<(ID3D11Device, ID3D11DeviceContext)> {
+    let mut device = None;
+    let mut context = None;
+    unsafe {
+        D3D11CreateDevice(
+            adapter,
+            D3D_DRIVER_TYPE_UNKNOWN,
+            HMODULE::default(),
+            D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+            Some(&[D3D_FEATURE_LEVEL_11_0]),
+            D3D11_SDK_VERSION,
+            Some(&mut device),
+            None,
+            Some(&mut context),
+        )
+        .context("create D3D11 device")?;
+    }
+    let device = device.context("no D3D11 device")?;
+    let context = context.context("no D3D11 context")?;
+    if let Ok(mt) = device.cast::<ID3D11Multithread>() {
+        unsafe {
+            let _ = mt.SetMultithreadProtected(true);
+        }
+    }
+    Ok((device, context))
+}
+
+/// Display `display` by index, or the primary one.
+pub(super) fn select_output(display: Option<u32>) -> Result<OutputEntry> {
+    let outputs = outputs()?;
+    match display {
+        Some(i) => outputs
+            .into_iter()
+            .nth(i as usize)
+            .with_context(|| format!("no display {i}")),
+        None => outputs.into_iter().next().context("no displays attached"),
+    }
+}
+
+/// The output a virtual monitor shows up as.
+pub(super) fn virtual_output(monitor: &super::sudovda::VirtualMonitor) -> Result<OutputEntry> {
+    outputs()?
+        .into_iter()
+        .find(|o| o.desc.DeviceName == monitor.device_name)
+        .context("the virtual monitor is not attached to the desktop")
+}
+
+pub(super) fn outputs() -> Result<Vec<OutputEntry>> {
     let factory: IDXGIFactory1 = unsafe { CreateDXGIFactory1()? };
     let mut out = Vec::new();
     for a in 0.. {
@@ -95,7 +144,7 @@ fn outputs() -> Result<Vec<OutputEntry>> {
     Ok(out)
 }
 
-fn wide_to_string(w: &[u16]) -> String {
+pub(super) fn wide_to_string(w: &[u16]) -> String {
     let len = w.iter().position(|&c| c == 0).unwrap_or(w.len());
     String::from_utf16_lossy(&w[..len])
 }
@@ -119,7 +168,7 @@ fn refresh_hz(device_name: &[u16; 32]) -> u32 {
     }
 }
 
-fn rect_size(r: &RECT) -> (u32, u32) {
+pub(super) fn rect_size(r: &RECT) -> (u32, u32) {
     ((r.right - r.left) as u32, (r.bottom - r.top) as u32)
 }
 
@@ -418,25 +467,13 @@ impl DxgiCapturer {
         // Desktop switches (lock screen, UAC) need the thread on the input
         // desktop before duplicating it.
         crate::win::follow_input_desktop();
-        let outputs = outputs()?;
-        let entry = match display {
-            Some(i) => outputs
-                .into_iter()
-                .nth(i as usize)
-                .with_context(|| format!("no display {i}"))?,
-            None => outputs.into_iter().next().context("no displays attached")?,
-        };
-        Self::open_entry(entry, None)
+        Self::open_entry(select_output(display)?, None)
     }
 
     /// Capture a virtual monitor.
     pub fn open_virtual(monitor: std::sync::Arc<super::sudovda::VirtualMonitor>) -> Result<Self> {
         crate::win::follow_input_desktop();
-        let entry = outputs()?
-            .into_iter()
-            .find(|o| o.desc.DeviceName == monitor.device_name)
-            .context("the virtual monitor is not attached to the desktop")?;
-        Self::open_entry(entry, Some(monitor))
+        Self::open_entry(virtual_output(&monitor)?, Some(monitor))
     }
 
     fn open_entry(
@@ -475,30 +512,7 @@ impl DxgiCapturer {
         entry: OutputEntry,
         virtual_monitor: Option<std::sync::Arc<super::sudovda::VirtualMonitor>>,
     ) -> Result<Duplication> {
-        let mut device = None;
-        let mut context = None;
-        unsafe {
-            D3D11CreateDevice(
-                &entry.adapter,
-                D3D_DRIVER_TYPE_UNKNOWN,
-                HMODULE::default(),
-                D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-                Some(&[D3D_FEATURE_LEVEL_11_0]),
-                D3D11_SDK_VERSION,
-                Some(&mut device),
-                None,
-                Some(&mut context),
-            )
-            .context("create D3D11 device")?;
-        }
-        let device = device.context("no D3D11 device")?;
-        let context = context.context("no D3D11 context")?;
-        // Encoders may use the device from their own threads.
-        if let Ok(mt) = device.cast::<ID3D11Multithread>() {
-            unsafe {
-                let _ = mt.SetMultithreadProtected(true);
-            }
-        }
+        let (device, context) = create_device(&entry.adapter)?;
         let dup = unsafe {
             match entry.output.cast::<IDXGIOutput5>() {
                 Ok(o5) => o5.DuplicateOutput1(&device, 0, &[DXGI_FORMAT_B8G8R8A8_UNORM]),
@@ -536,7 +550,7 @@ impl DxgiCapturer {
     }
 }
 
-fn texture(
+pub(super) fn texture(
     device: &ID3D11Device,
     (w, h): (u32, u32),
     usage: windows::Win32::Graphics::Direct3D11::D3D11_USAGE,
@@ -617,6 +631,40 @@ fn convert_shape(info: &DXGI_OUTDUPL_POINTER_SHAPE_INFO, buf: &[u8]) -> Option<C
     ))
 }
 
+/// The system cursor relative to `origin` (an output's desktop corner),
+/// and its handle.
+pub(super) fn system_cursor(
+    origin: RECT,
+) -> Option<(CursorPos, windows::Win32::UI::WindowsAndMessaging::HCURSOR)> {
+    let mut info = CURSORINFO {
+        cbSize: size_of::<CURSORINFO>() as u32,
+        ..Default::default()
+    };
+    unsafe { GetCursorInfo(&mut info) }.ok()?;
+    let visible = info.flags.0 & CURSOR_SHOWING.0 != 0;
+    // A hidden cursor confined to part of the desktop is how games (and 3D
+    // viewports) take the mouse; with one monitor a fullscreen game's
+    // confinement is the whole desktop, so a hidden cursor over a window
+    // covering its monitor counts too.
+    let mut clip = RECT::default();
+    let clipped = unsafe {
+        GetClipCursor(&mut clip).is_ok() && {
+            let vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
+            let vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+            let vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+            let vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+            (clip.left, clip.top, clip.right, clip.bottom) != (vx, vy, vx + vw, vy + vh)
+        }
+    };
+    let pos = CursorPos {
+        visible,
+        captured: !visible && (clipped || foreground_fills_monitor()),
+        x: info.ptScreenPos.x - origin.left,
+        y: info.ptScreenPos.y - origin.top,
+    };
+    Some((pos, info.hCursor))
+}
+
 /// The foreground window covers its whole monitor (a fullscreen game).
 fn foreground_fills_monitor() -> bool {
     use windows::Win32::{
@@ -647,7 +695,7 @@ fn foreground_fills_monitor() -> bool {
 }
 
 /// A cursor's image from Win32, converted like duplication's shapes.
-fn win32_shape(cursor: windows::Win32::UI::WindowsAndMessaging::HCURSOR) -> Option<CursorShape> {
+pub(super) fn win32_shape(cursor: windows::Win32::UI::WindowsAndMessaging::HCURSOR) -> Option<CursorShape> {
     use windows::Win32::{
         Graphics::Gdi::{
             BI_RGB, BITMAP, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS, DeleteObject, GetDC,
@@ -868,58 +916,43 @@ impl Capturer for DxgiCapturer {
     }
 
     fn cursor(&mut self) -> CursorPos {
-        let mut info = CURSORINFO {
-            cbSize: size_of::<CURSORINFO>() as u32,
-            ..Default::default()
-        };
-        if unsafe { GetCursorInfo(&mut info) }.is_err() {
+        let Some((pos, handle)) = system_cursor(self.dup.desc.DesktopCoordinates) else {
             return CursorPos::default();
-        }
-        let visible = info.flags.0 & CURSOR_SHOWING.0 != 0;
-        // A hidden cursor confined to part of the desktop is how games (and
-        // 3D viewports) take the mouse; with one monitor a fullscreen game's
-        // confinement is the whole desktop, so a hidden cursor over a
-        // window covering its monitor counts too.
-        let mut clip = RECT::default();
-        let clipped = unsafe {
-            GetClipCursor(&mut clip).is_ok() && {
-                let vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
-                let vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
-                let vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
-                let vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
-                (clip.left, clip.top, clip.right, clip.bottom) != (vx, vy, vx + vw, vy + vh)
-            }
         };
-        let origin = self.dup.desc.DesktopCoordinates;
         let size = self.dup.size;
-        let pointer_visible = self.dup.state.lock().pointer_visible;
-        let (x, y) = (
-            info.ptScreenPos.x - origin.left,
-            info.ptScreenPos.y - origin.top,
-        );
+        let (pointer_visible, dup_shapes) = {
+            let s = self.dup.state.lock();
+            (s.pointer_visible, s.shape_seq > 0)
+        };
         // Showing, on this output, yet hidden to duplication: Windows draws
         // it into the picture (a software cursor) and duplication sends no
         // shape. Clients still show their own pointer, which follows the
         // mouse without the stream's delay: read its shape from Win32.
         let on_output =
-            (0..size.0 as i32).contains(&x) && (0..size.1 as i32).contains(&y);
-        let in_image = visible && on_output && pointer_visible == Some(false);
+            (0..size.0 as i32).contains(&pos.x) && (0..size.1 as i32).contains(&pos.y);
+        let in_image = pos.visible && on_output && pointer_visible == Some(false);
         if in_image != self.cursor_in_image {
             self.cursor_in_image = in_image;
             self.win32_cursor = 0;
             tracing::info!(in_image, "cursor drawn into the picture by Windows");
         }
-        let handle = info.hCursor.0 as usize;
-        if in_image && handle != 0 && handle != self.win32_cursor && self.new_shape.is_none() {
+        // Also whenever duplication has sent no shape at all, as with a
+        // software cursor it may not.
+        let handle = handle.0 as usize;
+        if (in_image || !dup_shapes)
+            && handle != 0
+            && handle != self.win32_cursor
+            && self.new_shape.is_none()
+        {
             self.win32_cursor = handle;
-            self.new_shape = win32_shape(info.hCursor);
+            self.new_shape = win32_shape(windows::Win32::UI::WindowsAndMessaging::HCURSOR(
+                handle as *mut c_void,
+            ));
+            if self.new_shape.is_none() {
+                tracing::info!("cannot read the cursor's image from Win32");
+            }
         }
-        CursorPos {
-            visible,
-            captured: !visible && (clipped || foreground_fills_monitor()),
-            x,
-            y,
-        }
+        pos
     }
 
     fn cursor_shape(&mut self) -> Option<CursorShape> {

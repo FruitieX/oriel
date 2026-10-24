@@ -37,6 +37,9 @@ pub struct ClientConfig {
     pub decoding: String,
     /// The same for encoding on the host.
     pub encoding: String,
+    /// How Windows hosts capture: "duplication" (Desktop Duplication) or
+    /// "graphics" (Windows Graphics Capture, the cursor out of the picture).
+    pub capture: String,
     /// "auto", "desktop" or "captured".
     pub mouse: String,
     pub audio: bool,
@@ -92,6 +95,7 @@ pub struct HostPrefs {
     pub full_chroma: Option<bool>,
     pub decoding: Option<String>,
     pub encoding: Option<String>,
+    pub capture: Option<String>,
     pub max_fps: Option<u32>,
     pub mouse: Option<String>,
     pub gamepads: Option<bool>,
@@ -128,6 +132,7 @@ pub struct Effective {
     pub full_chroma: bool,
     pub decoding: String,
     pub encoding: String,
+    pub capture: String,
     pub max_fps: u32,
     pub mouse: String,
     pub gamepads: bool,
@@ -206,6 +211,12 @@ pub const MENU_BUTTON_STYLES: [(&str, &str); 4] = [
 pub const CODER_CHOICES: [(&str, &str); 2] = [
     ("hardware", "Hardware (GPU)"),
     ("software", "Software (CPU)"),
+];
+
+/// Capture methods on Windows hosts, as (key, label).
+pub const CAPTURE_CHOICES: [(&str, &str); 2] = [
+    ("duplication", "Desktop Duplication"),
+    ("graphics", "Windows Graphics Capture"),
 ];
 
 /// Smoothing choices, as (key, label).
@@ -313,6 +324,7 @@ impl Default for ClientConfig {
             full_chroma: false,
             decoding: "hardware".into(),
             encoding: "hardware".into(),
+            capture: "duplication".into(),
             mouse: "auto".into(),
             audio: true,
             fullscreen: false,
@@ -352,6 +364,7 @@ impl ClientConfig {
             full_chroma: h.full_chroma.unwrap_or(self.full_chroma),
             decoding: h.decoding.clone().unwrap_or_else(|| self.decoding.clone()),
             encoding: h.encoding.clone().unwrap_or_else(|| self.encoding.clone()),
+            capture: h.capture.clone().unwrap_or_else(|| self.capture.clone()),
             max_fps: h.max_fps.unwrap_or(self.max_fps),
             mouse: h.mouse.clone().unwrap_or_else(|| self.mouse.clone()),
             gamepads: h.gamepads.unwrap_or(self.gamepads),

@@ -23,7 +23,7 @@ pub const ALPN: &[u8] = b"oriel/1";
 /// when it only checks whether the host is up.
 pub const PROBE_REASON: &[u8] = b"probe";
 
-pub const PROTOCOL_VERSION: u32 = 13;
+pub const PROTOCOL_VERSION: u32 = 14;
 pub const DEFAULT_PORT: u16 = 48600;
 /// Upper bound for a single control/input message.
 pub const MAX_MESSAGE_LEN: usize = 32 * 1024 * 1024;
@@ -106,6 +106,9 @@ pub struct StreamSettings {
     pub full_chroma: Vec<Codec>,
     /// Encode on the host's CPU rather than its GPU, where it can.
     pub software_encode: bool,
+    /// Capture with Windows Graphics Capture rather than Desktop
+    /// Duplication (Windows hosts): the cursor stays out of the picture.
+    pub graphics_capture: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -199,6 +202,10 @@ pub enum ClientMsg {
     },
     /// Follow the network below the chosen bitrate (on), or keep to it.
     SetAutoBitrate {
+        enabled: bool,
+    },
+    /// Switch the capture method (as in `StreamSettings`).
+    SetGraphicsCapture {
         enabled: bool,
     },
 }
@@ -470,6 +477,7 @@ mod tests {
             virtual_display: None,
             full_chroma: vec![Codec::Hevc],
             software_encode: false,
+            graphics_capture: false,
         });
         let bytes = encode_framed(&msg).unwrap();
         let len = u32::from_le_bytes(bytes[..4].try_into().unwrap()) as usize;

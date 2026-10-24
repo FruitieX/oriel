@@ -7,7 +7,7 @@ use oriel_proto::{Codec, VirtualMode};
 
 use crate::{
     config::{
-        CODEC_CHOICES, CODER_CHOICES, ClientConfig, HostPrefs, MENU_BUTTON_STYLES, MOUSE_MODES, Resolution,
+        CAPTURE_CHOICES, CODEC_CHOICES, CODER_CHOICES, ClientConfig, HostPrefs, MENU_BUTTON_STYLES, MOUSE_MODES, Resolution,
         SMOOTHING_CHOICES, WARNING_STYLES, codec_choice_strings, format_resolution,
         format_virtual_mode,
     },
@@ -662,6 +662,17 @@ fn video_tab(ui: &mut Ui, rows: &mut Rows, live: Option<&Live>) {
             |c, v| c.encoding = v,
             |h| &mut h.encoding,
             &CODER_CHOICES,
+        );
+        rows.choice(
+            ui,
+            "Capture on the host",
+            "Windows hosts. Graphics Capture keeps the cursor out of the picture \
+             (Windows sometimes draws it in, e.g. with several monitors) but cannot \
+             show the lock screen; Desktop Duplication is used where it fails",
+            |c| c.capture.clone(),
+            |c, v| c.capture = v,
+            |h| &mut h.capture,
+            &CAPTURE_CHOICES,
         );
         rows.mbps(
             ui,

@@ -13,6 +13,8 @@ use crate::cursor::CursorPos;
 mod android;
 #[cfg(windows)]
 mod dxgi;
+#[cfg(windows)]
+mod wgc;
 #[cfg(target_os = "linux")]
 mod pipewire;
 #[cfg(windows)]
@@ -163,7 +165,23 @@ pub fn set_display_mode(
     }
 }
 
-pub fn open(source: SourceKind, target: Target, test: &TestState) -> Result<Box<dyn Capturer>> {
+/// How Windows hosts capture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Method {
+    #[default]
+    Duplication,
+    /// Windows Graphics Capture (see `wgc`).
+    GraphicsCapture,
+}
+
+pub fn open(
+    source: SourceKind,
+    target: Target,
+    method: Method,
+    test: &TestState,
+) -> Result<Box<dyn Capturer>> {
+    #[cfg(not(windows))]
+    let _ = method;
     match source {
         #[cfg(target_os = "android")]
         SourceKind::Auto => {
@@ -171,11 +189,19 @@ pub fn open(source: SourceKind, target: Target, test: &TestState) -> Result<Box<
             Ok(Box::new(android::ScreenShare::open()?))
         }
         #[cfg(windows)]
-        SourceKind::Auto => match target {
-            Target::Display(display) => Ok(Box::new(dxgi::DxgiCapturer::open(display)?)),
-            Target::Virtual(mode) => Ok(Box::new(dxgi::DxgiCapturer::open_virtual(
-                sudovda::acquire(mode)?,
-            )?)),
+        SourceKind::Auto => match (target, method) {
+            (Target::Display(display), Method::Duplication) => {
+                Ok(Box::new(dxgi::DxgiCapturer::open(display)?))
+            }
+            (Target::Display(display), Method::GraphicsCapture) => {
+                Ok(Box::new(wgc::WgcCapturer::open(display)?))
+            }
+            (Target::Virtual(mode), Method::Duplication) => Ok(Box::new(
+                dxgi::DxgiCapturer::open_virtual(sudovda::acquire(mode)?)?,
+            )),
+            (Target::Virtual(mode), Method::GraphicsCapture) => Ok(Box::new(
+                wgc::WgcCapturer::open_virtual(sudovda::acquire(mode)?)?,
+            )),
         },
         #[cfg(target_os = "linux")]
         SourceKind::Auto => {
