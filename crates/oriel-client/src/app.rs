@@ -1004,12 +1004,13 @@ impl Viewer {
         self.update_resolution();
         let elapsed = now.duration_since(self.diagnosed).as_secs_f32();
         self.diagnosed = now;
-        let (summary, codec, software, jitter_ms) = {
+        let (summary, codec, software, full_chroma, jitter_ms) = {
             let mut s = self.session.stats.lock();
             (
                 s.summary(),
                 s.codec_id,
                 s.decoder.contains("(software)"),
+                s.full_chroma,
                 s.jitter_ms,
             )
         };
@@ -1043,6 +1044,7 @@ impl Viewer {
             bitrate_mbps: self.in_force.bitrate_kbps / 1000,
             pyrowave_mbps: self.in_force.pyrowave_kbps / 1000,
             software_decode: software,
+            full_chroma,
             auto_bitrate: self.in_force.auto_bitrate,
             other_protocol: self.other_protocol,
             jitter_ms,

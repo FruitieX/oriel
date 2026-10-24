@@ -12,6 +12,7 @@ pub enum Issue {
     Version,
     Stalled,
     SlowDecode,
+    SoftwareFullChroma,
     SlowEncode,
     NetworkLimited,
     PacketLoss,
@@ -22,10 +23,11 @@ pub enum Issue {
 }
 
 impl Issue {
-    const ALL: [Issue; 10] = [
+    const ALL: [Issue; 11] = [
         Issue::Version,
         Issue::Stalled,
         Issue::SlowDecode,
+        Issue::SoftwareFullChroma,
         Issue::SlowEncode,
         Issue::NetworkLimited,
         Issue::PacketLoss,
@@ -40,7 +42,10 @@ impl Issue {
     fn raise_after(self) -> Duration {
         Duration::from_secs(match self {
             Issue::Stalled | Issue::Version => 0,
-            Issue::NetworkLimited | Issue::SlowDecode | Issue::SlowEncode => 2,
+            Issue::NetworkLimited
+            | Issue::SlowDecode
+            | Issue::SoftwareFullChroma
+            | Issue::SlowEncode => 2,
             Issue::PacketLoss | Issue::AudioDropouts => 3,
             Issue::Latency | Issue::Jitter | Issue::LateFrames => 5,
         })
@@ -65,6 +70,8 @@ pub struct Inputs {
     pub bitrate_mbps: u32,
     pub pyrowave_mbps: u32,
     pub software_decode: bool,
+    /// The stream has full-resolution colour (4:4:4).
+    pub full_chroma: bool,
     /// The host lowers the bitrate by itself.
     pub auto_bitrate: bool,
     /// The host's protocol version, when it is not ours.
@@ -131,7 +138,12 @@ pub fn detect(i: &Inputs) -> Vec<Found> {
             i.decode_ms,
             1000.0 / i.decode_ms.max(1.0)
         );
-        if i.software_decode {
+        if i.software_decode && i.full_chroma {
+            detail.push_str(
+                " This computer decodes 4:4:4 in software: turn off Colour detail in \
+                 the Video settings.",
+            );
+        } else if i.software_decode {
             detail.push_str(
                 " Hardware decoding is not in use: try another codec or turn on \
                  hardware decoding in the Video settings.",
@@ -144,6 +156,17 @@ pub fn detect(i: &Inputs) -> Vec<Found> {
             Issue::SlowDecode,
             format!("Slow decoding{software}: {:.0} ms per frame", i.decode_ms),
             detail,
+        ));
+    }
+    // Said even while fast enough: it costs CPU and latency all the same.
+    if i.software_decode && i.full_chroma && !slow_decode && i.fps > 0.0 {
+        out.push(found(
+            Issue::SoftwareFullChroma,
+            "4:4:4 decoded in software".into(),
+            "This computer's GPU cannot decode 4:4:4 video, so the CPU does it, with \
+             more latency. Turn off Colour detail in the Video settings to decode in \
+             hardware."
+                .into(),
         ));
     }
     let Some(host) = i.host else {
@@ -349,6 +372,7 @@ mod tests {
             bitrate_mbps: 50,
             pyrowave_mbps: 400,
             software_decode: false,
+            full_chroma: false,
             auto_bitrate: false,
             other_protocol: None,
             jitter_ms: 1.0,
@@ -443,5 +467,22 @@ mod tests {
         d.dismiss(Issue::PacketLoss);
         d.update(t0 + Duration::from_secs(14), loss());
         assert!(d.warnings().is_empty());
+    }
+
+    #[test]
+    fn software_full_chroma_is_said_even_when_fast_enough() {
+        let mut i = healthy();
+        i.full_chroma = true;
+        assert!(detect(&i).is_empty());
+        i.software_decode = true;
+        let found = detect(&i);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].issue, Issue::SoftwareFullChroma);
+        // Too slow: the slow decoding warning says what to change instead.
+        i.decode_ms = 20.0;
+        let found = detect(&i);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].issue, Issue::SlowDecode);
+        assert!(found[0].detail.contains("Colour detail"));
     }
 }

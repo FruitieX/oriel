@@ -181,6 +181,19 @@ impl VideoDecoder {
         })
     }
 
+    /// The FFmpeg decoder's description once it fell back to software
+    /// (the hardware could not take the stream, e.g. 4:4:4).
+    fn software_description(&self) -> Option<&str> {
+        let d = match self {
+            Self::Cpu(d) => d,
+            #[cfg(target_os = "linux")]
+            Self::Vaapi { decoder, .. } => decoder,
+            #[cfg(zero_copy)]
+            Self::PyroGpu { .. } => return None,
+        };
+        Some(d.description()).filter(|d| d.contains("(software)"))
+    }
+
     fn is_zero_copy(&self) -> bool {
         match self {
             Self::Cpu(_) => false,
@@ -338,6 +351,7 @@ pub fn spawn(
                                 header.codec.name().to_string()
                             };
                             s.codec_id = Some(header.codec);
+                            s.full_chroma = header.full_chroma;
                             s.resolution = size;
                             Some((d, header.codec, size, header.full_chroma))
                         }
@@ -363,12 +377,20 @@ pub fn spawn(
                         Ok(Some(picture)) => {
                             need_keyframe = false;
                             let decoded = Instant::now();
-                            stats.lock().record(
+                            let mut s = stats.lock();
+                            s.record(
                                 data.len(),
                                 decoded - started,
                                 header.encode_us,
                                 header.keyframe,
                             );
+                            if let Some(d) = dec.software_description()
+                                && s.decoder != d
+                            {
+                                tracing::info!(decoder = d, "hardware cannot decode this stream");
+                                s.decoder = d.to_string();
+                            }
+                            drop(s);
                             // Without smoothing only the newest frame matters
                             // to the renderer.
                             if rx.is_empty() || slot.buffered() {

@@ -141,6 +141,8 @@ struct FfDecoder {
     /// YUV444P, keeping full-resolution colour).
     sws: *mut ff::SwsContext,
     description: String,
+    /// FFmpeg's decoder name.
+    name: String,
     /// Hand out hardware frames as DMA-BUFs instead of downloading them.
     export_dmabuf: bool,
 }
@@ -198,6 +200,7 @@ impl FfDecoder {
                 hw_format: None,
                 sws: ptr::null_mut(),
                 description: String::new(),
+                name: String::new(),
                 export_dmabuf: export_dmabuf && cfg!(target_os = "linux"),
             };
             let ctx = &mut *dec.ctx;
@@ -221,6 +224,7 @@ impl FfDecoder {
                 "open decoder",
             )?;
             let name = std::ffi::CStr::from_ptr((*decoder).name).to_string_lossy();
+            dec.name = name.to_string();
             dec.description = match dec.hw_format {
                 Some(f) => format!("{name} ({})", hw_name(f)),
                 None => format!("{name} (software)"),
@@ -294,6 +298,15 @@ impl FfDecoder {
 
     unsafe fn take_frame(&mut self) -> Result<Frame> {
         unsafe {
+            // The hardware could not take this stream (e.g. 4:4:4), and
+            // FFmpeg fell back to software.
+            if let Some(hw) = self.hw_format
+                && (*self.frame).format != hw as c_int
+            {
+                self.hw_format = None;
+                self.export_dmabuf = false;
+                self.description = format!("{} (software)", self.name);
+            }
             let mut out = ff::av_frame_alloc();
             if Some((*self.frame).format) == self.hw_format.map(|f| f as c_int) {
                 #[cfg(target_os = "linux")]
@@ -515,8 +528,13 @@ impl Decoder {
         })
     }
 
+    /// What decodes, e.g. "hevc (vaapi)"; it changes when the hardware
+    /// turns out unable to take the stream.
     pub fn description(&self) -> &str {
-        &self.description
+        match &self.inner {
+            DecoderInner::Ff(d) => &d.description,
+            DecoderInner::Pyro(_) => &self.description,
+        }
     }
 
     /// Decode one frame's data. Returns the newest frame it produced.

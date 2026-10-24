@@ -9,6 +9,8 @@ pub struct Stats {
     frames: VecDeque<FrameSample>,
     pub decoder: String,
     pub codec: String,
+    /// The stream has full-resolution colour (4:4:4).
+    pub full_chroma: bool,
     pub codec_id: Option<oriel_proto::Codec>,
     pub resolution: (u32, u32),
     pub keyframes: u64,
