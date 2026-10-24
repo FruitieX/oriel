@@ -821,7 +821,11 @@ mod refine_tests {
         let (w, h) = (256usize, 64usize);
         let mut bgra = vec![0u8; w * h * 4];
         for (i, px) in bgra.as_chunks_mut::<4>().0.iter_mut().enumerate() {
-            *px = if i % 2 == 0 { [0, 0, 255, 255] } else { [255, 0, 0, 255] };
+            *px = if i % 2 == 0 {
+                [0, 0, 255, 255]
+            } else {
+                [255, 0, 0, 255]
+            };
         }
         let spread = |full_chroma: bool| -> Option<(PlaneFormat, f64)> {
             let config = EncoderConfig {

@@ -296,6 +296,75 @@ pub struct CursorShape {
     pub rgba: Vec<u8>,
 }
 
+impl CursorShape {
+    /// Resized by `factor` (bilinear, on premultiplied colour), the
+    /// hotspot moved along; the id stays.
+    pub fn resized(&self, factor: f32) -> CursorShape {
+        let (sw, sh) = (self.width as usize, self.height as usize);
+        if sw == 0 || sh == 0 || self.rgba.len() < sw * sh * 4 {
+            return self.clone();
+        }
+        let w = ((sw as f32 * factor).round() as usize).max(1);
+        let h = ((sh as f32 * factor).round() as usize).max(1);
+        let px = |x: usize, y: usize| {
+            let p = &self.rgba[(y * sw + x) * 4..][..4];
+            let a = p[3] as f32 / 255.0;
+            [
+                p[0] as f32 * a,
+                p[1] as f32 * a,
+                p[2] as f32 * a,
+                p[3] as f32,
+            ]
+        };
+        let mut rgba = Vec::with_capacity(w * h * 4);
+        for y in 0..h {
+            // Sample centres, in source pixels.
+            let fy = ((y as f32 + 0.5) / factor - 0.5).clamp(0.0, (sh - 1) as f32);
+            let (y0, ty) = (fy.floor() as usize, fy.fract());
+            let y1 = (y0 + 1).min(sh - 1);
+            for x in 0..w {
+                let fx = ((x as f32 + 0.5) / factor - 0.5).clamp(0.0, (sw - 1) as f32);
+                let (x0, tx) = (fx.floor() as usize, fx.fract());
+                let x1 = (x0 + 1).min(sw - 1);
+                let mut c = [0f32; 4];
+                for (p, weight) in [
+                    (px(x0, y0), (1.0 - tx) * (1.0 - ty)),
+                    (px(x1, y0), tx * (1.0 - ty)),
+                    (px(x0, y1), (1.0 - tx) * ty),
+                    (px(x1, y1), tx * ty),
+                ] {
+                    for (c, p) in c.iter_mut().zip(p) {
+                        *c += p * weight;
+                    }
+                }
+                let a = c[3] / 255.0;
+                let straight = |v: f32| {
+                    if a > 0.0 {
+                        (v / a).round().clamp(0.0, 255.0) as u8
+                    } else {
+                        0
+                    }
+                };
+                rgba.extend_from_slice(&[
+                    straight(c[0]),
+                    straight(c[1]),
+                    straight(c[2]),
+                    c[3].round() as u8,
+                ]);
+            }
+        }
+        let hot = |v: u32, max: usize| ((v as f32 * factor).round() as u32).min(max as u32 - 1);
+        CursorShape {
+            id: self.id,
+            width: w as u32,
+            height: h as u32,
+            hotspot_x: hot(self.hotspot_x, w),
+            hotspot_y: hot(self.hotspot_y, h),
+            rgba,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CursorState {
     pub surface: SurfaceId,

@@ -30,63 +30,11 @@ pub fn make_shape(width: u32, height: u32, hot_x: u32, hot_y: u32, rgba: Vec<u8>
     }
 }
 
-/// `shape` resized by `factor` (bilinear, on premultiplied colour), with
-/// its hotspot moved along.
+/// `shape` resized by `factor`, under a new id.
 #[cfg_attr(not(windows), allow(dead_code))]
 pub fn scale_shape(shape: &CursorShape, factor: f32) -> CursorShape {
-    let (sw, sh) = (shape.width as usize, shape.height as usize);
-    let w = ((sw as f32 * factor).round() as usize).max(1);
-    let h = ((sh as f32 * factor).round() as usize).max(1);
-    let px = |x: usize, y: usize| {
-        let p = &shape.rgba[(y * sw + x) * 4..][..4];
-        let a = p[3] as f32 / 255.0;
-        [
-            p[0] as f32 * a,
-            p[1] as f32 * a,
-            p[2] as f32 * a,
-            p[3] as f32,
-        ]
-    };
-    let mut rgba = Vec::with_capacity(w * h * 4);
-    for y in 0..h {
-        // Sample centres, in source pixels.
-        let fy = ((y as f32 + 0.5) / factor - 0.5).clamp(0.0, (sh - 1) as f32);
-        let (y0, ty) = (fy.floor() as usize, fy.fract());
-        let y1 = (y0 + 1).min(sh - 1);
-        for x in 0..w {
-            let fx = ((x as f32 + 0.5) / factor - 0.5).clamp(0.0, (sw - 1) as f32);
-            let (x0, tx) = (fx.floor() as usize, fx.fract());
-            let x1 = (x0 + 1).min(sw - 1);
-            let mut c = [0f32; 4];
-            for (p, wgt) in [
-                (px(x0, y0), (1.0 - tx) * (1.0 - ty)),
-                (px(x1, y0), tx * (1.0 - ty)),
-                (px(x0, y1), (1.0 - tx) * ty),
-                (px(x1, y1), tx * ty),
-            ] {
-                for i in 0..4 {
-                    c[i] += p[i] * wgt;
-                }
-            }
-            let a = c[3] / 255.0;
-            let un = |v: f32| {
-                if a > 0.0 {
-                    (v / a).round().clamp(0.0, 255.0) as u8
-                } else {
-                    0
-                }
-            };
-            rgba.extend_from_slice(&[un(c[0]), un(c[1]), un(c[2]), c[3].round() as u8]);
-        }
-    }
-    let hot = |v: u32, max: usize| ((v as f32 * factor).round() as u32).min(max as u32 - 1);
-    make_shape(
-        w as u32,
-        h as u32,
-        hot(shape.hotspot_x, w),
-        hot(shape.hotspot_y, h),
-        rgba,
-    )
+    let s = shape.resized(factor);
+    make_shape(s.width, s.height, s.hotspot_x, s.hotspot_y, s.rgba)
 }
 
 /// A plain arrow, used by the test pattern source.

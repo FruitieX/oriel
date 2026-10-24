@@ -188,6 +188,9 @@ struct Viewer {
     sent_resolution: Option<(u32, u32)>,
     shapes: HashMap<u64, CursorShape>,
     os_cursors: HashMap<u64, CustomCursor>,
+    /// How much the local cursors are scaled: as much as the picture, so
+    /// that they match the cursor drawn on the host.
+    cursor_scale: f32,
     egui_cursors: HashMap<u64, egui::TextureHandle>,
     host_cursor: Option<CursorState>,
     applied: Option<AppliedCursor>,
@@ -277,6 +280,7 @@ impl Viewer {
             sent_resolution: options.settings.resolution,
             shapes: HashMap::new(),
             os_cursors: HashMap::new(),
+            cursor_scale: 1.0,
             egui_cursors: HashMap::new(),
             host_cursor: None,
             applied: None,
@@ -631,6 +635,57 @@ impl Viewer {
         self.applied = Some(wanted);
     }
 
+    /// A host cursor for this window, scaled like the picture.
+    fn os_cursor(&self, event_loop: &ActiveEventLoop, shape: &CursorShape) -> Option<CustomCursor> {
+        let scaled;
+        let shape = if (self.cursor_scale - 1.0).abs() < 0.02 {
+            shape
+        } else {
+            scaled = shape.resized(self.cursor_scale);
+            &scaled
+        };
+        match CustomCursor::from_rgba(
+            shape.rgba.clone(),
+            shape.width as u16,
+            shape.height as u16,
+            shape.hotspot_x as u16,
+            shape.hotspot_y as u16,
+        ) {
+            Ok(source) => Some(event_loop.create_custom_cursor(source)),
+            Err(e) => {
+                tracing::debug!("cursor image rejected: {e}");
+                None
+            }
+        }
+    }
+
+    /// Follow the picture's scale (window size, host resolution, zoom).
+    fn rescale_cursors(&mut self, event_loop: &ActiveEventLoop) {
+        let (Some(vp), Some(surface), Some(window)) =
+            (self.viewport(), self.surface.as_ref(), self.window())
+        else {
+            return;
+        };
+        // Cursor images are in physical pixels, but in points on macOS.
+        let per_pixel = if cfg!(target_os = "macos") {
+            window.scale_factor() as f32
+        } else {
+            1.0
+        };
+        let scale = (vp.w / surface.width.max(1) as f32 / per_pixel).clamp(0.25, 4.0);
+        if (scale - self.cursor_scale).abs() < 0.02 * self.cursor_scale {
+            return;
+        }
+        self.cursor_scale = scale;
+        let shapes: Vec<_> = self.shapes.values().cloned().collect();
+        self.os_cursors = shapes
+            .iter()
+            .filter_map(|s| Some((s.id, self.os_cursor(event_loop, s)?)))
+            .collect();
+        self.applied = None;
+        self.update_cursor();
+    }
+
     fn handle_host(&mut self, event_loop: &ActiveEventLoop, msg: HostMsg) {
         match msg {
             HostMsg::SurfaceStarted(info) => {
@@ -640,18 +695,8 @@ impl Viewer {
             }
             HostMsg::SurfaceEnded { .. } => self.surface = None,
             HostMsg::CursorShape(shape) => {
-                match CustomCursor::from_rgba(
-                    shape.rgba.clone(),
-                    shape.width as u16,
-                    shape.height as u16,
-                    shape.hotspot_x as u16,
-                    shape.hotspot_y as u16,
-                ) {
-                    Ok(source) => {
-                        self.os_cursors
-                            .insert(shape.id, event_loop.create_custom_cursor(source));
-                    }
-                    Err(e) => tracing::debug!("cursor image rejected: {e}"),
+                if let Some(cursor) = self.os_cursor(event_loop, &shape) {
+                    self.os_cursors.insert(shape.id, cursor);
                 }
                 self.shapes.insert(shape.id, shape);
                 self.applied = None;
@@ -2235,6 +2280,7 @@ impl ApplicationHandler<UiEvent> for Viewer {
             event_loop.exit();
             return;
         }
+        self.rescale_cursors(event_loop);
         // Cursor images for drawing the remote cursor ourselves.
         for (id, shape) in &self.shapes {
             if !self.egui_cursors.contains_key(id) {
