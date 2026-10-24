@@ -617,6 +617,35 @@ fn convert_shape(info: &DXGI_OUTDUPL_POINTER_SHAPE_INFO, buf: &[u8]) -> Option<C
     ))
 }
 
+/// The foreground window covers its whole monitor (a fullscreen game).
+fn foreground_fills_monitor() -> bool {
+    use windows::Win32::{
+        Graphics::Gdi::{MONITOR_DEFAULTTONEAREST, MonitorFromWindow},
+        UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowRect},
+    };
+    unsafe {
+        let window = GetForegroundWindow();
+        if window.is_invalid() {
+            return false;
+        }
+        let mut rect = RECT::default();
+        if GetWindowRect(window, &mut rect).is_err() {
+            return false;
+        }
+        let mut info = MONITORINFO {
+            cbSize: size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        if !GetMonitorInfoW(MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST), &mut info)
+            .as_bool()
+        {
+            return false;
+        }
+        let m = info.rcMonitor;
+        rect.left <= m.left && rect.top <= m.top && rect.right >= m.right && rect.bottom >= m.bottom
+    }
+}
+
 /// A cursor's image from Win32, converted like duplication's shapes.
 fn win32_shape(cursor: windows::Win32::UI::WindowsAndMessaging::HCURSOR) -> Option<CursorShape> {
     use windows::Win32::{
@@ -848,7 +877,9 @@ impl Capturer for DxgiCapturer {
         }
         let visible = info.flags.0 & CURSOR_SHOWING.0 != 0;
         // A hidden cursor confined to part of the desktop is how games (and
-        // 3D viewports) take the mouse.
+        // 3D viewports) take the mouse; with one monitor a fullscreen game's
+        // confinement is the whole desktop, so a hidden cursor over a
+        // window covering its monitor counts too.
         let mut clip = RECT::default();
         let clipped = unsafe {
             GetClipCursor(&mut clip).is_ok() && {
@@ -885,7 +916,7 @@ impl Capturer for DxgiCapturer {
         }
         CursorPos {
             visible,
-            captured: !visible && clipped,
+            captured: !visible && (clipped || foreground_fills_monitor()),
             x,
             y,
         }
