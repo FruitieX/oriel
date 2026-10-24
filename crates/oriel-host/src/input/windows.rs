@@ -221,7 +221,11 @@ impl Injector for SendInputInjector {
         }
         // Keep to the schedule, unless far behind it.
         let now = Instant::now();
-        let next = if at + interval > now { at + interval } else { now + interval };
+        let next = if at + interval > now {
+            at + interval
+        } else {
+            now + interval
+        };
         self.repeat = Some((usage, next, interval));
         if let Err(e) = self.key(usage, true) {
             tracing::debug!("key repeat failed: {e:#}");

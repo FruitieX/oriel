@@ -102,9 +102,7 @@ impl Drop for ModeClaim {
         if !in_force {
             return;
         }
-        let previous = modes
-            .latest(self.display)
-            .map(|c| (c.source, c.size));
+        let previous = modes.latest(self.display).map(|c| (c.source, c.size));
         match previous.map(|(source, size)| capture::set_display_mode(source, self.display, size)) {
             Some(Ok(guard)) => {
                 tracing::info!(size = ?guard.size(), "back to the previous client's display mode");

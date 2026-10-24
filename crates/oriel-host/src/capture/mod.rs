@@ -13,13 +13,13 @@ use crate::cursor::CursorPos;
 mod android;
 #[cfg(windows)]
 mod dxgi;
-#[cfg(windows)]
-mod wgc;
 #[cfg(target_os = "linux")]
 mod pipewire;
 #[cfg(windows)]
 mod sudovda;
 pub mod test_pattern;
+#[cfg(windows)]
+mod wgc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SourceKind {

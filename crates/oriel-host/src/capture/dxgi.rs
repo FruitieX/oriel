@@ -59,7 +59,9 @@ pub(super) struct OutputEntry {
 
 /// A D3D11 device on `adapter`, safe to use from several threads
 /// (encoders run on their own).
-pub(super) fn create_device(adapter: &IDXGIAdapter1) -> Result<(ID3D11Device, ID3D11DeviceContext)> {
+pub(super) fn create_device(
+    adapter: &IDXGIAdapter1,
+) -> Result<(ID3D11Device, ID3D11DeviceContext)> {
     let mut device = None;
     let mut context = None;
     unsafe {
@@ -684,8 +686,11 @@ fn foreground_fills_monitor() -> bool {
             cbSize: size_of::<MONITORINFO>() as u32,
             ..Default::default()
         };
-        if !GetMonitorInfoW(MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST), &mut info)
-            .as_bool()
+        if !GetMonitorInfoW(
+            MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST),
+            &mut info,
+        )
+        .as_bool()
         {
             return false;
         }
@@ -695,7 +700,33 @@ fn foreground_fills_monitor() -> bool {
 }
 
 /// A cursor's image from Win32, converted like duplication's shapes.
-pub(super) fn win32_shape(cursor: windows::Win32::UI::WindowsAndMessaging::HCURSOR) -> Option<CursorShape> {
+/// A cursor's image from Win32, at the size Windows shows it on `monitor`:
+/// the image is the unscaled one, which Windows scales with the monitor's
+/// DPI (duplication's shapes come scaled already).
+pub(super) fn win32_shape_for(
+    cursor: windows::Win32::UI::WindowsAndMessaging::HCURSOR,
+    monitor: windows::Win32::Graphics::Gdi::HMONITOR,
+) -> Option<CursorShape> {
+    use windows::Win32::UI::{
+        HiDpi::{GetDpiForMonitor, GetSystemMetricsForDpi, MDT_EFFECTIVE_DPI},
+        WindowsAndMessaging::SM_CXCURSOR,
+    };
+    let shape = win32_shape(cursor)?;
+    let (mut dpi, mut unused) = (0u32, 0u32);
+    if unsafe { GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi, &mut unused) }.is_err() {
+        return Some(shape);
+    }
+    let want = unsafe { GetSystemMetricsForDpi(SM_CXCURSOR, dpi) };
+    if want <= 0 || want as u32 == shape.width {
+        return Some(shape);
+    }
+    Some(cursor::scale_shape(
+        &shape,
+        want as f32 / shape.width as f32,
+    ))
+}
+
+fn win32_shape(cursor: windows::Win32::UI::WindowsAndMessaging::HCURSOR) -> Option<CursorShape> {
     use windows::Win32::{
         Graphics::Gdi::{
             BI_RGB, BITMAP, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS, DeleteObject, GetDC,
@@ -928,8 +959,7 @@ impl Capturer for DxgiCapturer {
         // it into the picture (a software cursor) and duplication sends no
         // shape. Clients still show their own pointer, which follows the
         // mouse without the stream's delay: read its shape from Win32.
-        let on_output =
-            (0..size.0 as i32).contains(&pos.x) && (0..size.1 as i32).contains(&pos.y);
+        let on_output = (0..size.0 as i32).contains(&pos.x) && (0..size.1 as i32).contains(&pos.y);
         let in_image = pos.visible && on_output && pointer_visible == Some(false);
         if in_image != self.cursor_in_image {
             self.cursor_in_image = in_image;
@@ -945,9 +975,10 @@ impl Capturer for DxgiCapturer {
             && self.new_shape.is_none()
         {
             self.win32_cursor = handle;
-            self.new_shape = win32_shape(windows::Win32::UI::WindowsAndMessaging::HCURSOR(
-                handle as *mut c_void,
-            ));
+            self.new_shape = win32_shape_for(
+                windows::Win32::UI::WindowsAndMessaging::HCURSOR(handle as *mut c_void),
+                self.dup.desc.Monitor,
+            );
             if self.new_shape.is_none() {
                 tracing::info!("cannot read the cursor's image from Win32");
             }

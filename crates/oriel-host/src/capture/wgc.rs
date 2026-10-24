@@ -42,7 +42,7 @@ use super::{
     Capturer, Geometry,
     dxgi::{
         OutputEntry, create_device, rect_size, select_output, system_cursor, texture,
-        virtual_output, wide_to_string, win32_shape,
+        virtual_output, wide_to_string, win32_shape_for,
     },
 };
 use crate::cursor::CursorPos;
@@ -247,7 +247,7 @@ impl Capturer for WgcCapturer {
         let id = handle.0 as usize;
         if id != 0 && id != self.cursor && self.new_shape.is_none() {
             self.cursor = id;
-            self.new_shape = win32_shape(handle);
+            self.new_shape = win32_shape_for(handle, self.desc.Monitor);
         }
         pos
     }

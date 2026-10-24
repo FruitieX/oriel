@@ -171,9 +171,9 @@ pub async fn run(
             };
             loop {
                 let event = match injector.next_tick() {
-                    Some(at) => match input_rx.recv_timeout(
-                        at.saturating_duration_since(std::time::Instant::now()),
-                    ) {
+                    Some(at) => match input_rx
+                        .recv_timeout(at.saturating_duration_since(std::time::Instant::now()))
+                    {
                         Ok(event) => event,
                         Err(mpsc::RecvTimeoutError::Timeout) => {
                             injector.tick();
