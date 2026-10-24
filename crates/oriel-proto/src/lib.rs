@@ -23,7 +23,7 @@ pub const ALPN: &[u8] = b"oriel/1";
 /// when it only checks whether the host is up.
 pub const PROBE_REASON: &[u8] = b"probe";
 
-pub const PROTOCOL_VERSION: u32 = 12;
+pub const PROTOCOL_VERSION: u32 = 13;
 pub const DEFAULT_PORT: u16 = 48600;
 /// Upper bound for a single control/input message.
 pub const MAX_MESSAGE_LEN: usize = 32 * 1024 * 1024;
@@ -104,6 +104,8 @@ pub struct StreamSettings {
     /// Codecs to send with full colour resolution (4:4:4) where the host's
     /// encoder can: sharper coloured text. Empty: 4:2:0 only.
     pub full_chroma: Vec<Codec>,
+    /// Encode on the host's CPU rather than its GPU, where it can.
+    pub software_encode: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -114,6 +116,8 @@ pub struct SurfaceInfo {
     pub codec: Codec,
     /// Colour at full resolution (4:4:4) rather than 4:2:0.
     pub full_chroma: bool,
+    /// The encoder in use, e.g. "hevc_nvenc" ("lib…" ones are software).
+    pub encoder: String,
 }
 
 /// Pairing messages, run over the control stream before a session when the
@@ -149,6 +153,7 @@ pub enum ClientMsg {
         codecs: Vec<Codec>,
         auto_codec: bool,
         full_chroma: Vec<Codec>,
+        software_encode: bool,
     },
     /// Change (or with `None` restore) the host display resolution.
     SetResolution {
@@ -464,6 +469,7 @@ mod tests {
             audio_device: None,
             virtual_display: None,
             full_chroma: vec![Codec::Hevc],
+            software_encode: false,
         });
         let bytes = encode_framed(&msg).unwrap();
         let len = u32::from_le_bytes(bytes[..4].try_into().unwrap()) as usize;

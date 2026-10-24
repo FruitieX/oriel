@@ -30,6 +30,8 @@ pub struct Config {
     pub auto_codec: bool,
     /// Codecs to encode at 4:4:4 where the encoder can.
     pub full_chroma: Vec<Codec>,
+    /// Encode in software where this host can.
+    pub software_encode: bool,
     pub pyrowave_kbps: u32,
     /// Adapt the bitrate to the network, up to `bitrate_kbps`.
     pub auto_bitrate: bool,
@@ -39,8 +41,9 @@ pub enum Cmd {
     Keyframe,
     /// Capture this target instead (display switch, virtual monitor).
     Target(capture::Target),
-    /// Codecs, automatic switching, and those wanted at 4:4:4.
-    Codecs(Vec<Codec>, bool, Vec<Codec>),
+    /// Codecs, automatic switching, those wanted at 4:4:4, and software
+    /// encoding.
+    Codecs(Vec<Codec>, bool, Vec<Codec>, bool),
     Bitrate(u32),
     AutoBitrate(bool),
     MaxFps(u32),
@@ -315,10 +318,33 @@ impl Pipeline {
     }
 
     fn open_encoder(&self, cap: &dyn Capturer, bitrate_kbps: u32) -> Result<(Encoder, Codec)> {
+        if self.config.software_encode {
+            match self.open_encoder_with(cap, bitrate_kbps, true) {
+                Ok(opened) => return Ok(opened),
+                Err(e) => {
+                    tracing::info!("no software encoder: {e:#}");
+                    let _ = self.send(Event::Notice(
+                        "This host has no software encoder for these codecs; it encodes \
+                         in hardware"
+                            .into(),
+                    ));
+                }
+            }
+        }
+        self.open_encoder_with(cap, bitrate_kbps, false)
+    }
+
+    fn open_encoder_with(
+        &self,
+        cap: &dyn Capturer,
+        bitrate_kbps: u32,
+        software: bool,
+    ) -> Result<(Encoder, Codec)> {
         let (width, height) = cap.size();
         let mut errors = Vec::new();
         for &codec in &self.config.codecs {
-            if codec == Codec::PyroWave && !self.pyrowave_allowed() {
+            // PyroWave runs on the GPU only.
+            if codec == Codec::PyroWave && (software || !self.pyrowave_allowed()) {
                 continue;
             }
             let config = EncoderConfig {
@@ -334,6 +360,7 @@ impl Pipeline {
                 device: cap.hw_device(),
                 encoder: self.config.encoder.clone(),
                 full_chroma: self.config.full_chroma.contains(&codec),
+                software,
             };
             match Encoder::open(&config) {
                 Ok(enc) => return Ok((enc, codec)),
@@ -380,6 +407,7 @@ impl Pipeline {
                     height,
                     codec,
                     full_chroma: enc.full_chroma(),
+                    encoder: enc.name().to_string(),
                 }))?;
                 match self.stream(cap.as_mut(), &mut enc, codec, &mut bitrate)? {
                     Flow::Stop => return Ok(()),
@@ -474,11 +502,12 @@ impl Pipeline {
                         }
                     }
                     Cmd::MaxFps(_) | Cmd::PyroWaveBitrate(_) => {}
-                    Cmd::Codecs(codecs, auto, full_chroma) => {
+                    Cmd::Codecs(codecs, auto, full_chroma, software) => {
                         if !codecs.is_empty() {
                             self.config.codecs = codecs;
                             self.config.auto_codec = auto;
                             self.config.full_chroma = full_chroma;
+                            self.config.software_encode = software;
                             self.auto.retry_at = Instant::now();
                             return Ok(Flow::Reencode);
                         }

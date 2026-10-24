@@ -627,6 +627,7 @@ mod tests {
             device: HwDevice::None,
             encoder: Some("hevc_vaapi".into()),
             full_chroma: false,
+            software: false,
         };
         let mut enc = match Encoder::open(&config) {
             Ok(e) => e,
@@ -680,6 +681,7 @@ mod tests {
             device: HwDevice::None,
             encoder: Some(encoder.into()),
             full_chroma: false,
+            software: false,
         };
         let mut enc = match Encoder::open(&config) {
             Ok(e) => e,
@@ -784,6 +786,7 @@ mod refine_tests {
                 device: HwDevice::None,
                 encoder: Some(encoder.into()),
                 full_chroma: false,
+                software: false,
             };
             let Ok(mut enc) = Encoder::open(&config) else {
                 eprintln!("skipping: no {encoder}");
@@ -830,6 +833,7 @@ mod refine_tests {
                 device: HwDevice::None,
                 encoder: Some("libx264".into()),
                 full_chroma,
+                software: false,
             };
             let mut enc = Encoder::open(&config).ok()?;
             assert_eq!(enc.full_chroma(), full_chroma);

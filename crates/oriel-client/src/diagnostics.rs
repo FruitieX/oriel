@@ -12,7 +12,8 @@ pub enum Issue {
     Version,
     Stalled,
     SlowDecode,
-    SoftwareFullChroma,
+    SoftwareDecode,
+    SoftwareEncode,
     SlowEncode,
     NetworkLimited,
     PacketLoss,
@@ -23,11 +24,12 @@ pub enum Issue {
 }
 
 impl Issue {
-    const ALL: [Issue; 11] = [
+    const ALL: [Issue; 12] = [
         Issue::Version,
         Issue::Stalled,
         Issue::SlowDecode,
-        Issue::SoftwareFullChroma,
+        Issue::SoftwareDecode,
+        Issue::SoftwareEncode,
         Issue::SlowEncode,
         Issue::NetworkLimited,
         Issue::PacketLoss,
@@ -44,7 +46,8 @@ impl Issue {
             Issue::Stalled | Issue::Version => 0,
             Issue::NetworkLimited
             | Issue::SlowDecode
-            | Issue::SoftwareFullChroma
+            | Issue::SoftwareDecode
+            | Issue::SoftwareEncode
             | Issue::SlowEncode => 2,
             Issue::PacketLoss | Issue::AudioDropouts => 3,
             Issue::Latency | Issue::Jitter | Issue::LateFrames => 5,
@@ -70,6 +73,11 @@ pub struct Inputs {
     pub bitrate_mbps: u32,
     pub pyrowave_mbps: u32,
     pub software_decode: bool,
+    /// Hardware decoding and encoding are chosen (rather than software).
+    pub hardware_decode: bool,
+    pub hardware_encode: bool,
+    /// The host's encoder, e.g. "hevc_nvenc".
+    pub encoder: Option<String>,
     /// The stream has full-resolution colour (4:4:4).
     pub full_chroma: bool,
     /// The host lowers the bitrate by itself.
@@ -138,16 +146,18 @@ pub fn detect(i: &Inputs) -> Vec<Found> {
             i.decode_ms,
             1000.0 / i.decode_ms.max(1.0)
         );
-        if i.software_decode && i.full_chroma {
+        if i.software_decode && !i.hardware_decode {
+            detail.push_str(
+                " Decoding is set to software in the Video settings; hardware is \
+                 faster.",
+            );
+        } else if i.software_decode && i.full_chroma {
             detail.push_str(
                 " This computer decodes 4:4:4 in software: turn off Colour detail in \
                  the Video settings.",
             );
         } else if i.software_decode {
-            detail.push_str(
-                " Hardware decoding is not in use: try another codec or turn on \
-                 hardware decoding in the Video settings.",
-            );
+            detail.push_str(" This computer's GPU cannot decode it: try another codec.");
         } else {
             detail.push_str(" A lower resolution or frame rate helps.");
         }
@@ -158,13 +168,34 @@ pub fn detect(i: &Inputs) -> Vec<Found> {
             detail,
         ));
     }
-    // Said even while fast enough: it costs CPU and latency all the same.
-    if i.software_decode && i.full_chroma && !slow_decode && i.fps > 0.0 {
+    // Hardware was chosen but is not what runs. Said even while fast
+    // enough: it costs CPU and latency all the same.
+    if i.software_decode && i.hardware_decode && !slow_decode && i.fps > 0.0 {
+        let (title, detail) = if i.full_chroma {
+            (
+                "4:4:4 decoded in software",
+                "This computer's GPU cannot decode 4:4:4 video, so the CPU does it, with \
+                 more latency. Turn off Colour detail in the Video settings to decode in \
+                 hardware.",
+            )
+        } else {
+            (
+                "Decoding in software",
+                "This computer's GPU cannot decode this stream, so the CPU does it, with \
+                 more latency. Another codec may decode in hardware.",
+            )
+        };
+        out.push(found(Issue::SoftwareDecode, title.into(), detail.into()));
+    }
+    if i.hardware_encode
+        && i.fps > 0.0
+        && let Some(encoder) = i.encoder.as_deref().filter(|e| e.starts_with("lib"))
+    {
         out.push(found(
-            Issue::SoftwareFullChroma,
-            "4:4:4 decoded in software".into(),
-            "This computer's GPU cannot decode 4:4:4 video, so the CPU does it, with \
-             more latency. Turn off Colour detail in the Video settings to decode in \
+            Issue::SoftwareEncode,
+            format!("The host encodes in software ({encoder})"),
+            "The host's GPU cannot encode this stream, so its CPU does, with more \
+             latency. Another codec (or turning off Colour detail) may encode in \
              hardware."
                 .into(),
         ));
@@ -372,6 +403,9 @@ mod tests {
             bitrate_mbps: 50,
             pyrowave_mbps: 400,
             software_decode: false,
+            hardware_decode: true,
+            hardware_encode: true,
+            encoder: Some("hevc_nvenc".into()),
             full_chroma: false,
             auto_bitrate: false,
             other_protocol: None,
@@ -401,7 +435,7 @@ mod tests {
         i.decode_ms = 32.0;
         i.software_decode = true;
         assert_eq!(issues(&i), [Issue::SlowDecode]);
-        assert!(detect(&i)[0].detail.contains("Hardware decoding"));
+        assert!(detect(&i)[0].detail.contains("GPU cannot decode"));
 
         let mut i = healthy();
         i.host.as_mut().unwrap().loss_permille = 45;
@@ -470,6 +504,19 @@ mod tests {
     }
 
     #[test]
+    fn software_coding_is_said_only_when_hardware_was_chosen() {
+        let mut i = healthy();
+        i.encoder = Some("libx265".into());
+        assert_eq!(detect(&i)[0].issue, Issue::SoftwareEncode);
+        i.hardware_encode = false;
+        assert!(detect(&i).is_empty());
+        i.software_decode = true;
+        assert_eq!(detect(&i)[0].issue, Issue::SoftwareDecode);
+        i.hardware_decode = false;
+        assert!(detect(&i).is_empty());
+    }
+
+    #[test]
     fn software_full_chroma_is_said_even_when_fast_enough() {
         let mut i = healthy();
         i.full_chroma = true;
@@ -477,7 +524,7 @@ mod tests {
         i.software_decode = true;
         let found = detect(&i);
         assert_eq!(found.len(), 1);
-        assert_eq!(found[0].issue, Issue::SoftwareFullChroma);
+        assert_eq!(found[0].issue, Issue::SoftwareDecode);
         // Too slow: the slow decoding warning says what to change instead.
         i.decode_ms = 20.0;
         let found = detect(&i);

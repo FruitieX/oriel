@@ -54,6 +54,8 @@ pub struct Session {
     pub interop: decode::InteropSlot,
     /// Gamepads are forwarded only while the viewer window has focus.
     pub focused: Arc<std::sync::atomic::AtomicBool>,
+    /// Decode in hardware where possible; the decoder follows changes.
+    pub hardware_decode: Arc<std::sync::atomic::AtomicBool>,
     mic: Arc<Mutex<Microphone>>,
     speaker: Arc<Mutex<Speaker>>,
     gamepads: Arc<Mutex<Gamepads>>,
@@ -229,12 +231,13 @@ pub fn start(
     let stats = Arc::new(Mutex::new(Stats::default()));
     let frames = decode::FrameSlot::default();
     let interop = decode::InteropSlot::default();
+    let hardware_decode = Arc::new(std::sync::atomic::AtomicBool::new(hardware_decode));
     let decoder = decode::spawn(
         conn.clone(),
         ctl_tx.clone(),
         frames.clone(),
         stats.clone(),
-        hardware_decode,
+        hardware_decode.clone(),
         interop.clone(),
         sink.clone(),
     );
@@ -432,6 +435,7 @@ pub fn start(
         last_pong,
         interop,
         focused,
+        hardware_decode,
         speaker,
         gamepads: pads,
         mic: Arc::new(Mutex::new(mic)),

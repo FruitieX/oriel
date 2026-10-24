@@ -467,7 +467,7 @@ fn run() -> Result<()> {
             if codec.len() > 1 && !codec.iter().any(|c| matches!(c, CodecArg::Auto)) {
                 options.settings.codecs = codec.iter().map(|c| Codec::from(*c)).collect();
             }
-            options.hardware_decode = !software_decode;
+            options.hardware_decode &= !software_decode;
             options.screenshot = screenshot.map(|p| (p, Duration::from_secs_f64(screenshot_after)));
             let rt = runtime()?;
             if let Some(secs) = headless {
@@ -475,7 +475,7 @@ fn run() -> Result<()> {
                     &paths,
                     &host,
                     options.settings,
-                    !software_decode,
+                    options.hardware_decode,
                     Duration::from_secs(secs),
                 ));
             }

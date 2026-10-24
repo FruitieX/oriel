@@ -7,7 +7,7 @@ use oriel_proto::{Codec, VirtualMode};
 
 use crate::{
     config::{
-        CODEC_CHOICES, ClientConfig, HostPrefs, MENU_BUTTON_STYLES, MOUSE_MODES, Resolution,
+        CODEC_CHOICES, CODER_CHOICES, ClientConfig, HostPrefs, MENU_BUTTON_STYLES, MOUSE_MODES, Resolution,
         SMOOTHING_CHOICES, WARNING_STYLES, codec_choice_strings, format_resolution,
         format_virtual_mode,
     },
@@ -643,7 +643,26 @@ fn video_tab(ui: &mut Ui, rows: &mut Rows, live: Option<&Live>) {
                 |c, v| c.full_chroma = v,
                 |h| &mut h.full_chroma,
             );
+            rows.choice(
+                ui,
+                "Decoding",
+                "Hardware falls back to software for what the GPU cannot decode",
+                |c| c.decoding.clone(),
+                |c, v| c.decoding = v,
+                |h| &mut h.decoding,
+                &CODER_CHOICES,
+            );
         }
+        rows.choice(
+            ui,
+            "Encoding on the host",
+            "Software encoding uses the host's CPU (x264, x265, SVT-AV1) where it \
+             has those; hardware falls back to software where the GPU cannot encode",
+            |c| c.encoding.clone(),
+            |c, v| c.encoding = v,
+            |h| &mut h.encoding,
+            &CODER_CHOICES,
+        );
         rows.mbps(
             ui,
             "PyroWave bitrate",

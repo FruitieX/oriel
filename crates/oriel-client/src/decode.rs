@@ -279,12 +279,15 @@ impl std::fmt::Display for ZeroCopyFailed {
 
 impl std::error::Error for ZeroCopyFailed {}
 
+/// A decoder with what it was opened for: codec, size, 4:4:4, hardware.
+type Opened = (VideoDecoder, Codec, (u32, u32), bool, bool);
+
 pub fn spawn(
     conn: quinn::Connection,
     ctl: mpsc::UnboundedSender<ClientMsg>,
     slot: FrameSlot,
     stats: Arc<Mutex<Stats>>,
-    hardware: bool,
+    hardware_setting: Arc<std::sync::atomic::AtomicBool>,
     interop: InteropSlot,
     sink: Sink,
 ) -> crossbeam_channel::Sender<Job> {
@@ -292,8 +295,7 @@ pub fn spawn(
     std::thread::Builder::new()
         .name("oriel-decode".into())
         .spawn(move || {
-            // With the stream it was opened for: codec, size, 4:4:4.
-            let mut decoder: Option<(VideoDecoder, Codec, (u32, u32), bool)> = None;
+            let mut decoder: Option<Opened> = None;
             // Do not keep retrying zero-copy once it failed: [PyroWave,
             // VAAPI].
             // ORIEL_NO_ZERO_COPY=1 forces the CPU path (debugging aid).
@@ -301,19 +303,22 @@ pub fn spawn(
             let path = |codec: Codec| usize::from(codec != Codec::PyroWave);
             // Whether this codec can decode zero-copy with the current
             // renderer.
+            let hardware_now =
+                || hardware_setting.load(std::sync::atomic::Ordering::Relaxed);
             #[cfg(target_os = "linux")]
-            let zero_copy_possible = |codec: Codec, full_chroma: bool| {
+            let zero_copy_possible = |codec: Codec, full_chroma: bool, hardware: bool| {
                 interop.lock().as_ref().is_some_and(|i| {
                     codec == Codec::PyroWave || (hardware && i.dmabuf && !full_chroma)
                 })
             };
             #[cfg(not(target_os = "linux"))]
-            let zero_copy_possible = |codec: Codec, _full_chroma: bool| {
+            let zero_copy_possible = |codec: Codec, _full_chroma: bool, _hardware: bool| {
                 codec == Codec::PyroWave && interop.lock().is_some()
             };
             let mut need_keyframe = false;
             let mut last_request = Instant::now() - Duration::from_secs(1);
             while let Ok((header, data, received)) = rx.recv() {
+                let hardware = hardware_now();
                 let ack = Datagram::FrameAck {
                     surface: header.surface,
                     seq: header.seq,
@@ -324,11 +329,14 @@ pub fn spawn(
                 // is a keyframe).
                 let upgrade = header.keyframe
                     && !zero_copy_failed[path(header.codec)]
-                    && zero_copy_possible(header.codec, header.full_chroma)
+                    && zero_copy_possible(header.codec, header.full_chroma, hardware)
                     && decoder.as_ref().is_some_and(|(d, ..)| !d.is_zero_copy());
                 if upgrade
-                    || decoder.as_ref().is_none_or(|(_, codec, s, full)| {
-                        *codec != header.codec || *s != size || *full != header.full_chroma
+                    || decoder.as_ref().is_none_or(|(_, codec, s, full, hw)| {
+                        *codec != header.codec
+                            || *s != size
+                            || *full != header.full_chroma
+                            || *hw != hardware
                     })
                 {
                     // Free the old decoder's GPU resources first.
@@ -338,7 +346,7 @@ pub fn spawn(
                     {
                         Ok((d, description)) => {
                             tracing::info!(decoder = %description, "opened video decoder");
-                            if zero_copy_possible(header.codec, header.full_chroma)
+                            if zero_copy_possible(header.codec, header.full_chroma, hardware)
                                 && !d.is_zero_copy()
                             {
                                 zero_copy_failed[path(header.codec)] = true;
@@ -353,7 +361,7 @@ pub fn spawn(
                             s.codec_id = Some(header.codec);
                             s.full_chroma = header.full_chroma;
                             s.resolution = size;
-                            Some((d, header.codec, size, header.full_chroma))
+                            Some((d, header.codec, size, header.full_chroma, hardware))
                         }
                         Err(e) => {
                             sink(UiEvent::Closed {

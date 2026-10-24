@@ -104,6 +104,7 @@ pub async fn run(
             encoder: options.encoder.clone(),
             auto_codec: settings.auto_codec,
             full_chroma: settings.full_chroma.clone(),
+            software_encode: settings.software_encode,
             pyrowave_kbps: settings.pyrowave_kbps.max(10_000),
             // The client turns it on with SetAutoBitrate right after.
             auto_bitrate: false,
@@ -406,8 +407,14 @@ pub async fn run(
                         codecs,
                         auto_codec,
                         full_chroma,
+                        software_encode,
                     }) => {
-                        let _ = cmd_tx.send(Cmd::Codecs(codecs, auto_codec, full_chroma));
+                        let _ = cmd_tx.send(Cmd::Codecs(
+                            codecs,
+                            auto_codec,
+                            full_chroma,
+                            software_encode,
+                        ));
                     }
                     Some(ClientMsg::SetResolution { resolution }) if virtual_mode.is_some() => {
                         // Resize the virtual monitor (None: leave it).

@@ -79,10 +79,11 @@ impl ViewerOptions {
                 audio_device: e.audio_device.clone(),
                 virtual_display: e.virtual_display,
                 full_chroma: full_chroma_codecs(e.full_chroma),
+                software_encode: e.encoding == "software",
             },
+            hardware_decode: e.decoding != "software",
             config,
             paths,
-            hardware_decode: true,
             screenshot: None,
         }
     }
@@ -1044,6 +1045,12 @@ impl Viewer {
             bitrate_mbps: self.in_force.bitrate_kbps / 1000,
             pyrowave_mbps: self.in_force.pyrowave_kbps / 1000,
             software_decode: software,
+            hardware_decode: self
+                .session
+                .hardware_decode
+                .load(std::sync::atomic::Ordering::Relaxed),
+            hardware_encode: self.in_force.encoding != "software",
+            encoder: self.surface.as_ref().map(|s| s.encoder.clone()),
             full_chroma,
             auto_bitrate: self.in_force.auto_bitrate,
             other_protocol: self.other_protocol,
@@ -1105,13 +1112,25 @@ impl Viewer {
             return;
         }
         let s = &self.session;
-        if old.codec != new.codec || old.full_chroma != new.full_chroma {
+        if old.codec != new.codec
+            || old.full_chroma != new.full_chroma
+            || old.encoding != new.encoding
+        {
             let (codecs, auto_codec) = offered_codecs(&new.codec);
             s.send(ClientMsg::SetCodecs {
                 codecs,
                 auto_codec,
                 full_chroma: full_chroma_codecs(new.full_chroma),
+                software_encode: new.encoding == "software",
             });
+        }
+        if old.decoding != new.decoding {
+            s.hardware_decode.store(
+                new.decoding != "software",
+                std::sync::atomic::Ordering::Relaxed,
+            );
+            // The decoder reopens on the next frame, and asks for a
+            // keyframe.
         }
         if old.bitrate_kbps != new.bitrate_kbps {
             s.send(ClientMsg::SetBitrate {
@@ -2061,8 +2080,10 @@ impl ApplicationHandler<UiEvent> for Viewer {
         let display = window.display_handle().ok().map(|h| h.as_raw());
         // SAFETY: the display outlives the clipboard (both dropped in `exiting`).
         let clipboard = unsafe { egui_winit::clipboard::Clipboard::new(display) };
+        // The decoder thread uses it only while hardware decoding is on
+        // (PyroWave decodes on the GPU either way).
         #[cfg(zero_copy)]
-        if self.options.hardware_decode {
+        {
             *self.session.interop.lock() = renderer.interop.clone();
         }
         self.gfx = Some(Gfx {

@@ -32,6 +32,11 @@ pub struct ClientConfig {
     /// Ask for colour at full resolution (4:4:4) where the host's encoder
     /// can: sharper coloured text, more bandwidth.
     pub full_chroma: bool,
+    /// Decode on this computer's GPU ("hardware", falling back to software
+    /// where it cannot) or its CPU ("software").
+    pub decoding: String,
+    /// The same for encoding on the host.
+    pub encoding: String,
     /// "auto", "desktop" or "captured".
     pub mouse: String,
     pub audio: bool,
@@ -85,6 +90,8 @@ pub struct HostPrefs {
     pub smoothing: Option<String>,
     pub pyrowave_kbps: Option<u32>,
     pub full_chroma: Option<bool>,
+    pub decoding: Option<String>,
+    pub encoding: Option<String>,
     pub max_fps: Option<u32>,
     pub mouse: Option<String>,
     pub gamepads: Option<bool>,
@@ -119,6 +126,8 @@ pub struct Effective {
     pub smoothing: String,
     pub pyrowave_kbps: u32,
     pub full_chroma: bool,
+    pub decoding: String,
+    pub encoding: String,
     pub max_fps: u32,
     pub mouse: String,
     pub gamepads: bool,
@@ -191,6 +200,12 @@ pub const MENU_BUTTON_STYLES: [(&str, &str); 4] = [
     ("shortcut", "Shortcut only"),
     ("logo", "Logo only"),
     ("hidden", "Hidden (use the shortcut)"),
+];
+
+/// Where to decode or encode, as (key, label).
+pub const CODER_CHOICES: [(&str, &str); 2] = [
+    ("hardware", "Hardware (GPU)"),
+    ("software", "Software (CPU)"),
 ];
 
 /// Smoothing choices, as (key, label).
@@ -296,6 +311,8 @@ impl Default for ClientConfig {
             codecs: vec!["hevc".into(), "h264".into()],
             pyrowave_kbps: 400_000,
             full_chroma: false,
+            decoding: "hardware".into(),
+            encoding: "hardware".into(),
             mouse: "auto".into(),
             audio: true,
             fullscreen: false,
@@ -333,6 +350,8 @@ impl ClientConfig {
                 .unwrap_or_else(|| self.smoothing.clone()),
             pyrowave_kbps: h.pyrowave_kbps.unwrap_or(self.pyrowave_kbps),
             full_chroma: h.full_chroma.unwrap_or(self.full_chroma),
+            decoding: h.decoding.clone().unwrap_or_else(|| self.decoding.clone()),
+            encoding: h.encoding.clone().unwrap_or_else(|| self.encoding.clone()),
             max_fps: h.max_fps.unwrap_or(self.max_fps),
             mouse: h.mouse.clone().unwrap_or_else(|| self.mouse.clone()),
             gamepads: h.gamepads.unwrap_or(self.gamepads),

@@ -40,6 +40,8 @@ pub struct EncoderConfig {
     /// Encode colour at full resolution (4:4:4) if the encoder can; see
     /// [`Encoder::full_chroma`].
     pub full_chroma: bool,
+    /// Only software encoders (x264, x265, SVT-AV1).
+    pub software: bool,
 }
 
 pub enum EncoderInput<'a> {
@@ -180,6 +182,9 @@ impl FfEncoder {
         let mut errors = Vec::new();
         for (name, kind) in candidates(config.codec) {
             if config.encoder.as_deref().is_some_and(|only| only != name) {
+                continue;
+            }
+            if config.software && !matches!(kind, Kind::X264 | Kind::X265 | Kind::SvtAv1) {
                 continue;
             }
             match unsafe { Self::open_named(config, name, kind) } {
