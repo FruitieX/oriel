@@ -339,30 +339,78 @@ pub fn list_displays() -> Result<Vec<DisplayInfo>> {
         .collect())
 }
 
-pub struct DxgiCapturer {
+/// One monitor's desktop duplication, shared by the sessions capturing
+/// it: Windows allows one per output and process.
+struct Duplication {
     device: ID3D11Device,
     context: ID3D11DeviceContext,
-    dup: IDXGIOutputDuplication,
     desc: DXGI_OUTPUT_DESC,
     size: (u32, u32),
+    /// The virtual monitor being captured, kept while this lives.
+    virtual_monitor: Option<std::sync::Arc<super::sudovda::VirtualMonitor>>,
+    state: parking_lot::Mutex<DupState>,
+}
+
+// The device is multithread-protected; the rest is behind the mutex.
+unsafe impl Send for Duplication {}
+unsafe impl Sync for Duplication {}
+
+struct DupState {
+    /// `None` once lost (mode change, desktop switch): every capturer then
+    /// reopens, and the first one duplicates the output again.
+    dup: Option<IDXGIOutputDuplication>,
+    /// The newest image, and how many have been captured.
     latest: ID3D11Texture2D,
-    staging: Option<ID3D11Texture2D>,
-    cpu: Vec<u8>,
-    cpu_fresh: bool,
-    /// An image has been captured since duplication started.
-    have_image: bool,
-    new_shape: Option<CursorShape>,
+    seq: u64,
+    shape: Option<CursorShape>,
+    shape_seq: u64,
     shape_buf: Vec<u8>,
     /// Whether duplication last reported the pointer visible on this
     /// output. Windows draws a software cursor into the image instead (some
     /// display modes and setups): duplication then reports it hidden.
-    dup_pointer_visible: Option<bool>,
+    pointer_visible: Option<bool>,
+}
+
+/// Duplications in use, by output name.
+static DUPLICATIONS: parking_lot::Mutex<Vec<([u16; 32], std::sync::Weak<Duplication>)>> =
+    parking_lot::Mutex::new(Vec::new());
+
+impl DupState {
+    fn read_pointer_shape(&mut self, size: u32) -> Result<()> {
+        let dup = self.dup.as_ref().context("duplication lost")?;
+        self.shape_buf.resize(size as usize, 0);
+        let mut needed = 0u32;
+        let mut info = DXGI_OUTDUPL_POINTER_SHAPE_INFO::default();
+        unsafe {
+            dup.GetFramePointerShape(
+                size,
+                self.shape_buf.as_mut_ptr() as *mut c_void,
+                &mut needed,
+                &mut info,
+            )?;
+        }
+        if let Some(shape) = convert_shape(&info, &self.shape_buf) {
+            self.shape = Some(shape);
+            self.shape_seq += 1;
+        }
+        Ok(())
+    }
+}
+
+pub struct DxgiCapturer {
+    dup: std::sync::Arc<Duplication>,
+    /// The last image and cursor shape this capturer passed on.
+    seen: u64,
+    seen_shape: u64,
+    staging: Option<ID3D11Texture2D>,
+    cpu: Vec<u8>,
+    cpu_fresh: bool,
+    /// A shape read from Win32 (see `cursor`), sent before duplication's.
+    new_shape: Option<CursorShape>,
     /// The cursor was last found drawn into the image (logged on change).
     cursor_in_image: bool,
     /// The cursor whose shape was last read from Win32 (as a number).
     win32_cursor: usize,
-    /// The virtual monitor being captured, kept while this capturer lives.
-    virtual_monitor: Option<std::sync::Arc<super::sudovda::VirtualMonitor>>,
 }
 
 impl DxgiCapturer {
@@ -395,6 +443,38 @@ impl DxgiCapturer {
         entry: OutputEntry,
         virtual_monitor: Option<std::sync::Arc<super::sudovda::VirtualMonitor>>,
     ) -> Result<Self> {
+        let mut all = DUPLICATIONS.lock();
+        all.retain(|(_, d)| d.strong_count() > 0);
+        let existing = all
+            .iter()
+            .filter(|(name, _)| *name == entry.desc.DeviceName)
+            .filter_map(|(_, d)| d.upgrade())
+            .find(|d| d.state.lock().dup.is_some());
+        let dup = match existing {
+            Some(d) => d,
+            None => {
+                let d = std::sync::Arc::new(Self::duplicate(entry, virtual_monitor)?);
+                all.push((d.desc.DeviceName, std::sync::Arc::downgrade(&d)));
+                d
+            }
+        };
+        Ok(Self {
+            dup,
+            seen: 0,
+            seen_shape: 0,
+            staging: None,
+            cpu: Vec::new(),
+            cpu_fresh: false,
+            new_shape: None,
+            cursor_in_image: false,
+            win32_cursor: 0,
+        })
+    }
+
+    fn duplicate(
+        entry: OutputEntry,
+        virtual_monitor: Option<std::sync::Arc<super::sudovda::VirtualMonitor>>,
+    ) -> Result<Duplication> {
         let mut device = None;
         let mut context = None;
         unsafe {
@@ -437,40 +517,22 @@ impl DxgiCapturer {
             height = size.1,
             "capturing with Desktop Duplication"
         );
-        Ok(Self {
+        Ok(Duplication {
             device,
             context,
-            dup,
             desc: entry.desc,
             size,
-            latest,
-            staging: None,
-            cpu: Vec::new(),
-            cpu_fresh: false,
-            have_image: false,
-            new_shape: None,
-            shape_buf: Vec::new(),
-            dup_pointer_visible: None,
-            cursor_in_image: false,
-            win32_cursor: 0,
             virtual_monitor,
+            state: parking_lot::Mutex::new(DupState {
+                dup: Some(dup),
+                latest,
+                seq: 0,
+                shape: None,
+                shape_seq: 0,
+                shape_buf: Vec::new(),
+                pointer_visible: None,
+            }),
         })
-    }
-
-    fn read_pointer_shape(&mut self, size: u32) -> Result<()> {
-        self.shape_buf.resize(size as usize, 0);
-        let mut needed = 0u32;
-        let mut info = DXGI_OUTDUPL_POINTER_SHAPE_INFO::default();
-        unsafe {
-            self.dup.GetFramePointerShape(
-                size,
-                self.shape_buf.as_mut_ptr() as *mut c_void,
-                &mut needed,
-                &mut info,
-            )?;
-        }
-        self.new_shape = convert_shape(&info, &self.shape_buf);
-        Ok(())
     }
 }
 
@@ -652,47 +714,61 @@ fn win32_shape(cursor: windows::Win32::UI::WindowsAndMessaging::HCURSOR) -> Opti
 
 impl Capturer for DxgiCapturer {
     fn size(&self) -> (u32, u32) {
-        self.size
+        self.dup.size
     }
 
     fn geometry(&self) -> Geometry {
-        let r = self.desc.DesktopCoordinates;
+        let r = self.dup.desc.DesktopCoordinates;
         Geometry {
             left: r.left,
             top: r.top,
-            width: self.size.0,
-            height: self.size.1,
+            width: self.dup.size.0,
+            height: self.dup.size.1,
         }
     }
 
     fn keep_alive(&self) -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> {
-        self.virtual_monitor
+        self.dup
+            .virtual_monitor
             .clone()
             .map(|m| m as std::sync::Arc<dyn std::any::Any + Send + Sync>)
     }
 
     fn hw_device(&self) -> HwDevice {
-        HwDevice::D3D11(self.device.as_raw())
+        HwDevice::D3D11(self.dup.device.as_raw())
     }
 
+    /// Another capturer of the same output may have captured a newer
+    /// image already; otherwise wait for one.
     fn next_frame(&mut self, timeout: Duration) -> Result<bool> {
+        let shared = self.dup.clone();
+        let mut s = shared.state.lock();
+        if s.seq > self.seen {
+            self.seen = s.seq;
+            self.cpu_fresh = false;
+            return Ok(true);
+        }
+        let Some(dup) = s.dup.clone() else {
+            bail!("desktop duplication lost (mode change or desktop switch)")
+        };
         let mut info = DXGI_OUTDUPL_FRAME_INFO::default();
         let mut resource: Option<IDXGIResource> = None;
         let ms = timeout.as_millis().min(u32::MAX as u128) as u32;
-        match unsafe { self.dup.AcquireNextFrame(ms, &mut info, &mut resource) } {
+        match unsafe { dup.AcquireNextFrame(ms, &mut info, &mut resource) } {
             Ok(()) => {}
             Err(e) if e.code() == DXGI_ERROR_WAIT_TIMEOUT => return Ok(false),
             Err(e) if e.code() == DXGI_ERROR_ACCESS_LOST => {
+                s.dup = None;
                 bail!("desktop duplication lost (mode change or desktop switch)")
             }
             Err(e) => return Err(e).context("AcquireNextFrame"),
         }
         let result = (|| -> Result<bool> {
             if info.PointerShapeBufferSize > 0 {
-                self.read_pointer_shape(info.PointerShapeBufferSize)?;
+                s.read_pointer_shape(info.PointerShapeBufferSize)?;
             }
             if info.LastMouseUpdateTime != 0 {
-                self.dup_pointer_visible = Some(info.PointerPosition.Visible.as_bool());
+                s.pointer_visible = Some(info.PointerPosition.Visible.as_bool());
             }
             if info.LastPresentTime == 0 {
                 return Ok(false);
@@ -700,47 +776,50 @@ impl Capturer for DxgiCapturer {
             // Something presented, but without dirty or move rectangles the
             // image is unchanged (e.g. a game or video presenting the same
             // frame); sending it again would only keep the stream busy.
-            if info.TotalMetadataBufferSize == 0 && self.have_image {
+            if info.TotalMetadataBufferSize == 0 && s.seq > 0 {
                 return Ok(false);
             }
-            self.have_image = true;
             let frame: ID3D11Texture2D = resource.context("no frame resource")?.cast()?;
-            unsafe { self.context.CopyResource(&self.latest, &frame) };
+            unsafe { shared.context.CopyResource(&s.latest, &frame) };
+            s.seq += 1;
+            self.seen = s.seq;
             self.cpu_fresh = false;
             Ok(true)
         })();
         unsafe {
-            let _ = self.dup.ReleaseFrame();
+            let _ = dup.ReleaseFrame();
         }
         result
     }
 
     fn cpu_frame(&mut self) -> Result<(&[u8], usize)> {
-        let stride = self.size.0 as usize * 4;
+        let (w, h) = self.dup.size;
+        let stride = w as usize * 4;
         if !self.cpu_fresh {
             if self.staging.is_none() {
                 self.staging = Some(texture(
-                    &self.device,
-                    self.size,
+                    &self.dup.device,
+                    self.dup.size,
                     D3D11_USAGE_STAGING,
                     D3D11_CPU_ACCESS_READ.0 as u32,
                 )?);
             }
             let staging = self.staging.as_ref().unwrap();
+            let context = &self.dup.context;
             unsafe {
-                self.context.CopyResource(staging, &self.latest);
+                // Under the lock: another capturer may be replacing it.
+                context.CopyResource(staging, &self.dup.state.lock().latest);
                 let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
-                self.context
-                    .Map(staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))?;
-                self.cpu.resize(stride * self.size.1 as usize, 0);
-                for y in 0..self.size.1 as usize {
+                context.Map(staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))?;
+                self.cpu.resize(stride * h as usize, 0);
+                for y in 0..h as usize {
                     let src = std::slice::from_raw_parts(
                         (mapped.pData as *const u8).add(y * mapped.RowPitch as usize),
                         stride,
                     );
                     self.cpu[y * stride..(y + 1) * stride].copy_from_slice(src);
                 }
-                self.context.Unmap(staging, 0);
+                context.Unmap(staging, 0);
             }
             self.cpu_fresh = true;
         }
@@ -750,9 +829,11 @@ impl Capturer for DxgiCapturer {
     fn copy_to_texture(&mut self, dst: *mut c_void, index: u32) -> Result<()> {
         let dst = unsafe { ID3D11Texture2D::from_raw_borrowed(&dst) }
             .context("null destination texture")?;
+        let s = self.dup.state.lock();
         unsafe {
-            self.context
-                .CopySubresourceRegion(dst, index, 0, 0, 0, &self.latest, 0, None);
+            self.dup
+                .context
+                .CopySubresourceRegion(dst, index, 0, 0, 0, &s.latest, 0, None);
         }
         Ok(())
     }
@@ -778,7 +859,9 @@ impl Capturer for DxgiCapturer {
                 (clip.left, clip.top, clip.right, clip.bottom) != (vx, vy, vx + vw, vy + vh)
             }
         };
-        let origin = self.desc.DesktopCoordinates;
+        let origin = self.dup.desc.DesktopCoordinates;
+        let size = self.dup.size;
+        let pointer_visible = self.dup.state.lock().pointer_visible;
         let (x, y) = (
             info.ptScreenPos.x - origin.left,
             info.ptScreenPos.y - origin.top,
@@ -788,8 +871,8 @@ impl Capturer for DxgiCapturer {
         // shape. Clients still show their own pointer, which follows the
         // mouse without the stream's delay: read its shape from Win32.
         let on_output =
-            (0..self.size.0 as i32).contains(&x) && (0..self.size.1 as i32).contains(&y);
-        let in_image = visible && on_output && self.dup_pointer_visible == Some(false);
+            (0..size.0 as i32).contains(&x) && (0..size.1 as i32).contains(&y);
+        let in_image = visible && on_output && pointer_visible == Some(false);
         if in_image != self.cursor_in_image {
             self.cursor_in_image = in_image;
             self.win32_cursor = 0;
@@ -809,7 +892,17 @@ impl Capturer for DxgiCapturer {
     }
 
     fn cursor_shape(&mut self) -> Option<CursorShape> {
-        self.new_shape.take()
+        if let Some(shape) = self.new_shape.take() {
+            return Some(shape);
+        }
+        // Duplication sends a shape only when it changes: a capturer that
+        // joined later still takes the current one.
+        let s = self.dup.state.lock();
+        if s.shape_seq > self.seen_shape {
+            self.seen_shape = s.shape_seq;
+            return s.shape.clone();
+        }
+        None
     }
 }
 
