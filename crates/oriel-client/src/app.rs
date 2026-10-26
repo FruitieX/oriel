@@ -112,7 +112,17 @@ pub fn run(
     use winit::platform::run_on_demand::EventLoopExtRunOnDemand;
     tracing::info!(host = %connected.host_name, "connected");
     let proxy = Mutex::new(event_loop.create_proxy());
+    // One frame notice at a time: the viewer takes the newest frame anyway,
+    // and a main thread held up (a hidden window on macOS) must not come
+    // back to a backlog of thousands.
+    let frame_pending = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let pending = frame_pending.clone();
     let sink: session::Sink = Arc::new(move |ev| {
+        if matches!(ev, UiEvent::FrameReady)
+            && pending.swap(true, std::sync::atomic::Ordering::AcqRel)
+        {
+            return;
+        }
         let _ = proxy.lock().send_event(ev);
     });
     let e = options.config.effective(Some(&options.target));
@@ -140,6 +150,7 @@ pub fn run(
         enabled: e.auto_bitrate,
     });
     let mut viewer = Viewer::new(session.clone(), connected.host_name, options);
+    viewer.frame_pending = frame_pending;
     viewer.sink = Some(sink.clone());
     viewer.displays = connected.displays;
     viewer.host_codecs = connected.codecs;
@@ -176,6 +187,12 @@ struct Gfx {
 }
 
 struct Viewer {
+    /// A frame notice is on its way to the event loop (see `run`).
+    frame_pending: Arc<std::sync::atomic::AtomicBool>,
+    /// The window cannot be seen (minimized, covered, another Space):
+    /// nothing is drawn. On macOS drawing would wait up to a second for a
+    /// buffer the window server does not hand out, freezing the app.
+    occluded: bool,
     session: Session,
     host_name: String,
     options: ViewerOptions,
@@ -273,6 +290,8 @@ impl Viewer {
         let egui_ctx = egui::Context::default();
         crate::theme::style(&egui_ctx);
         Self {
+            frame_pending: Default::default(),
+            occluded: false,
             session,
             host_name,
             gfx: None,
@@ -1285,6 +1304,9 @@ impl Viewer {
             self.frames_presented += 1;
             let _ = ready.decoded;
         }
+        if self.occluded {
+            return;
+        }
         let viewport = self.viewport();
         let Some(gfx) = &mut self.gfx else { return };
         // Keep an undragged menu centered when the window size changes
@@ -2196,6 +2218,13 @@ impl ApplicationHandler<UiEvent> for Viewer {
                 gfx.window.request_redraw();
             }
             WindowEvent::RedrawRequested => self.draw(),
+            WindowEvent::Occluded(occluded) => {
+                tracing::debug!(occluded, "window visibility changed");
+                self.occluded = occluded;
+                if !occluded {
+                    gfx.window.request_redraw();
+                }
+            }
             WindowEvent::Focused(focused) => self.set_focused(focused),
             WindowEvent::ModifiersChanged(m) => self.modifiers = m.state(),
             WindowEvent::KeyboardInput { event, .. } => self.handle_key(&event),
@@ -2236,6 +2265,8 @@ impl ApplicationHandler<UiEvent> for Viewer {
         match event {
             // A buffered frame is drawn when due (see `about_to_wait`).
             UiEvent::FrameReady => {
+                self.frame_pending
+                    .store(false, std::sync::atomic::Ordering::Release);
                 if self
                     .session
                     .frames
