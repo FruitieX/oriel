@@ -30,6 +30,7 @@ mod inhibit;
 pub mod interop;
 pub mod keymap;
 pub mod launcher;
+mod nap;
 mod render;
 pub mod session;
 pub mod settings_ui;

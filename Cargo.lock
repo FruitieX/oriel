@@ -3539,6 +3539,8 @@ dependencies = [
  "hex",
  "jni 0.21.1",
  "libc",
+ "objc2 0.6.5",
+ "objc2-foundation 0.3.2",
  "oriel-audio",
  "oriel-clipboard",
  "oriel-media",

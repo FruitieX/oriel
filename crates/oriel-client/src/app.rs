@@ -111,6 +111,7 @@ pub fn run(
 ) -> Result<ViewerExit> {
     use winit::platform::run_on_demand::EventLoopExtRunOnDemand;
     tracing::info!(host = %connected.host_name, "connected");
+    let _awake = crate::nap::begin("Showing a remote desktop");
     let proxy = Mutex::new(event_loop.create_proxy());
     // One frame notice at a time: the viewer takes the newest frame anyway,
     // and a main thread held up (a hidden window on macOS) must not come
