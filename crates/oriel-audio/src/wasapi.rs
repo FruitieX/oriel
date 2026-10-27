@@ -1,21 +1,41 @@
-//! System audio on Windows, recorded straight from WASAPI: loopback of a
-//! render endpoint in its own mix format, polled (as Sunshine and OBS do).
-//! cpal's loopback stream (event driven) delivered only zeros on a host
-//! whose device meter showed sound.
+//! System audio on Windows, recorded straight from WASAPI.
+//!
+//! By default every process's sound except oriel's own (process loopback,
+//! Windows 10 2004 and later): it is taken from the applications' streams,
+//! wherever they play. Loopback of an output device returned nothing but
+//! zeros for VB-Audio's virtual devices (Voicemeeter, VB-Cable) with music
+//! playing on them, which Parsec still streamed. A chosen device (or older
+//! Windows) is recorded with endpoint loopback in its mix format.
 
 use anyhow::{Context, Result, bail};
 use windows::{
     Win32::{
+        Foundation::{CloseHandle, HANDLE},
         Media::Audio::{
             AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK,
             IAudioCaptureClient, IAudioClient, IMMDeviceEnumerator, MMDeviceEnumerator,
             WAVEFORMATEX, WAVEFORMATEXTENSIBLE, eConsole, eRender,
         },
-        System::Com::{
-            CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoTaskMemFree,
+        Media::Audio::{
+            AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM, AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+            AUDIOCLIENT_ACTIVATION_PARAMS, AUDIOCLIENT_ACTIVATION_PARAMS_0,
+            AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK, AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS,
+            ActivateAudioInterfaceAsync, IActivateAudioInterfaceAsyncOperation,
+            IActivateAudioInterfaceCompletionHandler,
+            IActivateAudioInterfaceCompletionHandler_Impl,
+            PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE,
+            VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
+        },
+        System::{
+            Com::{
+                BLOB, CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx,
+                CoTaskMemFree, StructuredStorage::PROPVARIANT,
+            },
+            Threading::CreateEventW,
+            Variant::VT_BLOB,
         },
     },
-    core::{GUID, HSTRING},
+    core::{GUID, HSTRING, IUnknown, Interface, Ref, implement},
 };
 
 const WAVE_FORMAT_PCM: u16 = 1;
@@ -38,6 +58,32 @@ pub struct Loopback {
     pub rate: u32,
     pub channels: usize,
     sample: Sample,
+    /// Set for event-driven streams (process loopback needs one); the
+    /// stream is polled either way.
+    event: Option<HANDLE>,
+}
+
+/// Hands the activated interface back from `ActivateAudioInterfaceAsync`.
+#[implement(IActivateAudioInterfaceCompletionHandler)]
+struct Activated(std::sync::mpsc::Sender<windows::core::Result<IUnknown>>);
+
+impl IActivateAudioInterfaceCompletionHandler_Impl for Activated_Impl {
+    fn ActivateCompleted(
+        &self,
+        operation: Ref<'_, IActivateAudioInterfaceAsyncOperation>,
+    ) -> windows::core::Result<()> {
+        let result = (|| {
+            let operation = operation.ok()?;
+            let mut hr = windows::core::HRESULT::default();
+            let mut unknown: Option<IUnknown> = None;
+            // SAFETY: both out-pointers are valid for the call.
+            unsafe { operation.GetActivateResult(&mut hr, &mut unknown)? };
+            hr.ok()?;
+            unknown.ok_or_else(|| windows::core::Error::from_hresult(windows::core::HRESULT(-1)))
+        })();
+        let _ = self.0.send(result);
+        Ok(())
+    }
 }
 
 /// What one `read` saw.
@@ -49,6 +95,86 @@ pub struct Read {
 }
 
 impl Loopback {
+    /// Record what every process plays except this one (and its children),
+    /// on any device, as 48 kHz stereo float.
+    pub fn open_processes() -> Result<Self> {
+        // SAFETY: COM calls on this thread, in the multithreaded apartment.
+        // The activation parameters outlive the (waited for) activation.
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+            let mut params = AUDIOCLIENT_ACTIVATION_PARAMS {
+                ActivationType: AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
+                Anonymous: AUDIOCLIENT_ACTIVATION_PARAMS_0 {
+                    ProcessLoopbackParams: AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS {
+                        TargetProcessId: std::process::id(),
+                        ProcessLoopbackMode: PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE,
+                    },
+                },
+            };
+            let mut prop = PROPVARIANT::default();
+            {
+                let inner = &mut *prop.Anonymous.Anonymous;
+                inner.vt = VT_BLOB;
+                inner.Anonymous.blob = BLOB {
+                    cbSize: std::mem::size_of::<AUDIOCLIENT_ACTIVATION_PARAMS>() as u32,
+                    pBlobData: (&mut params as *mut AUDIOCLIENT_ACTIVATION_PARAMS).cast(),
+                };
+            }
+            let (tx, rx) = std::sync::mpsc::channel();
+            let handler: IActivateAudioInterfaceCompletionHandler = Activated(tx).into();
+            let _operation = ActivateAudioInterfaceAsync(
+                VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
+                &IAudioClient::IID,
+                Some(&prop),
+                &handler,
+            )
+            .context("process loopback is not available (Windows 10 2004 or later)")?;
+            let client: IAudioClient = rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .context("process loopback did not activate")?
+                .context("activate process loopback")?
+                .cast()?;
+            const RATE: u32 = 48_000;
+            const CHANNELS: u16 = 2;
+            let format = WAVEFORMATEX {
+                wFormatTag: WAVE_FORMAT_IEEE_FLOAT,
+                nChannels: CHANNELS,
+                nSamplesPerSec: RATE,
+                nAvgBytesPerSec: RATE * CHANNELS as u32 * 4,
+                nBlockAlign: CHANNELS * 4,
+                wBitsPerSample: 32,
+                cbSize: 0,
+            };
+            client
+                .Initialize(
+                    AUDCLNT_SHAREMODE_SHARED,
+                    AUDCLNT_STREAMFLAGS_LOOPBACK
+                        | AUDCLNT_STREAMFLAGS_EVENTCALLBACK
+                        | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
+                    1_000_000,
+                    0,
+                    &format,
+                    None,
+                )
+                .context("start process loopback")?;
+            let event = CreateEventW(None, false, false, None).context("create an event")?;
+            let loopback = Self {
+                capture: client.GetService().context("get the capture client")?,
+                client,
+                rate: RATE,
+                channels: CHANNELS as usize,
+                sample: Sample::F32,
+                event: Some(event),
+            };
+            loopback
+                .client
+                .SetEventHandle(event)
+                .context("set the event")?;
+            loopback.client.Start().context("start the audio client")?;
+            Ok(loopback)
+        }
+    }
+
     /// Record what plays on endpoint `id` (a WASAPI endpoint id, with or
     /// without cpal's `wasapi:` prefix), or on the default output.
     pub fn open(id: Option<&str>) -> Result<(Self, String)> {
@@ -106,6 +232,7 @@ impl Loopback {
                     rate,
                     channels,
                     sample,
+                    event: None,
                 },
                 device_id,
             ))
@@ -159,8 +286,13 @@ impl Loopback {
 
 impl Drop for Loopback {
     fn drop(&mut self) {
-        // SAFETY: stopping a started client.
-        let _ = unsafe { self.client.Stop() };
+        // SAFETY: stopping a started client, then closing our event.
+        unsafe {
+            let _ = self.client.Stop();
+            if let Some(event) = self.event {
+                let _ = CloseHandle(event);
+            }
+        }
     }
 }
 

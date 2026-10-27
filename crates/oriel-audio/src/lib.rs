@@ -249,8 +249,18 @@ fn open_wasapi(
     let thread = std::thread::Builder::new()
         .name("oriel-loopback".into())
         .spawn(move || {
-            // COM objects stay on the thread that made them.
-            let (loopback, id) = match wasapi::Loopback::open(device.as_deref()) {
+            // COM objects stay on the thread that made them. Without a
+            // chosen device: every program's sound (see `wasapi`).
+            let opened = match &device {
+                None => wasapi::Loopback::open_processes()
+                    .map(|l| (l, "all programs but oriel".to_string()))
+                    .or_else(|e| {
+                        tracing::warn!("{e:#}; recording the default output instead");
+                        wasapi::Loopback::open(None)
+                    }),
+                Some(id) => wasapi::Loopback::open(Some(id)),
+            };
+            let (loopback, id) = match opened {
                 Ok(l) => l,
                 Err(e) => {
                     let _ = ready_tx.send(Err(e));
@@ -288,10 +298,44 @@ fn open_wasapi(
     })
 }
 
+/// Read `loopback` for `span` and describe what arrived.
+#[cfg(windows)]
+fn measure(loopback: &wasapi::Loopback, span: Duration) -> Result<String> {
+    let (mut frames, mut silent, mut peak) = (0usize, 0usize, 0f32);
+    let start = Instant::now();
+    let mut buf = Vec::new();
+    while start.elapsed() < span {
+        std::thread::sleep(Duration::from_millis(5));
+        buf.clear();
+        let r = loopback.read(&mut buf)?;
+        frames += r.frames;
+        silent += r.silent_frames;
+        peak = buf.iter().fold(peak, |p, s| p.max(s.abs()));
+    }
+    Ok(format!(
+        "{frames} frames ({silent} flagged silent), peak {peak:.4}, {} Hz {} ch",
+        loopback.rate, loopback.channels
+    ))
+}
+
 /// Record a few seconds of every output device in each way this platform
 /// can, and describe the levels (for `oriel audio-test`).
 pub fn audio_test(seconds: u64) -> Vec<String> {
     let mut lines = Vec::new();
+    #[cfg(windows)]
+    {
+        let span = Duration::from_secs(seconds);
+        let result = std::thread::spawn(move || -> Result<String> {
+            let loopback = wasapi::Loopback::open_processes()?;
+            measure(&loopback, span)
+        })
+        .join()
+        .unwrap_or_else(|_| Err(anyhow::anyhow!("panicked")));
+        lines.push(format!(
+            "all programs but oriel: WASAPI process loopback: {}",
+            result.unwrap_or_else(|e| format!("failed: {e:#}"))
+        ));
+    }
     let mut devices: Vec<(Option<String>, String)> = vec![(None, "default output".into())];
     devices.extend(output_devices().into_iter().map(|d| (Some(d.id), d.name)));
     let span = Duration::from_secs(seconds);
@@ -317,21 +361,7 @@ pub fn audio_test(seconds: u64) -> Vec<String> {
             let id = id.clone();
             let result = std::thread::spawn(move || -> Result<String> {
                 let (loopback, _) = wasapi::Loopback::open(id.as_deref())?;
-                let (mut frames, mut silent, mut peak) = (0usize, 0usize, 0f32);
-                let start = Instant::now();
-                let mut buf = Vec::new();
-                while start.elapsed() < span {
-                    std::thread::sleep(Duration::from_millis(5));
-                    buf.clear();
-                    let r = loopback.read(&mut buf)?;
-                    frames += r.frames;
-                    silent += r.silent_frames;
-                    peak = buf.iter().fold(peak, |p, s| p.max(s.abs()));
-                }
-                Ok(format!(
-                    "{frames} frames ({silent} flagged silent), peak {peak:.4}, {} Hz {} ch",
-                    loopback.rate, loopback.channels
-                ))
+                measure(&loopback, span)
             })
             .join()
             .unwrap_or_else(|_| Err(anyhow::anyhow!("panicked")));

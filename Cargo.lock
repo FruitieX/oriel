@@ -3533,6 +3533,7 @@ dependencies = [
  "pipewire",
  "tracing",
  "windows",
+ "windows-core",
 ]
 
 [[package]]
