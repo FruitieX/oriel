@@ -37,6 +37,9 @@ pub enum UiEvent {
     },
 }
 
+/// How long a frame stream may make no progress before it is skipped.
+const FRAME_STALL: Duration = Duration::from_secs(1);
+
 pub type Sink = Arc<dyn Fn(UiEvent) + Send + Sync>;
 
 /// Handle the UI uses to talk to the session.
@@ -418,14 +421,25 @@ pub fn start(
     tokio::spawn(async move {
         let at = |what: String| *reading.lock() = (Instant::now(), what);
         let result: Result<()> = async {
-            loop {
+            'frames: loop {
                 at("waiting for a frame stream".into());
                 let mut stream = frame_conn.accept_uni().await?;
                 at(format!("reading the header of stream {}", stream.id()));
                 // A frame from a host with another protocol version may
                 // not decode; drop just that frame.
-                let Ok(Some(header)) = read_msg::<FrameHeader>(&mut stream).await else {
-                    continue;
+                let header = match tokio::time::timeout(
+                    FRAME_STALL,
+                    read_msg::<FrameHeader>(&mut stream),
+                )
+                .await
+                {
+                    Ok(Ok(Some(header))) => header,
+                    Ok(_) => continue,
+                    Err(_) => {
+                        tracing::warn!(stream = %stream.id(), "frame header stopped arriving; skipping it");
+                        let _ = stream.stop(0u32.into());
+                        continue;
+                    }
                 };
                 at(format!(
                     "reading frame {} (stream {})",
@@ -436,16 +450,40 @@ pub fn start(
                 frame_stats.lock().arrived(header.capture_us, local_us);
                 // One broken frame costs that frame (the decoder asks for
                 // a keyframe), not the rest of the session's video.
-                let data = match stream.read_to_end(256 * 1024 * 1024).await {
-                    Ok(data) => data,
-                    Err(quinn::ReadToEndError::Read(quinn::ReadError::ConnectionLost(e))) => {
-                        return Err(e.into());
+                // Frames are read in order, so a stream whose data stops
+                // coming held up every later frame (minutes, seen after
+                // macOS had the client in the background, with the later
+                // frames already here). Past a second without progress the
+                // frame is given up: the decoder sees the gap and asks for
+                // a keyframe. One broken frame costs that frame, not the
+                // rest of the session's video.
+                let mut data = Vec::new();
+                loop {
+                    match tokio::time::timeout(FRAME_STALL, stream.read_chunk(1 << 20, true)).await
+                    {
+                        Ok(Ok(Some(chunk))) => {
+                            data.extend_from_slice(&chunk.bytes);
+                            if data.len() > 256 * 1024 * 1024 {
+                                anyhow::bail!("frame {} is too large", header.seq);
+                            }
+                        }
+                        Ok(Ok(None)) => break,
+                        Ok(Err(quinn::ReadError::ConnectionLost(e))) => return Err(e.into()),
+                        Ok(Err(e)) => {
+                            tracing::warn!(seq = header.seq, "frame lost: {e}");
+                            continue 'frames;
+                        }
+                        Err(_) => {
+                            tracing::warn!(
+                                seq = header.seq,
+                                received = data.len(),
+                                "frame stopped arriving; skipping it"
+                            );
+                            let _ = stream.stop(0u32.into());
+                            continue 'frames;
+                        }
                     }
-                    Err(e) => {
-                        tracing::warn!(seq = header.seq, "frame lost: {e}");
-                        continue;
-                    }
-                };
+                }
                 if let Some(ms) = jitter_ms
                     && header.seq.is_multiple_of(3)
                 {

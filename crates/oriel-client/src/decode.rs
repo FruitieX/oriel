@@ -440,6 +440,10 @@ pub fn spawn(
             };
             let mut need_keyframe = false;
             let mut last_request = Instant::now() - Duration::from_secs(1);
+            // The newest frame taken: a later one that is not the next
+            // means frames were skipped (see the frame reader), and the
+            // picture needs a keyframe to be whole again.
+            let mut last_seq: Option<u64> = None;
             while let Ok((header, data, received)) = rx.recv() {
                 watch.jobs.fetch_add(1, Ordering::Relaxed);
                 // Fallen behind (the app was held up in the background):
@@ -464,8 +468,17 @@ pub fn spawn(
                     need_keyframe = true;
                     let _ = ctl.send(ClientMsg::RequestKeyframe);
                     last_request = Instant::now();
+                    last_seq = Some(header.seq);
                     continue;
                 }
+                if last_seq.is_some_and(|l| header.seq > l + 1) && !header.keyframe {
+                    tracing::info!(
+                        missing = header.seq - last_seq.unwrap_or(0) - 1,
+                        "frames skipped; waiting for a keyframe"
+                    );
+                    need_keyframe = true;
+                }
+                last_seq = Some(last_seq.map_or(header.seq, |l| l.max(header.seq)));
                 let hardware = hardware_now();
                 let ack = Datagram::FrameAck {
                     surface: header.surface,
