@@ -164,6 +164,12 @@ enum Command {
     Unpair { name: String },
     /// Show this device's identity and media capabilities.
     Info,
+    /// Record a few seconds from every audio output, in each way available,
+    /// and print the levels (play something meanwhile).
+    AudioTest {
+        #[arg(long, default_value_t = 3)]
+        seconds: u64,
+    },
     /// Run the host as a Windows service (lock screen, UAC, login screen).
     #[command(subcommand)]
     Service(ServiceCommand),
@@ -532,6 +538,13 @@ fn run() -> Result<()> {
             store.save(&paths.trusted_clients())
         }
         Command::Service(cmd) => service(cmd),
+        Command::AudioTest { seconds } => {
+            println!("recording {seconds} s from each output; play something…");
+            for line in oriel_audio::audio_test(seconds) {
+                println!("{line}");
+            }
+            Ok(())
+        }
         Command::Info => {
             let identity = Identity::load_or_create(&paths.config_dir)?;
             println!("config:      {}", paths.config_dir.display());

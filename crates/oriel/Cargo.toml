@@ -10,6 +10,7 @@ oriel-net.workspace = true
 oriel-host.workspace = true
 oriel-client.workspace = true
 oriel-media.workspace = true
+oriel-audio.workspace = true
 anyhow.workspace = true
 tokio.workspace = true
 tracing.workspace = true

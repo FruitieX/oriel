@@ -19,6 +19,8 @@ use parking_lot::Mutex;
 
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(windows)]
+mod wasapi;
 
 pub const SAMPLE_RATE: u32 = 48_000;
 pub const CHANNELS: usize = 2;
@@ -211,9 +213,135 @@ impl Converter {
 /// Keeps a system output capture alive.
 #[allow(dead_code)]
 enum OutputCapture {
+    #[cfg_attr(windows, allow(dead_code))]
     Cpal(cpal::Stream),
     #[cfg(target_os = "linux")]
     PipeWire(linux::SinkCapture),
+    #[cfg(windows)]
+    Wasapi(WasapiCapture),
+}
+
+/// Windows: a thread polling a WASAPI loopback stream (see `wasapi`).
+#[cfg(windows)]
+struct WasapiCapture {
+    stop: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+#[cfg(windows)]
+impl Drop for WasapiCapture {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
+
+#[cfg(windows)]
+fn open_wasapi(
+    tx: crossbeam_channel::Sender<Vec<f32>>,
+    device: Option<String>,
+) -> Result<WasapiCapture> {
+    let stop = Arc::new(AtomicBool::new(false));
+    let thread_stop = stop.clone();
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<()>>();
+    let thread = std::thread::Builder::new()
+        .name("oriel-loopback".into())
+        .spawn(move || {
+            // COM objects stay on the thread that made them.
+            let (loopback, id) = match wasapi::Loopback::open(device.as_deref()) {
+                Ok(l) => l,
+                Err(e) => {
+                    let _ = ready_tx.send(Err(e));
+                    return;
+                }
+            };
+            tracing::info!(
+                device = id,
+                rate = loopback.rate,
+                channels = loopback.channels,
+                "capturing system audio (WASAPI loopback)"
+            );
+            let _ = ready_tx.send(Ok(()));
+            let mut conv = Converter::new(loopback.rate, loopback.channels);
+            let mut buf = Vec::new();
+            while !thread_stop.load(Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_millis(5));
+                buf.clear();
+                match loopback.read(&mut buf) {
+                    Ok(_) if buf.is_empty() => {}
+                    Ok(_) => {
+                        let _ = tx.try_send(conv.convert(&buf));
+                    }
+                    Err(e) => {
+                        tracing::warn!("audio capture failed: {e:#}");
+                        return;
+                    }
+                }
+            }
+        })?;
+    ready_rx.recv().context("audio capture thread exited")??;
+    Ok(WasapiCapture {
+        stop,
+        thread: Some(thread),
+    })
+}
+
+/// Record a few seconds of every output device in each way this platform
+/// can, and describe the levels (for `oriel audio-test`).
+pub fn audio_test(seconds: u64) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut devices: Vec<(Option<String>, String)> = vec![(None, "default output".into())];
+    devices.extend(output_devices().into_iter().map(|d| (Some(d.id), d.name)));
+    let span = Duration::from_secs(seconds);
+    for (id, name) in devices {
+        // cpal's loopback stream (what the host used before).
+        let (tx, rx) = crossbeam_channel::bounded::<Vec<f32>>(4096);
+        let cpal = open_loopback(tx, id.as_deref()).map(|stream| {
+            std::thread::sleep(span);
+            drop(stream);
+            let (mut n, mut peak) = (0usize, 0f32);
+            for chunk in rx.try_iter() {
+                n += chunk.len();
+                peak = chunk.iter().fold(peak, |p, s| p.max(s.abs()));
+            }
+            format!("{n} samples, peak {peak:.4}")
+        });
+        lines.push(format!(
+            "{name}: cpal: {}",
+            cpal.unwrap_or_else(|e| format!("failed: {e:#}"))
+        ));
+        #[cfg(windows)]
+        {
+            let id = id.clone();
+            let result = std::thread::spawn(move || -> Result<String> {
+                let (loopback, _) = wasapi::Loopback::open(id.as_deref())?;
+                let (mut frames, mut silent, mut peak) = (0usize, 0usize, 0f32);
+                let start = Instant::now();
+                let mut buf = Vec::new();
+                while start.elapsed() < span {
+                    std::thread::sleep(Duration::from_millis(5));
+                    buf.clear();
+                    let r = loopback.read(&mut buf)?;
+                    frames += r.frames;
+                    silent += r.silent_frames;
+                    peak = buf.iter().fold(peak, |p, s| p.max(s.abs()));
+                }
+                Ok(format!(
+                    "{frames} frames ({silent} flagged silent), peak {peak:.4}, {} Hz {} ch",
+                    loopback.rate, loopback.channels
+                ))
+            })
+            .join()
+            .unwrap_or_else(|_| Err(anyhow::anyhow!("panicked")));
+            lines.push(format!(
+                "{name}: WASAPI: {}",
+                result.unwrap_or_else(|e| format!("failed: {e:#}"))
+            ));
+        }
+    }
+    lines
 }
 
 fn open_system_output(
@@ -227,7 +355,9 @@ fn open_system_output(
             .as_deref()
             .map(|id| id.strip_prefix("pipewire:").unwrap_or(id)),
     )?));
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(windows)]
+    return Ok(OutputCapture::Wasapi(open_wasapi(tx, device)?));
+    #[cfg(not(any(target_os = "linux", windows)))]
     Ok(OutputCapture::Cpal(open_loopback(tx, device.as_deref())?))
 }
 
