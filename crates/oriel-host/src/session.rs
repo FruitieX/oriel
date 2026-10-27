@@ -508,6 +508,9 @@ pub async fn run(
     .await;
 
     let _ = cmd_tx.send(Cmd::Stop);
+    // Stop sound first: waiting for the pipeline below can take a while,
+    // and a capture left running overlapped the next session's.
+    drop(audio.take());
     drop(mode_guard);
     drop(ev_rx);
     input_task.abort();
