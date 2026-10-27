@@ -566,7 +566,8 @@ async fn send_frame(
 ) {
     let mut stream = match conn.open_uni().await {
         Ok(s) => s,
-        Err(_) => {
+        Err(e) => {
+            tracing::warn!(seq = header.seq, "cannot open a frame stream: {e}");
             shared.delivered(header.seq);
             return;
         }
@@ -586,8 +587,10 @@ async fn send_frame(
             Ok(())
         }
         .await;
+        // Counted as delivered either way (the client will not decode it),
+        // but say why: a stream that stops midway holds up the client.
         if let Err(e) = result {
-            tracing::debug!(seq = header.seq, "frame send failed: {e:#}");
+            tracing::warn!(seq = header.seq, "frame send failed: {e:#}");
         }
         shared.delivered(header.seq);
     });

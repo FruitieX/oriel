@@ -134,8 +134,10 @@ impl Shared {
         if !blocked {
             self.blocked_since_us.store(0, Ordering::Relaxed);
         } else if self.blocked_since_us.load(Ordering::Relaxed) == 0 {
-            self.blocked_since_us
-                .store(self.epoch.elapsed().as_micros() as u64 + 1, Ordering::Relaxed);
+            self.blocked_since_us.store(
+                self.epoch.elapsed().as_micros() as u64 + 1,
+                Ordering::Relaxed,
+            );
         }
     }
 
@@ -885,8 +887,14 @@ mod tests {
     #[test]
     fn quiet_client_gets_a_trickle() {
         // Three quiet seconds: three more frames than decoded.
-        assert_eq!(shared(500, 100, 499, Duration::from_millis(3500)).in_flight(), 397);
+        assert_eq!(
+            shared(500, 100, 499, Duration::from_millis(3500)).in_flight(),
+            397
+        );
         // Never more than 16, however long it stays quiet.
-        assert_eq!(shared(500, 100, 499, Duration::from_secs(600)).in_flight(), 384);
+        assert_eq!(
+            shared(500, 100, 499, Duration::from_secs(600)).in_flight(),
+            384
+        );
     }
 }
