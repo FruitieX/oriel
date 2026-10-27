@@ -25,6 +25,13 @@ Read [docs/architecture.md](docs/architecture.md) first.
   and everything is signed ad hoc. Not notarized: another Mac needs
   right-click → Open the first time. The bundle id `org.fruitiex.oriel`
   matches the config directory, so the app shares the CLI's pairings.
+- PyroWave on macOS uses its native Metal port (`metal/` in the PyroWave
+  repository, built by `nix/pyrowave.nix` on Darwin as
+  `libpyrowave-metal.1.dylib`; the dev shell points `ORIEL_PYROWAVE_LIB`
+  at it and the app bundles it next to the binary). It has no CPU decode
+  call: the client decodes into shared R8 Metal textures and copies the
+  planes out (`pyrowave.rs`, `mod metal`). Test it with a test-pattern host
+  on the same Mac (`--codec pyrowave`) and `oriel connect … --headless`.
 - Windows is tested on the owner's PC (watermelon) through the Samba
   share: `dist/windows` is `Y:\projects\oriel\dist\windows` there. Once
   the owner has started `run-host.bat`, every `build-windows.sh` run

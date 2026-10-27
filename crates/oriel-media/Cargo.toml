@@ -20,6 +20,21 @@ windows = { workspace = true, features = [
   "Win32_Security",
 ] }
 
+# PyroWave's Metal port decodes into Metal textures.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-metal = { version = "0.3", default-features = false, features = [
+  "std",
+  "MTLAllocation",
+  "MTLCommandBuffer",
+  "MTLCommandQueue",
+  "MTLDevice",
+  "MTLPixelFormat",
+  "MTLResource",
+  "MTLTexture",
+  "MTLTypes",
+] }
+
 # Android decodes through MediaCodec instead of FFmpeg.
 [target.'cfg(not(target_os = "android"))'.dependencies]
 ffmpeg-sys-next.workspace = true

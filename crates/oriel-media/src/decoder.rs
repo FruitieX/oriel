@@ -518,7 +518,12 @@ impl Decoder {
             let dec = crate::pyrowave::PyroDecoder::new(width, height)?;
             return Ok(Self {
                 inner: DecoderInner::Pyro(dec),
-                description: "pyrowave (Vulkan)".into(),
+                description: if cfg!(target_os = "macos") {
+                    "pyrowave (Metal)"
+                } else {
+                    "pyrowave (Vulkan)"
+                }
+                .into(),
             });
         }
         let dec = FfDecoder::open(codec, hardware, export_dmabuf)?;

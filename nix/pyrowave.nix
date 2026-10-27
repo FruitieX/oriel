@@ -57,15 +57,18 @@ stdenv.mkDerivation {
   buildInputs = lib.optional stdenv.hostPlatform.isWindows windows.pthreads;
 
   cmakeFlags = [ "-DCMAKE_BUILD_TYPE=Release" ];
+  # macOS: the native Metal port (metal/, no Granite or Vulkan), which
+  # oriel's macOS client loads instead.
+  cmakeDir = if stdenv.hostPlatform.isDarwin then "../metal" else "..";
 
-  ninjaFlags = [ "pyrowave-shared" ];
+  ninjaFlags = [ (if stdenv.hostPlatform.isDarwin then "pyrowave-metal" else "pyrowave-shared") ];
 
   installPhase = ''
     runHook preInstall
     mkdir -p $out/lib $out/bin $out/include/pyrowave
-    cp ../pyrowave.h $out/include/pyrowave/
+    cp ../pyrowave.h ../metal/pyrowave_metal.h $out/include/pyrowave/
     cp -P libpyrowave-shared.so* $out/lib/ 2>/dev/null || true
-    cp -P libpyrowave-shared*.dylib $out/lib/ 2>/dev/null || true
+    cp -P libpyrowave-metal*.dylib $out/lib/ 2>/dev/null || true
     cp *.dll $out/bin/ 2>/dev/null || true
     runHook postInstall
   '';

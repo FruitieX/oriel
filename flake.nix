@@ -270,9 +270,12 @@
               LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
             }
             // lib.optionalAttrs isLinux {
-              # PyroWave on macOS (MoltenVK) is untested; Linux only for now.
               ORIEL_PYROWAVE_LIB = "${pyrowave}/lib/libpyrowave-shared.so.1";
               LD_LIBRARY_PATH = lib.makeLibraryPath (linuxRuntimeLibs pkgs);
+            }
+            // lib.optionalAttrs pkgs.stdenv.hostPlatform.isDarwin {
+              # PyroWave's native Metal port (see nix/pyrowave.nix).
+              ORIEL_PYROWAVE_LIB = "${pyrowave}/lib/libpyrowave-metal.1.dylib";
             }
             // lib.optionalAttrs windowsCross {
               # The mingw compiler is not on nativeBuildInputs: its setup hook

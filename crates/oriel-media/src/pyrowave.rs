@@ -74,10 +74,13 @@ struct Api {
     decoder_create: unsafe extern "C" fn(*const DecoderCreateInfo, *mut Handle) -> c_int,
     decoder_push_packet: unsafe extern "C" fn(Handle, *const c_void, usize) -> c_int,
     decoder_decode_is_ready: unsafe extern "C" fn(Handle, bool) -> bool,
+    // Vulkan library only (the Metal port decodes into textures).
+    #[cfg(not(target_os = "macos"))]
     decoder_decode_cpu_buffer_synchronous: unsafe extern "C" fn(Handle, *const CpuBuffer) -> c_int,
     decoder_destroy: unsafe extern "C" fn(Handle),
     // GPU interop (used by the Windows zero-copy path).
     #[allow(dead_code)]
+    #[cfg(not(target_os = "macos"))]
     create_device_by_compat: unsafe extern "C" fn(
         u32,
         u32,
@@ -88,25 +91,39 @@ struct Api {
         *mut Handle,
     ) -> c_int,
     #[allow(dead_code)]
+    #[cfg(not(target_os = "macos"))]
     image_create: unsafe extern "C" fn(*const gpu::ImageCreateInfo, *mut Handle) -> c_int,
     #[allow(dead_code)]
+    #[cfg(not(target_os = "macos"))]
     image_destroy: unsafe extern "C" fn(Handle),
     #[allow(dead_code)]
+    #[cfg(not(target_os = "macos"))]
     image_get_image_view: unsafe extern "C" fn(Handle, u32, u32, *mut gpu::ImageView) -> c_int,
     #[allow(dead_code)]
+    #[cfg(not(target_os = "macos"))]
     sync_object_create: unsafe extern "C" fn(*const gpu::SyncCreateInfo, *mut Handle) -> c_int,
     #[allow(dead_code)]
+    #[cfg(not(target_os = "macos"))]
     sync_object_get_semaphore: unsafe extern "C" fn(Handle) -> u64,
     #[allow(dead_code)]
+    #[cfg(not(target_os = "macos"))]
     sync_object_destroy: unsafe extern "C" fn(Handle),
+    #[cfg(not(target_os = "macos"))]
     decoder_decode_gpu_buffer: unsafe extern "C" fn(
         Handle,
         *const gpu::SyncOp,
         *const gpu::SyncOp,
         *const gpu::GpuBuffers,
     ) -> c_int,
+    #[cfg(not(target_os = "macos"))]
     sync_object_cpu_wait: unsafe extern "C" fn(Handle, u64, u64) -> c_int,
+    /// Metal port: decode into three `id<MTLTexture>` planes, recorded into
+    /// an `id<MTLCommandBuffer>` the caller commits.
+    #[cfg(target_os = "macos")]
+    decoder_decode_gpu_buffer:
+        unsafe extern "C" fn(Handle, *mut c_void, *const [*mut c_void; 3]) -> c_int,
     #[allow(dead_code)]
+    #[cfg(not(target_os = "macos"))]
     encoder_encode_gpu_scaled: unsafe extern "C" fn(
         Handle,
         *const gpu::SyncOp,
@@ -120,7 +137,8 @@ fn library_candidates() -> Vec<PathBuf> {
     let name = if cfg!(windows) {
         "libpyrowave-shared-1.dll"
     } else if cfg!(target_os = "macos") {
-        "libpyrowave-shared.1.dylib"
+        // PyroWave's native Metal port.
+        "libpyrowave-metal.1.dylib"
     } else {
         "libpyrowave-shared.so.1"
     };
@@ -166,20 +184,33 @@ fn load() -> Result<Api, String> {
             decoder_create: sym!("pyrowave_decoder_create"),
             decoder_push_packet: sym!("pyrowave_decoder_push_packet"),
             decoder_decode_is_ready: sym!("pyrowave_decoder_decode_is_ready"),
+            #[cfg(not(target_os = "macos"))]
             decoder_decode_cpu_buffer_synchronous: sym!(
                 "pyrowave_decoder_decode_cpu_buffer_synchronous"
             ),
             decoder_destroy: sym!("pyrowave_decoder_destroy"),
+            #[cfg(not(target_os = "macos"))]
             create_device_by_compat: sym!("pyrowave_create_device_by_compat"),
+            #[cfg(not(target_os = "macos"))]
             image_create: sym!("pyrowave_image_create"),
+            #[cfg(not(target_os = "macos"))]
             image_destroy: sym!("pyrowave_image_destroy"),
+            #[cfg(not(target_os = "macos"))]
             image_get_image_view: sym!("pyrowave_image_get_image_view"),
+            #[cfg(not(target_os = "macos"))]
             sync_object_create: sym!("pyrowave_sync_object_create"),
+            #[cfg(not(target_os = "macos"))]
             sync_object_get_semaphore: sym!("pyrowave_sync_object_get_semaphore"),
+            #[cfg(not(target_os = "macos"))]
             sync_object_destroy: sym!("pyrowave_sync_object_destroy"),
+            #[cfg(not(target_os = "macos"))]
             encoder_encode_gpu_scaled: sym!("pyrowave_encoder_encode_gpu_scaled"),
+            #[cfg(not(target_os = "macos"))]
             decoder_decode_gpu_buffer: sym!("pyrowave_decoder_decode_gpu_buffer"),
+            #[cfg(not(target_os = "macos"))]
             sync_object_cpu_wait: sym!("pyrowave_sync_object_cpu_wait"),
+            #[cfg(target_os = "macos")]
+            decoder_decode_gpu_buffer: sym!("pyrowave_decoder_decode_gpu_buffer"),
             _lib: lib,
             path,
         });
@@ -224,12 +255,13 @@ impl Device {
         let mut device = ptr::null_mut();
         pw(
             unsafe { (api.create_default_device)(&mut device) },
-            "create PyroWave Vulkan device",
+            "create PyroWave device",
         )?;
         Ok(Self(device))
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 impl Device {
     /// A device on the GPU with this adapter LUID (for sharing textures).
     #[cfg_attr(not(windows), allow(dead_code))]
@@ -261,6 +293,7 @@ impl Device {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 impl Device {
     /// A device on the GPU with these Vulkan device and driver UUIDs.
     fn on_uuid(device_uuid: [u8; 16], driver_uuid: [u8; 16]) -> Result<Self> {
@@ -496,12 +529,18 @@ impl Drop for PyroEncoder {
 pub struct PyroDecoder {
     decoder: Handle,
     /// Plane image sets imported for GPU decoding, and the sync object
-    /// signalled when a decode finishes.
+    /// signalled when a decode finishes (not on macOS).
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
     gpu_sets: Vec<[Handle; 3]>,
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
     gpu_sync: Handle,
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
     gpu_value: u64,
     _device: Device,
     size: (u32, u32),
+    /// Metal port: textures to decode into, read back to the CPU.
+    #[cfg(target_os = "macos")]
+    metal: Option<metal::Readback>,
 }
 
 /// A plane image created by the renderer with exportable memory.
@@ -547,9 +586,12 @@ impl PyroDecoder {
             gpu_value: 0,
             _device: device,
             size: (width, height),
+            #[cfg(target_os = "macos")]
+            metal: None,
         })
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// A decoder on the display GPU (by Vulkan UUIDs) that can decode
     /// straight into the renderer's textures.
     pub fn new_on_gpu(
@@ -602,6 +644,7 @@ impl PyroDecoder {
         })
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// Import a set of Y, Cb, Cr planes to decode into; returns its index.
     pub fn import_planes(&mut self, planes: [ExternalPlane; 3]) -> Result<usize> {
         let api = api()?;
@@ -625,6 +668,7 @@ impl PyroDecoder {
         Ok(self.gpu_sets.len() - 1)
     }
 
+    #[cfg(not(target_os = "macos"))]
     /// Decode a frame into plane set `set`, waiting until the GPU is done.
     /// Returns false when the frame was incomplete.
     pub fn decode_into(&mut self, data: &[u8], set: usize) -> Result<bool> {
@@ -722,10 +766,28 @@ impl PyroDecoder {
             let decoded =
                 DecodedFrame::from_raw(frame, PlaneFormat::Yuv420p, ColorMatrix::Bt709, true);
             let buffers = cpu_buffer(frame);
+            #[cfg(not(target_os = "macos"))]
             pw(
                 (api.decoder_decode_cpu_buffer_synchronous)(self.decoder, &buffers),
                 "PyroWave decode",
             )?;
+            #[cfg(target_os = "macos")]
+            {
+                if self.metal.is_none() {
+                    self.metal = Some(metal::Readback::new(self.size.0, self.size.1)?);
+                }
+                let readback = self.metal.as_ref().unwrap();
+                let decoder = self.decoder;
+                readback.run(|command_buffer, planes| {
+                    pw(
+                        (api.decoder_decode_gpu_buffer)(decoder, command_buffer, &planes),
+                        "PyroWave decode",
+                    )
+                })?;
+                for i in 0..3 {
+                    readback.copy_out(i, buffers.data[i].cast(), buffers.row_stride_in_bytes[i]);
+                }
+            }
             Ok(Some(decoded))
         }
     }
@@ -736,11 +798,13 @@ impl Drop for PyroDecoder {
         if let Ok(api) = api() {
             unsafe {
                 (api.decoder_destroy)(self.decoder);
+                #[cfg(not(target_os = "macos"))]
                 for set in self.gpu_sets.drain(..) {
                     for image in set {
                         (api.image_destroy)(image);
                     }
                 }
+                #[cfg(not(target_os = "macos"))]
                 if !self.gpu_sync.is_null() {
                     (api.sync_object_destroy)(self.gpu_sync);
                 }
@@ -1126,5 +1190,112 @@ impl PyroEncoder {
         };
         gpu.encode(self.encoder, &rate)?;
         self.finish(started)
+    }
+}
+
+/// PyroWave's Metal port decodes into textures only: decode into shared
+/// (CPU-visible) R8 planes and copy them out for the usual upload.
+#[cfg(target_os = "macos")]
+mod metal {
+    use std::{ffi::c_void, ptr::NonNull};
+
+    use anyhow::{Context, Result, bail};
+    use objc2::{rc::Retained, runtime::ProtocolObject};
+    use objc2_metal::{
+        MTLCommandBuffer, MTLCommandBufferStatus, MTLCommandQueue, MTLCreateSystemDefaultDevice,
+        MTLDevice, MTLOrigin, MTLPixelFormat, MTLRegion, MTLSize, MTLStorageMode, MTLTexture,
+        MTLTextureDescriptor, MTLTextureUsage,
+    };
+
+    pub struct Readback {
+        queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
+        planes: [Retained<ProtocolObject<dyn MTLTexture>>; 3],
+        sizes: [(usize, usize); 3],
+    }
+
+    impl Readback {
+        /// Planes for a `width` x `height` 4:2:0 frame, on the system's
+        /// default GPU (which PyroWave's default device also uses).
+        pub fn new(width: u32, height: u32) -> Result<Self> {
+            let device = MTLCreateSystemDefaultDevice().context("no Metal device")?;
+            let queue = device.newCommandQueue().context("create a Metal queue")?;
+            let (w, h) = (width as usize, height as usize);
+            let half = (w.div_ceil(2), h.div_ceil(2));
+            let sizes = [(w, h), half, half];
+            let plane = |(w, h): (usize, usize)| -> Result<_> {
+                // SAFETY: a plain descriptor for a 2D texture.
+                let desc = unsafe {
+                    MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
+                        MTLPixelFormat::R8Unorm,
+                        w,
+                        h,
+                        false,
+                    )
+                };
+                desc.setUsage(MTLTextureUsage::ShaderWrite | MTLTextureUsage::ShaderRead);
+                desc.setStorageMode(MTLStorageMode::Shared);
+                device
+                    .newTextureWithDescriptor(&desc)
+                    .context("create a Metal plane texture")
+            };
+            Ok(Self {
+                queue,
+                planes: [plane(sizes[0])?, plane(sizes[1])?, plane(sizes[2])?],
+                sizes,
+            })
+        }
+
+        /// Record the decode with `decode(command_buffer, planes)`, run it
+        /// and wait until the GPU has finished.
+        pub fn run(
+            &self,
+            decode: impl FnOnce(*mut c_void, [*mut c_void; 3]) -> Result<()>,
+        ) -> Result<()> {
+            let command_buffer = self
+                .queue
+                .commandBuffer()
+                .context("create a Metal command buffer")?;
+            let raw = |t: &Retained<ProtocolObject<dyn MTLTexture>>| -> *mut c_void {
+                Retained::as_ptr(t).cast_mut().cast()
+            };
+            decode(
+                Retained::as_ptr(&command_buffer).cast_mut().cast(),
+                [
+                    raw(&self.planes[0]),
+                    raw(&self.planes[1]),
+                    raw(&self.planes[2]),
+                ],
+            )?;
+            command_buffer.commit();
+            command_buffer.waitUntilCompleted();
+            if command_buffer.status() != MTLCommandBufferStatus::Completed {
+                bail!(
+                    "PyroWave's Metal decode failed: {:?}",
+                    command_buffer.error()
+                );
+            }
+            Ok(())
+        }
+
+        /// Copy plane `i` to `dst`, rows `stride` bytes apart.
+        pub fn copy_out(&self, i: usize, dst: *mut u8, stride: usize) {
+            let (w, h) = self.sizes[i];
+            let Some(dst) = NonNull::new(dst.cast::<c_void>()) else {
+                return;
+            };
+            let region = MTLRegion {
+                origin: MTLOrigin { x: 0, y: 0, z: 0 },
+                size: MTLSize {
+                    width: w,
+                    height: h,
+                    depth: 1,
+                },
+            };
+            // SAFETY: `dst` holds `h` rows of `stride` >= `w` bytes, and the
+            // GPU has finished with the texture (see `run`).
+            unsafe {
+                self.planes[i].getBytes_bytesPerRow_fromRegion_mipmapLevel(dst, stride, region, 0)
+            };
+        }
     }
 }

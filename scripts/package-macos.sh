@@ -14,6 +14,12 @@ contents=$app/Contents
 rm -rf "$app"
 mkdir -p "$contents/MacOS" "$contents/Frameworks" "$contents/Resources"
 install -m 755 target/release/oriel "$contents/MacOS/oriel"
+# PyroWave (Metal port), which oriel looks for next to itself.
+if [ -n "${ORIEL_PYROWAVE_LIB:-}" ]; then
+  install -m 644 "$ORIEL_PYROWAVE_LIB" "$contents/MacOS/libpyrowave-metal.1.dylib"
+else
+  echo "ORIEL_PYROWAVE_LIB unset: the app will not offer PyroWave" >&2
+fi
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -100,7 +106,7 @@ fi
 
 # Ad-hoc signature: runs on this Mac (and others after "Open" once); not
 # notarized.
-codesign --force --sign - "$contents"/Frameworks/* "$app" 2>&1 |
+codesign --force --sign - "$contents"/Frameworks/* "$contents"/MacOS/*.dylib "$app" 2>&1 |
   { grep -v 'replacing existing signature' || true; } >&2
 
 zip="dist/oriel-$version-macos-$(uname -m).zip"
