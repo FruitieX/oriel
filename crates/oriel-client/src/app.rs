@@ -194,6 +194,11 @@ struct Viewer {
     /// nothing is drawn. On macOS drawing would wait up to a second for a
     /// buffer the window server does not hand out, freezing the app.
     occluded: bool,
+    /// The newest decoded frame, uploaded only when it is drawn. Uploading
+    /// every frame while the window was hidden piled them up: nothing is
+    /// submitted then, and wgpu keeps each upload until the next submission
+    /// (110 GB after a while, then seconds of copying on return).
+    next_picture: Option<crate::decode::Picture>,
     session: Session,
     host_name: String,
     options: ViewerOptions,
@@ -293,6 +298,7 @@ impl Viewer {
         Self {
             frame_pending: Default::default(),
             occluded: false,
+            next_picture: None,
             session,
             host_name,
             gfx: None,
@@ -1275,13 +1281,8 @@ impl Viewer {
 
     fn draw(&mut self) {
         if let Some(ready) = self.session.frames.take(Instant::now()) {
-            if let Some(gfx) = &mut self.gfx {
-                match ready.picture {
-                    crate::decode::Picture::Cpu(frame) => gfx.renderer.upload(&frame),
-                    #[cfg(zero_copy)]
-                    crate::decode::Picture::Gpu(picture) => gfx.renderer.show_gpu(picture),
-                }
-            }
+            // Drops the one kept before.
+            self.next_picture = Some(ready.picture);
             let now = Instant::now();
             // Capture on the host to drawing here (clock-synced), or from
             // receipt when the clocks are not synced yet.
@@ -1307,6 +1308,15 @@ impl Viewer {
         }
         if self.occluded {
             return;
+        }
+        if let Some(picture) = self.next_picture.take()
+            && let Some(gfx) = &mut self.gfx
+        {
+            match picture {
+                crate::decode::Picture::Cpu(frame) => gfx.renderer.upload(&frame),
+                #[cfg(zero_copy)]
+                crate::decode::Picture::Gpu(picture) => gfx.renderer.show_gpu(picture),
+            }
         }
         let viewport = self.viewport();
         let Some(gfx) = &mut self.gfx else { return };
@@ -1935,8 +1945,7 @@ fn menu_button(ctx: &egui::Context, s: &OverlayState, actions: &mut Vec<Action>)
         } else {
             pad * 2.0 + if logo { logo_size } else { 0.0 } + gap + galley.size().x
         };
-        let (rect, response) =
-            ui.allocate_exact_size(egui::vec2(w, h), MENU_BUTTON_SENSE);
+        let (rect, response) = ui.allocate_exact_size(egui::vec2(w, h), MENU_BUTTON_SENSE);
         let alpha = if response.hovered() || response.dragged() {
             235
         } else {
