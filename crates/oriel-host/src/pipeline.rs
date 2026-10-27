@@ -130,8 +130,11 @@ impl Shared {
 
     /// Frames sent but not yet decoded. Pacing on decoding (not delivery)
     /// keeps a slow client from piling up a backlog in its receive buffers.
-    /// Delivery only counts when decode acknowledgements stall (lost
-    /// datagrams, an old client).
+    /// Delivery only counts when decode acknowledgements stall. For an old
+    /// client (no acknowledgements at all) it counts in full; otherwise
+    /// one more frame per quiet second, up to 16: enough to get past lost
+    /// datagrams, without piling up minutes of video for a client that is
+    /// held up (a hidden macOS app).
     fn in_flight(&self) -> u64 {
         let next = self.next_seq.load(Ordering::Relaxed);
         let decoded = self.decoded_below.load(Ordering::Relaxed);
@@ -141,7 +144,11 @@ impl Shared {
                 .load(Ordering::Relaxed)
                 .min(self.epoch.elapsed().as_micros() as u64);
         let acked = if since_ack > 1_000_000 {
-            decoded.max(self.delivered_below.load(Ordering::Relaxed))
+            let mut delivered = self.delivered_below.load(Ordering::Relaxed);
+            if decoded > 0 {
+                delivered = delivered.min(decoded + (since_ack / 1_000_000).min(16));
+            }
+            decoded.max(delivered)
         } else {
             decoded
         };
@@ -799,5 +806,41 @@ impl Pipeline {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `Shared` whose last decode acknowledgement was `quiet` ago.
+    fn shared(next: u64, decoded: u64, delivered: u64, quiet: Duration) -> Shared {
+        let s = Shared {
+            epoch: Instant::now() - quiet - Duration::from_secs(1),
+            ..Default::default()
+        };
+        s.next_seq.store(next, Ordering::Relaxed);
+        s.decoded_below.store(decoded, Ordering::Relaxed);
+        s.delivered_below.store(delivered, Ordering::Relaxed);
+        s.last_decoded_us.store(1_000_000, Ordering::Relaxed);
+        s
+    }
+
+    #[test]
+    fn paces_on_decoding() {
+        assert_eq!(shared(10, 7, 10, Duration::ZERO).in_flight(), 3);
+    }
+
+    #[test]
+    fn old_client_paces_on_delivery() {
+        assert_eq!(shared(500, 0, 499, Duration::from_secs(60)).in_flight(), 1);
+    }
+
+    #[test]
+    fn quiet_client_gets_a_trickle() {
+        // Three quiet seconds: three more frames than decoded.
+        assert_eq!(shared(500, 100, 499, Duration::from_millis(3500)).in_flight(), 397);
+        // Never more than 16, however long it stays quiet.
+        assert_eq!(shared(500, 100, 499, Duration::from_secs(600)).in_flight(), 384);
     }
 }
