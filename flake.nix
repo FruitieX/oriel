@@ -254,6 +254,8 @@
                   glslang
                 ]
                 ++ lib.optionals isLinux [ vulkan-tools ]
+                # The app icon (scripts/package-macos.sh)
+                ++ lib.optionals pkgs.stdenv.hostPlatform.isDarwin [ resvg ]
                 ++ lib.optionals windowsCross [ wineWow64Packages.stable ];
               buildInputs =
                 with pkgs;

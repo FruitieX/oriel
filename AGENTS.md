@@ -17,6 +17,14 @@ Read [docs/architecture.md](docs/architecture.md) first.
   `packaging/windows/installer.nsi`) and a portable ZIP into `dist/`. The
   installer can be tested under Wine in a scratch `WINEPREFIX` (`/S` for a
   silent install; even the service installs and runs there).
+- `scripts/package-macos.sh` (on a Mac) builds `dist/oriel.app` and a
+  ZIP of it: the icon is rendered from `assets/oriel.svg`, the FFmpeg
+  libraries and everything they load from the Nix store are copied into
+  `Contents/Frameworks` (73 of them; two packages share library names,
+  those get their package's name as a prefix) and relinked to `@rpath`,
+  and everything is signed ad hoc. Not notarized: another Mac needs
+  right-click → Open the first time. The bundle id `org.fruitiex.oriel`
+  matches the config directory, so the app shares the CLI's pairings.
 - Windows is tested on the owner's PC (watermelon) through the Samba
   share: `dist/windows` is `Y:\projects\oriel\dist\windows` there. Once
   the owner has started `run-host.bat`, every `build-windows.sh` run

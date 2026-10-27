@@ -6,8 +6,8 @@ display) and the client (connects to hosts).
 - Hosts: Windows (Desktop Duplication + NVENC/AMF/QSV/Media Foundation via
   FFmpeg, zero-copy on NVIDIA and AMD) and Linux under GNOME (Mutter's
   remote desktop API + PipeWire, no permission prompt; VAAPI encoding).
-- Clients: Linux (Wayland, X11), Windows, Android; macOS should build but
-  is untested.
+- Clients: Linux (Wayland, X11), Windows, Android, macOS (an app bundle
+  from `scripts/package-macos.sh`).
 - Client-side cursor: the host sends cursor images, the client's own OS cursor
   draws them, so pointing feels local even with latency. When an application
   on the host hides and confines the cursor (games), the client switches to
@@ -164,6 +164,7 @@ nix develop
 cargo build --release -p oriel          # Linux client (and test host)
 ./scripts/build-windows.sh --release    # Windows build in dist/windows
 ./scripts/package-windows.sh            # installer + portable ZIP in dist/
+./scripts/package-macos.sh              # on a Mac: oriel.app + ZIP in dist/
 nix build                               # Nix package
 
 nix develop .#android
