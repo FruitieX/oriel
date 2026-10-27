@@ -64,8 +64,13 @@ pub struct Loopback {
 }
 
 /// Hands the activated interface back from `ActivateAudioInterfaceAsync`.
+/// It also owns the activation parameters: Windows keeps the handler alive
+/// until it calls back, so they cannot be freed under a slow activation.
 #[implement(IActivateAudioInterfaceCompletionHandler)]
-struct Activated(std::sync::mpsc::Sender<windows::core::Result<IUnknown>>);
+struct Activated {
+    tx: std::sync::mpsc::Sender<windows::core::Result<IUnknown>>,
+    _params: Box<AUDIOCLIENT_ACTIVATION_PARAMS>,
+}
 
 impl IActivateAudioInterfaceCompletionHandler_Impl for Activated_Impl {
     fn ActivateCompleted(
@@ -81,7 +86,7 @@ impl IActivateAudioInterfaceCompletionHandler_Impl for Activated_Impl {
             hr.ok()?;
             unknown.ok_or_else(|| windows::core::Error::from_hresult(windows::core::HRESULT(-1)))
         })();
-        let _ = self.0.send(result);
+        let _ = self.tx.send(result);
         Ok(())
     }
 }
@@ -102,7 +107,7 @@ impl Loopback {
         // The activation parameters outlive the (waited for) activation.
         unsafe {
             let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
-            let mut params = AUDIOCLIENT_ACTIVATION_PARAMS {
+            let params = Box::new(AUDIOCLIENT_ACTIVATION_PARAMS {
                 ActivationType: AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
                 Anonymous: AUDIOCLIENT_ACTIVATION_PARAMS_0 {
                     ProcessLoopbackParams: AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS {
@@ -110,18 +115,28 @@ impl Loopback {
                         ProcessLoopbackMode: PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE,
                     },
                 },
+            });
+            let blob = BLOB {
+                cbSize: std::mem::size_of::<AUDIOCLIENT_ACTIVATION_PARAMS>() as u32,
+                pBlobData: (&*params as *const AUDIOCLIENT_ACTIVATION_PARAMS)
+                    .cast_mut()
+                    .cast(),
             };
+            let (tx, rx) = std::sync::mpsc::channel();
+            let handler: IActivateAudioInterfaceCompletionHandler = Activated {
+                tx,
+                _params: params,
+            }
+            .into();
+            // A PROPVARIANT pointing at the parameters (now owned by the
+            // handler); it is plain data and frees nothing.
             let mut prop = PROPVARIANT::default();
             {
                 let inner = &mut *prop.Anonymous.Anonymous;
                 inner.vt = VT_BLOB;
-                inner.Anonymous.blob = BLOB {
-                    cbSize: std::mem::size_of::<AUDIOCLIENT_ACTIVATION_PARAMS>() as u32,
-                    pBlobData: (&mut params as *mut AUDIOCLIENT_ACTIVATION_PARAMS).cast(),
-                };
+                inner.Anonymous.blob = blob;
             }
-            let (tx, rx) = std::sync::mpsc::channel();
-            let handler: IActivateAudioInterfaceCompletionHandler = Activated(tx).into();
+            tracing::info!(pid = std::process::id(), "activating process loopback");
             let _operation = ActivateAudioInterfaceAsync(
                 VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
                 &IAudioClient::IID,
@@ -134,6 +149,7 @@ impl Loopback {
                 .context("process loopback did not activate")?
                 .context("activate process loopback")?
                 .cast()?;
+            tracing::info!("process loopback activated");
             const RATE: u32 = 48_000;
             const CHANNELS: u16 = 2;
             let format = WAVEFORMATEX {
@@ -157,6 +173,7 @@ impl Loopback {
                     None,
                 )
                 .context("start process loopback")?;
+            tracing::info!("process loopback initialized");
             let event = CreateEventW(None, false, false, None).context("create an event")?;
             let loopback = Self {
                 capture: client.GetService().context("get the capture client")?,
