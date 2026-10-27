@@ -128,9 +128,11 @@ impl Loopback {
                 _params: params,
             }
             .into();
-            // A PROPVARIANT pointing at the parameters (now owned by the
-            // handler); it is plain data and frees nothing.
-            let mut prop = PROPVARIANT::default();
+            // A PROPVARIANT pointing at the parameters (owned by the
+            // handler). Never dropped: windows-rs drops one with
+            // PropVariantClear, which would free the parameters with COM's
+            // allocator (heap corruption, the host crashed).
+            let mut prop = std::mem::ManuallyDrop::new(PROPVARIANT::default());
             {
                 let inner = &mut *prop.Anonymous.Anonymous;
                 inner.vt = VT_BLOB;
@@ -140,7 +142,7 @@ impl Loopback {
             let _operation = ActivateAudioInterfaceAsync(
                 VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
                 &IAudioClient::IID,
-                Some(&prop),
+                Some(&*prop),
                 &handler,
             )
             .context("process loopback is not available (Windows 10 2004 or later)")?;
