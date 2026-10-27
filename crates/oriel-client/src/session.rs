@@ -374,21 +374,34 @@ pub fn start(
             while conn.close_reason().is_none() {
                 tokio::time::sleep(Duration::from_secs(1)).await;
                 let (since, what) = reading.lock().clone();
-                let path = conn.stats().path;
+                let stats = conn.stats();
+                let path = stats.path;
                 // A still screen sends nothing: only a stream that stops
                 // midway is a stall. Waiting for streams is logged at
                 // debug, with the link's state either way.
                 let midway = !what.starts_with("waiting");
                 if !stalled && since.elapsed() > Duration::from_secs(2) {
                     stalled = true;
+                    // The host reports being held up by flow control
+                    // (DATA_BLOCKED: the whole connection; STREAM_DATA_BLOCKED:
+                    // one stream; STREAMS_BLOCKED: no stream ids left).
                     let msg = format!(
-                        "frame reader {what} for {:.1} s (rtt {:?}, cwnd {}, lost {} of {} packets, congestion events {})",
+                        "frame reader {what} for {:.1} s (rtt {:?}, cwnd {}, lost {} of {} packets, \
+                         congestion events {}; host blocked by flow control: connection {}, \
+                         stream {}, stream ids {}; we granted max_data {} max_stream_data {} \
+                         max_streams {})",
                         since.elapsed().as_secs_f32(),
                         path.rtt,
                         path.cwnd,
                         path.lost_packets,
                         path.sent_packets,
                         path.congestion_events,
+                        stats.frame_rx.data_blocked,
+                        stats.frame_rx.stream_data_blocked,
+                        stats.frame_rx.streams_blocked_uni,
+                        stats.frame_tx.max_data,
+                        stats.frame_tx.max_stream_data,
+                        stats.frame_tx.max_streams_uni,
                     );
                     if midway {
                         tracing::warn!("{msg}");
