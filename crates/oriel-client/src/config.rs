@@ -43,6 +43,10 @@ pub struct ClientConfig {
     /// "auto", "desktop" or "captured".
     pub mouse: String,
     pub audio: bool,
+    /// Opus bitrate of the host's sound, in kbit/s.
+    pub audio_kbps: u32,
+    /// Mute the host's own speakers while connected (Windows hosts).
+    pub mute_host: bool,
     pub fullscreen: bool,
     pub show_stats: bool,
     /// Share this computer when oriel starts.
@@ -100,6 +104,8 @@ pub struct HostPrefs {
     pub mouse: Option<String>,
     pub gamepads: Option<bool>,
     pub audio: Option<bool>,
+    pub audio_kbps: Option<u32>,
+    pub mute_host: Option<bool>,
     /// Local output ("" for the default device).
     pub playback_device: Option<String>,
     pub microphone: Option<bool>,
@@ -137,6 +143,8 @@ pub struct Effective {
     pub mouse: String,
     pub gamepads: bool,
     pub audio: bool,
+    pub audio_kbps: u32,
+    pub mute_host: bool,
     pub playback_device: Option<String>,
     pub microphone: bool,
     pub microphone_device: Option<String>,
@@ -327,6 +335,9 @@ impl Default for ClientConfig {
             capture: "duplication".into(),
             mouse: "auto".into(),
             audio: true,
+            // Transparent for music; Opus allows 6–510.
+            audio_kbps: 128,
+            mute_host: false,
             fullscreen: false,
             show_stats: false,
             share: false,
@@ -369,6 +380,8 @@ impl ClientConfig {
             mouse: h.mouse.clone().unwrap_or_else(|| self.mouse.clone()),
             gamepads: h.gamepads.unwrap_or(self.gamepads),
             audio: h.audio.unwrap_or(self.audio),
+            audio_kbps: h.audio_kbps.unwrap_or(self.audio_kbps),
+            mute_host: h.mute_host.unwrap_or(self.mute_host),
             playback_device: device(h.playback_device.as_ref(), &self.playback_device),
             microphone: h.microphone.unwrap_or(self.microphone),
             microphone_device: device(h.microphone_device.as_ref(), &self.microphone_device),

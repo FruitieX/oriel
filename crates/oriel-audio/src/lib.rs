@@ -391,6 +391,23 @@ fn open_system_output(
     Ok(OutputCapture::Cpal(open_loopback(tx, device.as_deref())?))
 }
 
+/// The host's speakers, muted while this lives (see `mute_host_output`).
+pub struct HostMute {
+    #[cfg(windows)]
+    _mute: wasapi::Mute,
+}
+
+/// Mute the host's default output (its own speakers) until the returned
+/// value is dropped; the previous state is restored. Windows only.
+pub fn mute_host_output() -> Result<HostMute> {
+    #[cfg(windows)]
+    return Ok(HostMute {
+        _mute: wasapi::Mute::default_output()?,
+    });
+    #[cfg(not(windows))]
+    bail!("muting the host's speakers works on Windows hosts only")
+}
+
 /// An audio output device.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutputDevice {

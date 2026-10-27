@@ -150,6 +150,13 @@ pub fn run(
     session.send(ClientMsg::SetAutoBitrate {
         enabled: e.auto_bitrate,
     });
+    // Hosts before protocol 15 skip these (and keep 128 kbit/s).
+    if e.audio_kbps != 128 {
+        session.send(ClientMsg::SetAudioBitrate { kbps: e.audio_kbps });
+    }
+    if e.mute_host {
+        session.send(ClientMsg::SetMuteHost { enabled: true });
+    }
     let mut viewer = Viewer::new(session.clone(), connected.host_name, options);
     #[cfg(target_os = "macos")]
     {
@@ -1265,6 +1272,16 @@ impl Viewer {
         }
         if old.audio != new.audio {
             s.send(ClientMsg::SetAudio { enabled: new.audio });
+        }
+        if old.audio_kbps != new.audio_kbps {
+            s.send(ClientMsg::SetAudioBitrate {
+                kbps: new.audio_kbps,
+            });
+        }
+        if old.mute_host != new.mute_host {
+            s.send(ClientMsg::SetMuteHost {
+                enabled: new.mute_host,
+            });
         }
         if (old.audio, &old.playback_device) != (new.audio, &new.playback_device)
             && let Err(e) = s.set_speaker(new.audio.then(|| new.playback_device.clone()))

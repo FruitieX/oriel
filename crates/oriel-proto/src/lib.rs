@@ -23,7 +23,7 @@ pub const ALPN: &[u8] = b"oriel/1";
 /// when it only checks whether the host is up.
 pub const PROBE_REASON: &[u8] = b"probe";
 
-pub const PROTOCOL_VERSION: u32 = 14;
+pub const PROTOCOL_VERSION: u32 = 15;
 pub const DEFAULT_PORT: u16 = 48600;
 /// Upper bound for a single control/input message.
 pub const MAX_MESSAGE_LEN: usize = 32 * 1024 * 1024;
@@ -206,6 +206,16 @@ pub enum ClientMsg {
     },
     /// Switch the capture method (as in `StreamSettings`).
     SetGraphicsCapture {
+        enabled: bool,
+    },
+    /// Opus bitrate for the host's sound (sent after `StartStream` too;
+    /// hosts start at 128 kbit/s).
+    SetAudioBitrate {
+        kbps: u32,
+    },
+    /// Mute the host's own speakers while this session runs (restored
+    /// after).
+    SetMuteHost {
         enabled: bool,
     },
 }

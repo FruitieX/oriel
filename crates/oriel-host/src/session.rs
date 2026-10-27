@@ -141,11 +141,16 @@ pub async fn run(
     let audio_seq = Arc::new(std::sync::atomic::AtomicU32::new(0));
     let mut audio_enabled = settings.audio;
     let mut audio_device = settings.audio_device.clone();
+    // Opus bitrate; clients set it with `SetAudioBitrate`.
+    let mut audio_kbps = 128u32;
+    // The host's speakers, muted for the client (`SetMuteHost`).
+    let mut mute: Option<oriel_audio::HostMute> = None;
     let mut audio = if settings.audio {
         start_audio(
             &conn,
             options.source,
             settings.audio_device.clone(),
+            audio_kbps,
             audio_seq.clone(),
             &ev_tx_audio,
         )
@@ -478,14 +483,38 @@ pub async fn run(
                         if audio_enabled {
                             // Stop the old capture before opening the new one.
                             drop(audio.take());
-                            audio = start_audio(&conn, options.source, audio_device.clone(), audio_seq.clone(), &ev_tx_audio);
+                            audio = start_audio(&conn, options.source, audio_device.clone(), audio_kbps, audio_seq.clone(), &ev_tx_audio);
                         }
                     }
                     Some(ClientMsg::SetAudio { enabled }) => {
                         audio_enabled = enabled;
                         drop(audio.take());
                         if enabled {
-                            audio = start_audio(&conn, options.source, audio_device.clone(), audio_seq.clone(), &ev_tx_audio);
+                            audio = start_audio(&conn, options.source, audio_device.clone(), audio_kbps, audio_seq.clone(), &ev_tx_audio);
+                        }
+                    }
+                    Some(ClientMsg::SetAudioBitrate { kbps }) => {
+                        // Opus' range.
+                        let kbps = kbps.clamp(6, 510);
+                        if kbps != audio_kbps {
+                            audio_kbps = kbps;
+                            if audio_enabled {
+                                drop(audio.take());
+                                audio = start_audio(&conn, options.source, audio_device.clone(), audio_kbps, audio_seq.clone(), &ev_tx_audio);
+                            }
+                        }
+                    }
+                    Some(ClientMsg::SetMuteHost { enabled }) => {
+                        if !enabled {
+                            mute = None;
+                        } else if mute.is_none() {
+                            match oriel_audio::mute_host_output() {
+                                Ok(m) => mute = Some(m),
+                                Err(e) => {
+                                    tracing::warn!("cannot mute the host's speakers: {e:#}");
+                                    let _ = ev_tx_audio.send(Event::Notice(format!("Cannot mute the host's speakers: {e:#}")));
+                                }
+                            }
                         }
                     }
                     Some(ClientMsg::SetMaxFps { fps }) => { let _ = cmd_tx.send(Cmd::MaxFps(fps)); }
@@ -511,6 +540,7 @@ pub async fn run(
     // Stop sound first: waiting for the pipeline below can take a while,
     // and a capture left running overlapped the next session's.
     drop(audio.take());
+    let _ = mute.take();
     drop(mode_guard);
     drop(ev_rx);
     input_task.abort();
@@ -603,6 +633,7 @@ fn start_audio(
     conn: &quinn::Connection,
     source: crate::capture::SourceKind,
     device: Option<String>,
+    kbps: u32,
     seq: Arc<std::sync::atomic::AtomicU32>,
     events: &tmpsc::UnboundedSender<Event>,
 ) -> Option<oriel_audio::Capture> {
@@ -620,7 +651,7 @@ fn start_audio(
         }
     };
     let conn = conn.clone();
-    match oriel_audio::start_capture(source, 128_000, move |data| {
+    match oriel_audio::start_capture(source, kbps as i32 * 1000, move |data| {
         let seq = seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if let Ok(bytes) = oriel_proto::encode(&Datagram::Audio { seq, data }) {
             let _ = conn.send_datagram(bytes.into());

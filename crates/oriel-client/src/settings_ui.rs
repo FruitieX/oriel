@@ -311,6 +311,36 @@ impl Panel {
                 |c, v| c.audio = v,
                 |h| &mut h.audio,
             );
+            rows.row(
+                ui,
+                "Sound quality",
+                "Opus bitrate of the remote sound; 128 kbit/s is already \
+                 transparent for most music",
+                |c| c.audio_kbps,
+                |c, v| c.audio_kbps = v,
+                |h| &mut h.audio_kbps,
+                |ui, kbps, width| {
+                    const CHOICES: [u32; 6] = [64, 96, 128, 192, 256, 320];
+                    egui::ComboBox::from_id_salt("audio-kbps")
+                        .width(width)
+                        .selected_text(format!("{kbps} kbit/s"))
+                        .show_ui(ui, |ui| {
+                            for choice in CHOICES {
+                                ui.selectable_value(kbps, choice, format!("{choice} kbit/s"));
+                            }
+                        });
+                },
+            );
+            rows.toggle(
+                ui,
+                "Host speakers",
+                "Mute while connected",
+                "Silences the host's own speakers during the session and restores \
+                 them afterwards (Windows hosts); the stream still has the sound",
+                |c| c.mute_host,
+                |c, v| c.mute_host = v,
+                |h| &mut h.mute_host,
+            );
             rows.device(
                 ui,
                 "Play on",

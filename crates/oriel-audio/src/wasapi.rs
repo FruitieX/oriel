@@ -8,6 +8,7 @@
 //! Windows) is recorded with endpoint loopback in its mix format.
 
 use anyhow::{Context, Result, bail};
+use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
 use windows::{
     Win32::{
         Foundation::{CloseHandle, HANDLE},
@@ -355,4 +356,67 @@ unsafe fn parse_format(format: *const WAVEFORMATEX) -> Result<(u32, usize, Sampl
         ),
     };
     Ok((rate, channels as usize, sample))
+}
+
+/// Mutes the default output while it lives, then restores its previous
+/// state. A thread owns the COM object (they are not `Send`), so this can be
+/// held by an async task.
+pub struct Mute {
+    stop: Option<std::sync::mpsc::Sender<()>>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Mute {
+    pub fn default_output() -> Result<Self> {
+        let (stop, stopped) = std::sync::mpsc::channel::<()>();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<()>>();
+        let thread = std::thread::Builder::new()
+            .name("oriel-mute".into())
+            .spawn(move || {
+                // SAFETY: COM calls on this thread, in the multithreaded
+                // apartment.
+                let volume = unsafe {
+                    (|| -> Result<(IAudioEndpointVolume, bool)> {
+                        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+                        let enumerator: IMMDeviceEnumerator =
+                            CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
+                        let device = enumerator
+                            .GetDefaultAudioEndpoint(eRender, eConsole)
+                            .context("no default audio output")?;
+                        let volume: IAudioEndpointVolume = device.Activate(CLSCTX_ALL, None)?;
+                        let was_muted = volume.GetMute()?.as_bool();
+                        volume.SetMute(true, std::ptr::null())?;
+                        Ok((volume, was_muted))
+                    })()
+                };
+                let (volume, was_muted) = match volume {
+                    Ok(v) => v,
+                    Err(e) => {
+                        let _ = ready_tx.send(Err(e));
+                        return;
+                    }
+                };
+                let _ = ready_tx.send(Ok(()));
+                // Until dropped (the sender goes away).
+                let _ = stopped.recv();
+                if !was_muted {
+                    // SAFETY: as above.
+                    let _ = unsafe { volume.SetMute(false, std::ptr::null()) };
+                }
+            })?;
+        ready_rx.recv().context("mute thread exited")??;
+        Ok(Self {
+            stop: Some(stop),
+            thread: Some(thread),
+        })
+    }
+}
+
+impl Drop for Mute {
+    fn drop(&mut self) {
+        drop(self.stop.take());
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
 }
