@@ -218,7 +218,11 @@ impl Renderer {
             width: size.width.max(1),
             height: size.height.max(1),
             present_mode,
-            desired_maximum_frame_latency: 1,
+            // macOS keeps both of two drawables while a window comes back
+            // (from another Space): asking for the next one then blocks the
+            // main thread for its whole one-second timeout. A third avoids
+            // that; with Immediate presentation it adds no queueing.
+            desired_maximum_frame_latency: if cfg!(target_os = "macos") { 2 } else { 1 },
             alpha_mode: caps.alpha_modes[0],
             view_formats: vec![],
             color_space: Default::default(),
