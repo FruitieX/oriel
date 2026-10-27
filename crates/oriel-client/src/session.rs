@@ -362,8 +362,10 @@ pub fn start(
         .ok()
         .and_then(|v| v.parse().ok());
     // Where the frame reader is, for the stall log below.
-    let reading: Arc<Mutex<(Instant, String)>> =
-        Arc::new(Mutex::new((Instant::now(), "waiting for a frame stream".into())));
+    let reading: Arc<Mutex<(Instant, String)>> = Arc::new(Mutex::new((
+        Instant::now(),
+        "waiting for a frame stream".into(),
+    )));
     {
         let reading = reading.clone();
         let conn = frame_conn.clone();
@@ -412,7 +414,11 @@ pub fn start(
                 let Ok(Some(header)) = read_msg::<FrameHeader>(&mut stream).await else {
                     continue;
                 };
-                at(format!("reading frame {} (stream {})", header.seq, stream.id()));
+                at(format!(
+                    "reading frame {} (stream {})",
+                    header.seq,
+                    stream.id()
+                ));
                 let local_us = frame_clock.lock().local_us(Instant::now());
                 frame_stats.lock().arrived(header.capture_us, local_us);
                 // One broken frame costs that frame (the decoder asks for

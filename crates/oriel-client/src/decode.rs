@@ -1,8 +1,8 @@
 //! Decoder thread: decodes frames in order and publishes the newest one.
 
 use std::{
-    sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
     sync::Arc,
+    sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
     time::{Duration, Instant},
 };
 
@@ -408,6 +408,17 @@ pub fn spawn(
         .name("oriel-decode".into())
         .spawn(move || {
             let _done = WatchDone(watch.clone());
+            // VideoToolbox decodes in another process, at the priority of
+            // the thread that asks. A default-priority thread in an app macOS
+            // has had in the background got its decodes held up for seconds
+            // when the window came back.
+            #[cfg(target_os = "macos")]
+            unsafe {
+                libc::pthread_set_qos_class_self_np(
+                    libc::qos_class_t::QOS_CLASS_USER_INTERACTIVE,
+                    0,
+                );
+            }
             let mut decoder: Option<Opened> = None;
             // Do not keep retrying zero-copy once it failed: [PyroWave,
             // VAAPI].
