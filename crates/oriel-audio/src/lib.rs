@@ -116,7 +116,7 @@ pub fn start_capture(
             while !thread_stop.load(Ordering::Relaxed) {
                 if report.0.elapsed() >= Duration::from_secs(10) {
                     let (_, chunks, samples, peak, packets) = report;
-                    tracing::info!(
+                    tracing::debug!(
                         chunks,
                         samples,
                         peak,

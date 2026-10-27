@@ -544,7 +544,12 @@ impl Renderer {
                 return Ok(());
             }
             other => {
-                tracing::debug!("skipping a frame: {other:?}");
+                // Occluded is routine (a hidden window).
+                if matches!(other, wgpu::CurrentSurfaceTexture::Occluded) {
+                    tracing::trace!("skipping a frame: {other:?}");
+                } else {
+                    tracing::debug!("skipping a frame: {other:?}");
+                }
                 return Ok(());
             }
         };

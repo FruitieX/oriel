@@ -198,6 +198,7 @@ pub fn run(
         result: None,
         opened: Instant::now(),
         screenshot_taken: false,
+        occluded: false,
     };
     let proxy = std::sync::Mutex::new(event_loop.create_proxy());
     launcher.hub.set_wake(Arc::new(move || {
@@ -370,6 +371,9 @@ struct Launcher {
     result: Option<LauncherResult>,
     opened: Instant,
     screenshot_taken: bool,
+    /// The window cannot be seen: no drawing (polls asked for a redraw
+    /// every 100 ms, for nothing).
+    occluded: bool,
 }
 
 enum Action {
@@ -1299,6 +1303,13 @@ impl ApplicationHandler<UiEvent> for Launcher {
                 renderer.resize(size.width, size.height);
                 window.request_redraw();
             }
+            WindowEvent::Occluded(occluded) => {
+                self.occluded = occluded;
+                if !occluded {
+                    window.request_redraw();
+                }
+            }
+            WindowEvent::RedrawRequested if self.occluded => {}
             // Android's Back closes a dialog, else leaves (to the background).
             #[cfg(target_os = "android")]
             WindowEvent::KeyboardInput { event, .. }

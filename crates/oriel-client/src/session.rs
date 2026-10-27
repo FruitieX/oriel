@@ -516,7 +516,7 @@ pub fn start(
         let mut audio = (Instant::now(), 0u32);
         while let Ok(bytes) = dg_conn.read_datagram().await {
             if audio.0.elapsed() >= Duration::from_secs(10) {
-                tracing::debug!(packets = audio.1, "audio packets received in the last 10 s");
+                tracing::trace!(packets = audio.1, "audio packets received in the last 10 s");
                 audio = (Instant::now(), 0);
             }
             match oriel_proto::decode(&bytes) {

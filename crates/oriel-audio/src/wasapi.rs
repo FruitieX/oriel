@@ -138,7 +138,7 @@ impl Loopback {
                 inner.vt = VT_BLOB;
                 inner.Anonymous.blob = blob;
             }
-            tracing::info!(pid = std::process::id(), "activating process loopback");
+            tracing::debug!(pid = std::process::id(), "activating process loopback");
             let _operation = ActivateAudioInterfaceAsync(
                 VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
                 &IAudioClient::IID,
@@ -151,7 +151,7 @@ impl Loopback {
                 .context("process loopback did not activate")?
                 .context("activate process loopback")?
                 .cast()?;
-            tracing::info!("process loopback activated");
+            tracing::debug!("process loopback activated");
             const RATE: u32 = 48_000;
             const CHANNELS: u16 = 2;
             let format = WAVEFORMATEX {
@@ -175,7 +175,7 @@ impl Loopback {
                     None,
                 )
                 .context("start process loopback")?;
-            tracing::info!("process loopback initialized");
+            tracing::debug!("process loopback initialized");
             let event = CreateEventW(None, false, false, None).context("create an event")?;
             let loopback = Self {
                 capture: client.GetService().context("get the capture client")?,
