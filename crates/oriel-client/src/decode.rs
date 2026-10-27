@@ -279,6 +279,10 @@ impl std::fmt::Display for ZeroCopyFailed {
 
 impl std::error::Error for ZeroCopyFailed {}
 
+/// How long a received frame may wait for the decoder before the queue is
+/// dropped in favour of a new keyframe.
+const STALE: Duration = Duration::from_millis(250);
+
 /// A decoder with what it was opened for: codec, size, 4:4:4, hardware.
 type Opened = (VideoDecoder, Codec, (u32, u32), bool, bool);
 
@@ -317,6 +321,30 @@ pub fn spawn(
             let mut need_keyframe = false;
             let mut last_request = Instant::now() - Duration::from_secs(1);
             while let Ok((header, data, received)) = rx.recv() {
+                // Fallen behind (the app was held up in the background):
+                // decoding the backlog in order would keep the picture
+                // frozen for as long as it took to build. Drop it and start
+                // again from a fresh keyframe.
+                if received.elapsed() > STALE && !rx.is_empty() {
+                    let mut dropped = 1;
+                    let mut header = header;
+                    for (newer, ..) in rx.try_iter() {
+                        header = newer;
+                        dropped += 1;
+                    }
+                    tracing::info!(dropped, "decoder fell behind; skipping to a new keyframe");
+                    // The frames are consumed: let the host pace on.
+                    if let Ok(bytes) = oriel_proto::encode(&Datagram::FrameAck {
+                        surface: header.surface,
+                        seq: header.seq,
+                    }) {
+                        let _ = conn.send_datagram(bytes.into());
+                    }
+                    need_keyframe = true;
+                    let _ = ctl.send(ClientMsg::RequestKeyframe);
+                    last_request = Instant::now();
+                    continue;
+                }
                 let hardware = hardware_now();
                 let ack = Datagram::FrameAck {
                     surface: header.surface,
