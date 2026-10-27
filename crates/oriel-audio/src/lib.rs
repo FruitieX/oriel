@@ -66,6 +66,7 @@ pub fn start_capture(
     let thread = std::thread::Builder::new()
         .name("oriel-audio-capture".into())
         .spawn(move || {
+            com_mta();
             let mut encoder = match opus::Encoder::new(
                 SAMPLE_RATE,
                 opus::Channels::Stereo,
@@ -219,9 +220,43 @@ pub struct OutputDevice {
     pub name: String,
 }
 
+/// Windows: put this thread in the process's multithreaded COM apartment
+/// before cpal touches it (cpal otherwise makes each thread a single-threaded
+/// one). cpal keeps one device enumerator for the process, created on the
+/// first thread that asks: in a single-threaded apartment it belonged to a
+/// capture thread that ended with its session (or to a runtime thread that
+/// pumps no messages), and capture failed on the next session with "Cannot
+/// change thread mode after it is set". A thread that stays in the
+/// apartment keeps it alive between sessions.
+fn com_mta() {
+    #[cfg(windows)]
+    {
+        use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
+        static KEEPER: std::sync::Once = std::sync::Once::new();
+        KEEPER.call_once(|| {
+            let _ = std::thread::Builder::new()
+                .name("oriel-com".into())
+                .spawn(|| {
+                    // SAFETY: plain COM initialisation of this thread.
+                    let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+                    loop {
+                        std::thread::park();
+                    }
+                });
+        });
+        thread_local!(static MTA: () = {
+            // SAFETY: as above. A thread already in another apartment keeps
+            // it (and the call fails harmlessly).
+            let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+        });
+        MTA.with(|_| {});
+    }
+}
+
 /// The audio API whose devices are listed and chosen: PipeWire where it
 /// runs (its sinks are what users know), else the platform default.
 fn device_host() -> cpal::Host {
+    com_mta();
     #[cfg(target_os = "linux")]
     if let Ok(host) = cpal::host_from_id(cpal::HostId::PipeWire) {
         return host;
@@ -476,6 +511,7 @@ impl Player {
         std::thread::Builder::new()
             .name("oriel-audio-play".into())
             .spawn(move || {
+                com_mta();
                 let buffer = Arc::new(Mutex::new(VecDeque::<f32>::new()));
                 let stream = match open_output(&output, buffer.clone(), thread_stats.clone()) {
                     Ok(s) => s,
