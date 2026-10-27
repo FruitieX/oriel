@@ -273,7 +273,32 @@ pub async fn run(
     let rtt_conn = conn.clone();
     let rtt_shared = shared.clone();
     let rtt_task = tokio::spawn(async move {
+        let mut stalled = false;
         loop {
+            // Frames waiting on the client for long: log what QUIC sees.
+            match rtt_shared.blocked() {
+                Some((held, frames)) if held > Duration::from_secs(2) && !stalled => {
+                    stalled = true;
+                    let s = rtt_conn.stats();
+                    tracing::warn!(
+                        "frames held back {:.1} s waiting for the client: {frames}; \
+                         rtt {:?}, cwnd {}, sent {} lost {} packets, congestion events {}, \
+                         black holes {}",
+                        held.as_secs_f32(),
+                        s.path.rtt,
+                        s.path.cwnd,
+                        s.path.sent_packets,
+                        s.path.lost_packets,
+                        s.path.congestion_events,
+                        s.path.black_holes_detected,
+                    );
+                }
+                None if stalled => {
+                    stalled = false;
+                    tracing::warn!("frames moving to the client again");
+                }
+                _ => {}
+            }
             rtt_shared
                 .rtt_us
                 .store(rtt_conn.rtt().as_micros() as u64, Ordering::Relaxed);
@@ -556,6 +581,7 @@ async fn send_frame(
                 .await?;
             stream.write_all(&data).await?;
             stream.finish()?;
+            shared.written(header.seq);
             stream.stopped().await?;
             Ok(())
         }

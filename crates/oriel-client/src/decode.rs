@@ -1,6 +1,7 @@
 //! Decoder thread: decodes frames in order and publishes the newest one.
 
 use std::{
+    sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -279,6 +280,111 @@ impl std::fmt::Display for ZeroCopyFailed {
 
 impl std::error::Error for ZeroCopyFailed {}
 
+/// What the decoder thread is doing, for the watchdog.
+#[derive(Default)]
+struct Watch {
+    /// Frames taken from the queue.
+    jobs: AtomicU64,
+    /// When the current call started (µs since `epoch`, 0 = idle) and what
+    /// it is (`Phase`).
+    busy_since_us: AtomicU64,
+    phase: AtomicU8,
+    done: AtomicBool,
+    epoch: std::sync::OnceLock<Instant>,
+}
+
+#[derive(Clone, Copy)]
+#[repr(u8)]
+enum Phase {
+    Decode = 1,
+    Open = 2,
+}
+
+impl Watch {
+    fn now_us(&self) -> u64 {
+        self.epoch.get_or_init(Instant::now).elapsed().as_micros() as u64 + 1
+    }
+
+    fn busy(&self, phase: Phase) -> impl Drop + '_ {
+        self.phase.store(phase as u8, Ordering::Relaxed);
+        self.busy_since_us.store(self.now_us(), Ordering::Relaxed);
+        Idle(self)
+    }
+}
+
+struct Idle<'a>(&'a Watch);
+
+impl Drop for Idle<'_> {
+    fn drop(&mut self) {
+        self.0.busy_since_us.store(0, Ordering::Relaxed);
+    }
+}
+
+struct WatchDone(Arc<Watch>);
+
+impl Drop for WatchDone {
+    fn drop(&mut self) {
+        self.0.done.store(true, Ordering::Relaxed);
+        if std::thread::panicking() {
+            tracing::error!("decoder thread panicked");
+        }
+    }
+}
+
+/// Log when video stops moving through the decoder, and why: a call into
+/// the decoder that does not return, or no frames arriving at all. (Video
+/// stopped after macOS had the app in the background, and the logs could
+/// not tell these apart.)
+fn spawn_watchdog(watch: Arc<Watch>, rx: crossbeam_channel::Receiver<Job>) {
+    const AFTER: Duration = Duration::from_secs(2);
+    let _ = std::thread::Builder::new()
+        .name("oriel-decode-watch".into())
+        .spawn(move || {
+            let mut jobs = watch.jobs.load(Ordering::Relaxed);
+            let mut moved = Instant::now();
+            let mut stalled: Option<&str> = None;
+            while !watch.done.load(Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_millis(500));
+                let now_jobs = watch.jobs.load(Ordering::Relaxed);
+                let since = watch.busy_since_us.load(Ordering::Relaxed);
+                let busy = (since != 0)
+                    .then(|| Duration::from_micros(watch.now_us().saturating_sub(since)));
+                if now_jobs != jobs {
+                    jobs = now_jobs;
+                    moved = Instant::now();
+                }
+                let state = if busy.is_some_and(|b| b > AFTER) {
+                    Some(match watch.phase.load(Ordering::Relaxed) {
+                        2 => "opening the decoder",
+                        _ => "decoding a frame",
+                    })
+                } else if busy.is_none() && rx.is_empty() && moved.elapsed() > AFTER {
+                    Some("waiting for frames: none arrive")
+                } else {
+                    None
+                };
+                // No frames is also what a still screen looks like.
+                let quiet = |what: &str| what.starts_with("waiting");
+                match (stalled, state) {
+                    (None, Some(what)) if quiet(what) => {
+                        tracing::debug!("video stalled: {what}");
+                    }
+                    (None, Some(what)) => {
+                        tracing::warn!(queued = rx.len(), "video stalled: {what}");
+                    }
+                    (Some(what), None) if quiet(what) => {
+                        tracing::debug!("video moving again after: {what}");
+                    }
+                    (Some(what), None) => {
+                        tracing::warn!(queued = rx.len(), "video moving again after: {what}");
+                    }
+                    _ => {}
+                }
+                stalled = state;
+            }
+        });
+}
+
 /// How long a received frame may wait for the decoder before the queue is
 /// dropped in favour of a new keyframe.
 const STALE: Duration = Duration::from_millis(250);
@@ -296,9 +402,12 @@ pub fn spawn(
     sink: Sink,
 ) -> crossbeam_channel::Sender<Job> {
     let (tx, rx) = crossbeam_channel::unbounded::<Job>();
+    let watch = Arc::new(Watch::default());
+    spawn_watchdog(watch.clone(), rx.clone());
     std::thread::Builder::new()
         .name("oriel-decode".into())
         .spawn(move || {
+            let _done = WatchDone(watch.clone());
             let mut decoder: Option<Opened> = None;
             // Do not keep retrying zero-copy once it failed: [PyroWave,
             // VAAPI].
@@ -321,6 +430,7 @@ pub fn spawn(
             let mut need_keyframe = false;
             let mut last_request = Instant::now() - Duration::from_secs(1);
             while let Ok((header, data, received)) = rx.recv() {
+                watch.jobs.fetch_add(1, Ordering::Relaxed);
                 // Fallen behind (the app was held up in the background):
                 // decoding the backlog in order would keep the picture
                 // frozen for as long as it took to build. Drop it and start
@@ -369,8 +479,11 @@ pub fn spawn(
                     // Free the old decoder's GPU resources first.
                     drop(decoder.take());
                     let allow_zero_copy = !zero_copy_failed[path(header.codec)];
-                    decoder = match VideoDecoder::open(&header, hardware, &interop, allow_zero_copy)
-                    {
+                    let opened = {
+                        let _busy = watch.busy(Phase::Open);
+                        VideoDecoder::open(&header, hardware, &interop, allow_zero_copy)
+                    };
+                    decoder = match opened {
                         Ok((d, description)) => {
                             tracing::info!(decoder = %description, "opened video decoder");
                             if zero_copy_possible(header.codec, header.full_chroma, hardware)
@@ -408,7 +521,11 @@ pub fn spawn(
                 } else {
                     let (dec, ..) = decoder.as_mut().unwrap();
                     let started = Instant::now();
-                    match dec.decode(&data) {
+                    let result = {
+                        let _busy = watch.busy(Phase::Decode);
+                        dec.decode(&data)
+                    };
+                    match result {
                         Ok(Some(picture)) => {
                             need_keyframe = false;
                             let decoded = Instant::now();

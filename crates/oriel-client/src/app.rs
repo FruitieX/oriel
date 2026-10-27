@@ -2230,7 +2230,7 @@ impl ApplicationHandler<UiEvent> for Viewer {
             }
             WindowEvent::RedrawRequested => self.draw(),
             WindowEvent::Occluded(occluded) => {
-                tracing::debug!(occluded, "window visibility changed");
+                tracing::info!(occluded, "window visibility changed");
                 self.occluded = occluded;
                 if !occluded {
                     gfx.window.request_redraw();

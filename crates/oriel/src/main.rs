@@ -594,6 +594,14 @@ fn init_logging(file: Option<PathBuf>) -> Result<()> {
         .with(fmt::layer().with_writer(std::io::stderr))
         .with(file_layer)
         .init();
+    // Panics in background threads otherwise reach only stderr, which the
+    // log file (the app started from the Dock, the Windows service) lacks.
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let thread = std::thread::current();
+        tracing::error!(thread = thread.name().unwrap_or("?"), "panic: {info}");
+        default_hook(info);
+    }));
     Ok(())
 }
 

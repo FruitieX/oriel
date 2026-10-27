@@ -88,6 +88,8 @@ pub struct Shared {
     decoded_below: AtomicU64,
     /// Every frame below this has reached the client's QUIC stack.
     delivered_below: AtomicU64,
+    /// Every frame below this was handed to QUIC in full.
+    written_below: AtomicU64,
     /// Microseconds since `epoch` of the last `FrameAck` progress.
     last_decoded_us: AtomicU64,
     epoch: Instant,
@@ -95,6 +97,9 @@ pub struct Shared {
     /// Packets sent and lost on the connection so far.
     pub sent_packets: AtomicU64,
     pub lost_packets: AtomicU64,
+    /// Since when (µs since `epoch` + 1, 0 = not) frames wait for earlier
+    /// ones to be decoded.
+    blocked_since_us: AtomicU64,
     pub geometry: Mutex<Geometry>,
 }
 
@@ -104,11 +109,13 @@ impl Default for Shared {
             next_seq: AtomicU64::new(0),
             decoded_below: AtomicU64::new(0),
             delivered_below: AtomicU64::new(0),
+            written_below: AtomicU64::new(0),
             last_decoded_us: AtomicU64::new(0),
             epoch: Instant::now(),
             rtt_us: AtomicU64::new(0),
             sent_packets: AtomicU64::new(0),
             lost_packets: AtomicU64::new(0),
+            blocked_since_us: AtomicU64::new(0),
             geometry: Mutex::new(Geometry::default()),
         }
     }
@@ -121,6 +128,43 @@ impl Shared {
             self.last_decoded_us
                 .store(self.epoch.elapsed().as_micros() as u64, Ordering::Relaxed);
         }
+    }
+
+    fn set_blocked(&self, blocked: bool) {
+        if !blocked {
+            self.blocked_since_us.store(0, Ordering::Relaxed);
+        } else if self.blocked_since_us.load(Ordering::Relaxed) == 0 {
+            self.blocked_since_us
+                .store(self.epoch.elapsed().as_micros() as u64 + 1, Ordering::Relaxed);
+        }
+    }
+
+    /// How long sending has waited for the client, and the frame counters
+    /// behind it (for the stall log).
+    pub fn blocked(&self) -> Option<(Duration, String)> {
+        let since = self.blocked_since_us.load(Ordering::Relaxed);
+        if since == 0 {
+            return None;
+        }
+        let now = self.epoch.elapsed().as_micros() as u64;
+        let last_ack = self.last_decoded_us.load(Ordering::Relaxed);
+        Some((
+            Duration::from_micros(now.saturating_sub(since)),
+            format!(
+                "next frame {}, written below {}, decoded below {}, delivered below {}, \
+                 last decode ack {:.1} s ago",
+                self.next_seq.load(Ordering::Relaxed),
+                self.written_below.load(Ordering::Relaxed),
+                self.decoded_below.load(Ordering::Relaxed),
+                self.delivered_below.load(Ordering::Relaxed),
+                now.saturating_sub(last_ack) as f64 / 1e6,
+            ),
+        ))
+    }
+
+    /// Frame `seq` is with QUIC in full.
+    pub fn written(&self, seq: u64) {
+        self.written_below.fetch_max(seq + 1, Ordering::Relaxed);
     }
 
     /// QUIC delivered (or gave up on) frame `seq`.
@@ -723,7 +767,9 @@ impl Pipeline {
             }
             let rtt = self.rtt();
             let limit = (rtt.as_secs_f64() / interval.as_secs_f64()).ceil() as u64 + 2;
-            if self.shared.in_flight() >= limit.clamp(2, 16) {
+            let held = self.shared.in_flight() >= limit.clamp(2, 16);
+            self.shared.set_blocked(held);
+            if held {
                 blocked = true;
                 window_blocked = true;
                 quarter.blocked = true;

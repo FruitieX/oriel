@@ -361,18 +361,72 @@ pub fn start(
     let jitter_ms: Option<u64> = std::env::var("ORIEL_DEBUG_JITTER_MS")
         .ok()
         .and_then(|v| v.parse().ok());
+    // Where the frame reader is, for the stall log below.
+    let reading: Arc<Mutex<(Instant, String)>> =
+        Arc::new(Mutex::new((Instant::now(), "waiting for a frame stream".into())));
+    {
+        let reading = reading.clone();
+        let conn = frame_conn.clone();
+        tokio::spawn(async move {
+            let mut stalled = false;
+            while conn.close_reason().is_none() {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                let (since, what) = reading.lock().clone();
+                let path = conn.stats().path;
+                // A still screen sends nothing: only a stream that stops
+                // midway is a stall. Waiting for streams is logged at
+                // debug, with the link's state either way.
+                let midway = !what.starts_with("waiting");
+                if !stalled && since.elapsed() > Duration::from_secs(2) {
+                    stalled = true;
+                    let msg = format!(
+                        "frame reader {what} for {:.1} s (rtt {:?}, cwnd {}, lost {} of {} packets, congestion events {})",
+                        since.elapsed().as_secs_f32(),
+                        path.rtt,
+                        path.cwnd,
+                        path.lost_packets,
+                        path.sent_packets,
+                        path.congestion_events,
+                    );
+                    if midway {
+                        tracing::warn!("{msg}");
+                    } else {
+                        tracing::debug!("{msg}");
+                    }
+                } else if stalled && since.elapsed() < Duration::from_secs(1) {
+                    stalled = false;
+                    tracing::debug!("frame reader moving again");
+                }
+            }
+        });
+    }
     tokio::spawn(async move {
+        let at = |what: String| *reading.lock() = (Instant::now(), what);
         let result: Result<()> = async {
             loop {
+                at("waiting for a frame stream".into());
                 let mut stream = frame_conn.accept_uni().await?;
+                at(format!("reading the header of stream {}", stream.id()));
                 // A frame from a host with another protocol version may
                 // not decode; drop just that frame.
                 let Ok(Some(header)) = read_msg::<FrameHeader>(&mut stream).await else {
                     continue;
                 };
+                at(format!("reading frame {} (stream {})", header.seq, stream.id()));
                 let local_us = frame_clock.lock().local_us(Instant::now());
                 frame_stats.lock().arrived(header.capture_us, local_us);
-                let data = stream.read_to_end(256 * 1024 * 1024).await?;
+                // One broken frame costs that frame (the decoder asks for
+                // a keyframe), not the rest of the session's video.
+                let data = match stream.read_to_end(256 * 1024 * 1024).await {
+                    Ok(data) => data,
+                    Err(quinn::ReadToEndError::Read(quinn::ReadError::ConnectionLost(e))) => {
+                        return Err(e.into());
+                    }
+                    Err(e) => {
+                        tracing::warn!(seq = header.seq, "frame lost: {e}");
+                        continue;
+                    }
+                };
                 if let Some(ms) = jitter_ms
                     && header.seq.is_multiple_of(3)
                 {
@@ -383,13 +437,17 @@ pub fn start(
                     tokio::time::sleep(Duration::from_secs_f64(secs)).await;
                 }
                 if decoder.send((header, data, Instant::now())).is_err() {
-                    break;
+                    anyhow::bail!("the decoder stopped");
                 }
             }
-            Ok(())
         }
         .await;
-        tracing::debug!("frame receiver ended: {result:?}");
+        match result {
+            Err(e) if frame_conn.close_reason().is_none() => {
+                tracing::warn!("frame receiver ended: {e:#}")
+            }
+            _ => tracing::debug!("frame receiver ended: {result:?}"),
+        }
     });
 
     let dg_conn = conn.clone();

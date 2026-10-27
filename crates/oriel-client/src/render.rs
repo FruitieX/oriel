@@ -522,7 +522,17 @@ impl Renderer {
         egui_ctx: &egui::Context,
         output: &egui::FullOutput,
     ) -> Result<()> {
-        let texture = match self.surface.get_current_texture() {
+        let asked = std::time::Instant::now();
+        let current = self.surface.get_current_texture();
+        // macOS holds this up (up to a second) while the window cannot be
+        // seen, e.g. during a switch between Spaces.
+        if asked.elapsed() > std::time::Duration::from_millis(50) {
+            tracing::warn!(
+                ms = asked.elapsed().as_millis() as u64,
+                "waited for a window buffer"
+            );
+        }
+        let texture = match current {
             wgpu::CurrentSurfaceTexture::Success(t)
             | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
