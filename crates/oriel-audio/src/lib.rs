@@ -404,9 +404,22 @@ fn output_device(id: Option<&str>) -> Result<cpal::Device> {
             None => tracing::warn!(id, "audio device not found, using the default"),
         }
     }
-    cpal::default_host()
+    let default = cpal::default_host()
         .default_output_device()
-        .context("no audio output device")
+        .context("no audio output device")?;
+    // Windows: cpal's default device records through the interface that
+    // follows the default, and loopback from it was silent (with Voicemeeter
+    // as the default, which Parsec records fine). Record the endpoint that is
+    // the default now, as Parsec and Sunshine do.
+    #[cfg(windows)]
+    if let Some(device) = default
+        .id()
+        .ok()
+        .and_then(|id| cpal::default_host().device_by_id(&id))
+    {
+        return Ok(device);
+    }
+    Ok(default)
 }
 
 #[cfg_attr(target_os = "linux", allow(dead_code))]
