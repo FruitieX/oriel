@@ -1270,10 +1270,14 @@ impl ApplicationHandler<UiEvent> for Launcher {
         }
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
         let Some((window, renderer, egui)) = &mut self.gfx else {
             return;
         };
+        // Late events of a closed viewer window can still arrive here.
+        if id != window.id() {
+            return;
+        }
         // egui-winit asks for a repaint on every event, including redraws
         // themselves; following that blindly redraws in a busy loop.
         if !matches!(event, WindowEvent::RedrawRequested)
@@ -1365,6 +1369,15 @@ impl ApplicationHandler<UiEvent> for Launcher {
     }
 
     fn new_events(&mut self, event_loop: &ActiveEventLoop, cause: StartCause) {
+        // The window stays open behind a viewer, whose loop takes the
+        // window's resizes: match the surface to the window again.
+        if matches!(cause, StartCause::Init)
+            && let Some((window, renderer, _)) = &mut self.gfx
+        {
+            let size = window.inner_size();
+            renderer.resize(size.width, size.height);
+            window.request_redraw();
+        }
         // Android announces its one window only once: a launcher started
         // again after a viewer creates it here.
         #[cfg(target_os = "android")]
