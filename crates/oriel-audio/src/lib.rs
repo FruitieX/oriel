@@ -108,10 +108,27 @@ pub fn start_capture(
             // Consecutive silent frames: after a few, nothing is sent until
             // sound returns (the client just runs out of buffered audio).
             let mut silent = 0u32;
+            // What arrived and went out, logged every 10 s: tells "no data
+            // from the device", "only silence" and "sent" apart.
+            let mut report = (Instant::now(), 0u32, 0usize, 0f32, 0u32);
             while !thread_stop.load(Ordering::Relaxed) {
+                if report.0.elapsed() >= Duration::from_secs(10) {
+                    let (_, chunks, samples, peak, packets) = report;
+                    tracing::info!(
+                        chunks,
+                        samples,
+                        peak,
+                        packets,
+                        "audio capture in the last 10 s"
+                    );
+                    report = (Instant::now(), 0, 0, 0.0, 0);
+                }
                 let Ok(samples) = rx.recv_timeout(Duration::from_millis(100)) else {
                     continue;
                 };
+                report.1 += 1;
+                report.2 += samples.len();
+                report.3 = samples.iter().fold(report.3, |p, s| p.max(s.abs()));
                 pending.extend_from_slice(&samples);
                 while pending.len() >= FRAME * CHANNELS {
                     let frame = &pending[..FRAME * CHANNELS];
@@ -125,7 +142,10 @@ pub fn start_capture(
                         continue;
                     }
                     match encoder.encode_float(frame, &mut out) {
-                        Ok(n) => on_packet(out[..n].to_vec()),
+                        Ok(n) => {
+                            report.4 += 1;
+                            on_packet(out[..n].to_vec())
+                        }
                         Err(e) => tracing::warn!("opus encode failed: {e}"),
                     }
                     pending.drain(..FRAME * CHANNELS);

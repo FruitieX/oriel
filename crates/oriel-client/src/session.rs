@@ -511,12 +511,20 @@ pub fn start(
     let dg_speaker = speaker.clone();
     let dg_sink = sink.clone();
     tokio::spawn(async move {
+        // Audio packets per 10 s (debug), to tell "none sent" from "not
+        // played".
+        let mut audio = (Instant::now(), 0u32);
         while let Ok(bytes) = dg_conn.read_datagram().await {
+            if audio.0.elapsed() >= Duration::from_secs(10) {
+                tracing::debug!(packets = audio.1, "audio packets received in the last 10 s");
+                audio = (Instant::now(), 0);
+            }
             match oriel_proto::decode(&bytes) {
                 Ok(Datagram::CursorPosition { x, y, .. }) => {
                     dg_sink(UiEvent::CursorPosition { x, y })
                 }
                 Ok(Datagram::Audio { seq, data }) => {
+                    audio.1 += 1;
                     if let Some((p, _)) = &dg_speaker.lock().player {
                         p.push(seq, data);
                     }
