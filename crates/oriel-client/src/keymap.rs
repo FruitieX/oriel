@@ -2,6 +2,68 @@
 
 use winit::keyboard::KeyCode;
 
+/// The USB HID usage of a key as winit reports it, with macOS's ISO
+/// keyboard quirk undone. There the key right of left Shift reports the
+/// grave key's code (0x32) and the one left of 1 the ISO section code
+/// (0x0A); winit makes both `Backquote`, so the raw code is read from the
+/// event AppKit is dispatching. Before this the first sent a backtick.
+pub fn physical_usage(key: winit::keyboard::PhysicalKey) -> Option<u16> {
+    use winit::keyboard::PhysicalKey;
+    #[cfg(target_os = "macos")]
+    if key == PhysicalKey::Code(KeyCode::Backquote) {
+        use oriel_proto::keys::{BACKQUOTE, NON_US_BACKSLASH};
+        return Some(match (mac::current_key_code(), mac::iso_keyboard()) {
+            (Some(0x32), true) | (Some(0x0a), false) => NON_US_BACKSLASH,
+            _ => BACKQUOTE,
+        });
+    }
+    match key {
+        PhysicalKey::Code(code) => hid_usage(code),
+        PhysicalKey::Unidentified(_) => None,
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod mac {
+    use objc2::{class, msg_send, runtime::AnyObject};
+
+    #[link(name = "Carbon", kind = "framework")]
+    unsafe extern "C" {
+        fn LMGetKbdType() -> u8;
+        fn KBGetLayoutType(keyboard_type: i16) -> u32;
+    }
+
+    /// The keyboard typed on last is ISO (it can change with an external
+    /// keyboard, so this is asked on every key).
+    pub fn iso_keyboard() -> bool {
+        const ISO: u32 = u32::from_be_bytes(*b"ISO ");
+        // SAFETY: plain queries of the current keyboard type.
+        unsafe { KBGetLayoutType(LMGetKbdType() as i16) == ISO }
+    }
+
+    /// The virtual key code of the key event AppKit is dispatching (winit
+    /// handles key events while it does). Main thread only.
+    pub fn current_key_code() -> Option<u16> {
+        const KEY_DOWN: usize = 10;
+        const KEY_UP: usize = 11;
+        // SAFETY: NSApplication and NSEvent messages on the main thread;
+        // keyCode is only asked of key events (others raise).
+        unsafe {
+            let app: *mut AnyObject = msg_send![class!(NSApplication), sharedApplication];
+            let event: *mut AnyObject = msg_send![app, currentEvent];
+            if event.is_null() {
+                return None;
+            }
+            let kind: usize = msg_send![event, type];
+            if kind != KEY_DOWN && kind != KEY_UP {
+                return None;
+            }
+            let code: u16 = msg_send![event, keyCode];
+            Some(code)
+        }
+    }
+}
+
 pub fn hid_usage(key: KeyCode) -> Option<u16> {
     use KeyCode::*;
     Some(match key {

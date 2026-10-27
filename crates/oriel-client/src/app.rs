@@ -28,7 +28,7 @@ use winit::{
 use crate::{
     config::{ClientConfig, Effective, Resolution},
     connection,
-    keymap::{Bindings, Command, hid_usage},
+    keymap::{Bindings, Command},
     render::{Renderer, Viewport, letterbox},
     session::{self, Session, UiEvent},
 };
@@ -824,7 +824,7 @@ impl Viewer {
         if !self.keys_to_host() || event.repeat {
             return;
         }
-        let Some(usage) = hid_usage(code) else {
+        let Some(usage) = crate::keymap::physical_usage(event.physical_key) else {
             return;
         };
         if pressed {
