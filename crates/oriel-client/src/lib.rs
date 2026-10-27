@@ -31,6 +31,8 @@ pub mod interop;
 pub mod keymap;
 pub mod launcher;
 mod nap;
+#[cfg(target_os = "macos")]
+mod rawmouse;
 mod render;
 pub mod session;
 pub mod settings_ui;

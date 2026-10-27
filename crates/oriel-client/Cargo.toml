@@ -37,7 +37,9 @@ wayland-protocols = { version = "0.32", features = ["client", "unstable"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSProcessInfo", "NSString", "NSObject"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSProcessInfo", "NSString", "NSObject", "NSArray", "NSEnumerator"] }
+objc2-game-controller = { version = "0.3", default-features = false, features = ["std", "block2", "GCDevice", "GCMouse", "GCMouseInput", "GCPhysicalInputProfile"] }
+block2 = "0.6"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

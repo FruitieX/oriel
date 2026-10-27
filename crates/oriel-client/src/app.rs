@@ -151,6 +151,13 @@ pub fn run(
         enabled: e.auto_bitrate,
     });
     let mut viewer = Viewer::new(session.clone(), connected.host_name, options);
+    #[cfg(target_os = "macos")]
+    {
+        let s = session.clone();
+        viewer.raw_mouse = Some(crate::rawmouse::RawMouse::new(move |dx, dy| {
+            s.input(InputEvent::MouseMotion { dx, dy })
+        }));
+    }
     viewer.frame_pending = frame_pending;
     viewer.sink = Some(sink.clone());
     viewer.displays = connected.displays;
@@ -246,6 +253,9 @@ struct Viewer {
     pointer_over_ui: bool,
     wheel_px: (f64, f64),
     motion: (f64, f64),
+    /// Unaccelerated mouse movement while the cursor is captured.
+    #[cfg(target_os = "macos")]
+    raw_mouse: Option<crate::rawmouse::RawMouse>,
 
     notices: Vec<(String, Instant)>,
     /// The host's last health report.
@@ -342,6 +352,8 @@ impl Viewer {
             pointer_over_ui: false,
             wheel_px: (0.0, 0.0),
             motion: (0.0, 0.0),
+            #[cfg(target_os = "macos")]
+            raw_mouse: None,
             notices: Vec::new(),
             host_health: None,
             diagnostics: Default::default(),
@@ -631,6 +643,10 @@ impl Viewer {
                 self.motion = (0.0, 0.0);
             } else {
                 let _ = window.set_cursor_grab(CursorGrabMode::None);
+            }
+            #[cfg(target_os = "macos")]
+            if let Some(raw) = &self.raw_mouse {
+                raw.set_enabled(relative);
             }
             self.grabbed = relative;
         }
@@ -2264,6 +2280,16 @@ impl ApplicationHandler<UiEvent> for Viewer {
     }
 
     fn device_event(&mut self, _event_loop: &ActiveEventLoop, _id: DeviceId, event: DeviceEvent) {
+        // Sent unaccelerated by `raw_mouse` instead.
+        #[cfg(target_os = "macos")]
+        if let Some(raw) = &self.raw_mouse
+            && matches!(event, DeviceEvent::MouseMotion { .. })
+        {
+            raw.moved();
+            if raw.active() {
+                return;
+            }
+        }
         if let DeviceEvent::MouseMotion { delta } = event
             && self.relative()
         {
