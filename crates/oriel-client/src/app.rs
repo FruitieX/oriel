@@ -1895,6 +1895,11 @@ fn overlay(ctx: &egui::Context, s: &OverlayState, settings: &mut MenuSettings) -
     actions
 }
 
+/// Clicks and drags, but no keyboard focus: egui gets the keys typed for
+/// the host too, and Tab would focus the button, and Space then open the
+/// menu.
+const MENU_BUTTON_SENSE: egui::Sense = egui::Sense::CLICK.union(egui::Sense::DRAG);
+
 fn menu_button(ctx: &egui::Context, s: &OverlayState, actions: &mut Vec<Action>) {
     let screen = ctx.content_rect();
     let area = egui::Area::new(egui::Id::unique("menu-button")).order(egui::Order::Foreground);
@@ -1931,7 +1936,7 @@ fn menu_button(ctx: &egui::Context, s: &OverlayState, actions: &mut Vec<Action>)
             pad * 2.0 + if logo { logo_size } else { 0.0 } + gap + galley.size().x
         };
         let (rect, response) =
-            ui.allocate_exact_size(egui::vec2(w, h), egui::Sense::click_and_drag());
+            ui.allocate_exact_size(egui::vec2(w, h), MENU_BUTTON_SENSE);
         let alpha = if response.hovered() || response.dragged() {
             235
         } else {
@@ -2600,4 +2605,52 @@ fn offered_codecs(choice: &str) -> (Vec<oriel_proto::Codec>, bool) {
         return (codecs, false);
     }
     (codecs, auto)
+}
+
+#[cfg(test)]
+mod tests {
+    /// Clicks on a button with `sense` after `keys` were typed (each
+    /// pressed and released in its own pass).
+    fn clicks_after(sense: egui::Sense, keys: &[egui::Key]) -> bool {
+        let ctx = egui::Context::default();
+        let mut clicked = false;
+        let mut pass = |events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(800.0, 600.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| {
+                egui::Area::new(egui::Id::unique("button")).show(ui.ctx(), |ui| {
+                    let (_, response) = ui.allocate_exact_size(egui::vec2(30.0, 30.0), sense);
+                    clicked |= response.clicked();
+                });
+            });
+            output.textures_delta.clear();
+        };
+        pass(vec![]);
+        for &key in keys {
+            for pressed in [true, false] {
+                pass(vec![egui::Event::Key {
+                    key,
+                    physical_key: Some(key),
+                    pressed,
+                    repeat: false,
+                    modifiers: Default::default(),
+                }]);
+            }
+        }
+        clicked
+    }
+
+    #[test]
+    fn typing_does_not_press_the_menu_button() {
+        use egui::Key::{Enter, Space, Tab};
+        assert!(clicks_after(egui::Sense::click_and_drag(), &[Tab, Space]));
+        assert!(!clicks_after(super::MENU_BUTTON_SENSE, &[Tab, Space]));
+        assert!(!clicks_after(super::MENU_BUTTON_SENSE, &[Tab, Tab, Enter]));
+    }
 }
