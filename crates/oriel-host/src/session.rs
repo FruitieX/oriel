@@ -109,6 +109,7 @@ pub async fn run(
             pyrowave_kbps: settings.pyrowave_kbps.max(10_000),
             // The client turns it on with SetAutoBitrate right after.
             auto_bitrate: false,
+            rate_sensitivity: Default::default(),
         },
         shared.clone(),
         test.clone(),
@@ -470,6 +471,9 @@ pub async fn run(
                         let _ = cmd_tx.send(Cmd::GraphicsCapture(enabled));
                     }
                     Some(ClientMsg::SetAutoBitrate { enabled }) => { let _ = cmd_tx.send(Cmd::AutoBitrate(enabled)); }
+                    Some(ClientMsg::SetRateSensitivity { sensitivity }) => {
+                        let _ = cmd_tx.send(Cmd::RateSensitivity(sensitivity));
+                    }
                     Some(ClientMsg::ClipboardImage { png }) => {
                         if png.len() <= oriel_clipboard::MAX_IMAGE {
                             let _ = clipboard.set.send(oriel_clipboard::Content::Image(png));

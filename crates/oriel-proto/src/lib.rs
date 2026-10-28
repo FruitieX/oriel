@@ -23,7 +23,7 @@ pub const ALPN: &[u8] = b"oriel/1";
 /// when it only checks whether the host is up.
 pub const PROBE_REASON: &[u8] = b"probe";
 
-pub const PROTOCOL_VERSION: u32 = 15;
+pub const PROTOCOL_VERSION: u32 = 16;
 pub const DEFAULT_PORT: u16 = 48600;
 /// Upper bound for a single control/input message.
 pub const MAX_MESSAGE_LEN: usize = 32 * 1024 * 1024;
@@ -218,6 +218,21 @@ pub enum ClientMsg {
     SetMuteHost {
         enabled: bool,
     },
+    /// How readily automatic bitrate takes delay and loss for congestion.
+    SetRateSensitivity {
+        sensitivity: RateSensitivity,
+    },
+}
+
+/// How readily automatic bitrate cuts: `Quick` at the first sign of delay,
+/// `Tolerant` only for congestion that lasts (mobile links jitter a lot
+/// without being full).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RateSensitivity {
+    Quick,
+    #[default]
+    Balanced,
+    Tolerant,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

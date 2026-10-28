@@ -37,6 +37,7 @@ pub struct Config {
     pub pyrowave_kbps: u32,
     /// Adapt the bitrate to the network, up to `bitrate_kbps`.
     pub auto_bitrate: bool,
+    pub rate_sensitivity: oriel_proto::RateSensitivity,
 }
 
 pub enum Cmd {
@@ -49,6 +50,7 @@ pub enum Cmd {
     GraphicsCapture(bool),
     Bitrate(u32),
     AutoBitrate(bool),
+    RateSensitivity(oriel_proto::RateSensitivity),
     MaxFps(u32),
     PyroWaveBitrate(u32),
     Stop,
@@ -215,7 +217,11 @@ pub fn spawn(
             #[cfg(windows)]
             crate::win::boost_thread_priority();
             let mut p = Pipeline {
-                rate: crate::ratecontrol::RateControl::new(config.bitrate_kbps, Instant::now()),
+                rate: crate::ratecontrol::RateControl::new(
+                    config.bitrate_kbps,
+                    config.rate_sensitivity,
+                    Instant::now(),
+                ),
                 auto: AutoCodec {
                     retry_at: Instant::now(),
                     backoff: Duration::from_secs(30),
@@ -555,7 +561,11 @@ impl Pipeline {
                     Cmd::Bitrate(_) => {}
                     Cmd::AutoBitrate(on) if on != self.config.auto_bitrate => {
                         self.config.auto_bitrate = on;
-                        self.rate = crate::ratecontrol::RateControl::new(*bitrate, Instant::now());
+                        self.rate = crate::ratecontrol::RateControl::new(
+                            *bitrate,
+                            self.config.rate_sensitivity,
+                            Instant::now(),
+                        );
                         if codec != Codec::PyroWave && !on {
                             let kbps = *bitrate;
                             if !enc.set_bitrate(kbps) {
@@ -566,6 +576,10 @@ impl Pipeline {
                         }
                     }
                     Cmd::AutoBitrate(_) => {}
+                    Cmd::RateSensitivity(sensitivity) => {
+                        self.config.rate_sensitivity = sensitivity;
+                        self.rate.set_sensitivity(sensitivity);
+                    }
                     Cmd::MaxFps(fps) if fps != self.config.max_fps => {
                         self.config.max_fps = fps.clamp(1, 240);
                         return Ok(Flow::Reencode);
@@ -689,10 +703,14 @@ impl Pipeline {
                 quarter = Quarter::new(&self.shared);
                 if self.config.auto_bitrate
                     && codec != Codec::PyroWave
-                    && let Some(kbps) = self.rate.update(Instant::now(), sample)
+                    && let Some((kbps, cause)) = self.rate.update(Instant::now(), sample)
                 {
                     let kbps = kbps.min(*bitrate);
-                    tracing::debug!(kbps, ?sample, "automatic bitrate");
+                    if let Some(cause) = cause {
+                        tracing::info!(kbps, ?cause, ?sample, "automatic bitrate cut");
+                    } else {
+                        tracing::debug!(kbps, ?sample, "automatic bitrate raised");
+                    }
                     if !enc.set_bitrate(kbps) {
                         // Reopening costs a keyframe: only for real cuts, or
                         // to climb back after a while.

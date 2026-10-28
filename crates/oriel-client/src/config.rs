@@ -21,6 +21,9 @@ pub struct ClientConfig {
     /// Lower the bitrate (below `bitrate_kbps`) while the network cannot
     /// carry it.
     pub auto_bitrate: bool,
+    /// How readily automatic bitrate cuts: "quick", "balanced" or
+    /// "tolerant" (see [`RATE_SENSITIVITIES`]).
+    pub rate_sensitivity: String,
     /// Hold frames briefly to even out network jitter: "off" (lowest
     /// latency), "auto", or milliseconds.
     pub smoothing: String,
@@ -94,6 +97,7 @@ pub struct HostPrefs {
     pub codec: Option<String>,
     pub bitrate_kbps: Option<u32>,
     pub auto_bitrate: Option<bool>,
+    pub rate_sensitivity: Option<String>,
     pub smoothing: Option<String>,
     pub pyrowave_kbps: Option<u32>,
     pub full_chroma: Option<bool>,
@@ -133,6 +137,7 @@ pub struct Effective {
     pub codec: String,
     pub bitrate_kbps: u32,
     pub auto_bitrate: bool,
+    pub rate_sensitivity: String,
     pub smoothing: String,
     pub pyrowave_kbps: u32,
     pub full_chroma: bool,
@@ -226,6 +231,21 @@ pub const CAPTURE_CHOICES: [(&str, &str); 2] = [
     ("duplication", "Desktop Duplication"),
     ("graphics", "Windows Graphics Capture"),
 ];
+
+/// How readily automatic bitrate cuts, as (key, label).
+pub const RATE_SENSITIVITIES: [(&str, &str); 3] = [
+    ("quick", "Quickly (at any delay)"),
+    ("balanced", "Balanced"),
+    ("tolerant", "Tolerantly (mobile data)"),
+];
+
+pub fn rate_sensitivity(key: &str) -> oriel_proto::RateSensitivity {
+    match key {
+        "quick" => oriel_proto::RateSensitivity::Quick,
+        "tolerant" => oriel_proto::RateSensitivity::Tolerant,
+        _ => oriel_proto::RateSensitivity::Balanced,
+    }
+}
 
 /// Smoothing choices, as (key, label).
 pub const SMOOTHING_CHOICES: [(&str, &str); 8] = [
@@ -325,6 +345,7 @@ impl Default for ClientConfig {
             menu_shortcut: "Ctrl+Alt+Shift+M".into(),
             bitrate_kbps: 50_000,
             auto_bitrate: true,
+            rate_sensitivity: "balanced".into(),
             smoothing: "off".into(),
             max_fps: 120,
             codecs: vec!["hevc".into(), "h264".into()],
@@ -367,6 +388,10 @@ impl ClientConfig {
             codec: h.codec.clone().unwrap_or_else(|| self.codec_key()),
             bitrate_kbps: h.bitrate_kbps.unwrap_or(self.bitrate_kbps),
             auto_bitrate: h.auto_bitrate.unwrap_or(self.auto_bitrate),
+            rate_sensitivity: h
+                .rate_sensitivity
+                .clone()
+                .unwrap_or_else(|| self.rate_sensitivity.clone()),
             smoothing: h
                 .smoothing
                 .clone()

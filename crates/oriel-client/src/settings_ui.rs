@@ -8,8 +8,8 @@ use oriel_proto::{Codec, VirtualMode};
 use crate::{
     config::{
         CAPTURE_CHOICES, CODEC_CHOICES, CODER_CHOICES, ClientConfig, HostPrefs, MENU_BUTTON_STYLES,
-        MOUSE_MODES, Resolution, SMOOTHING_CHOICES, WARNING_STYLES, codec_choice_strings,
-        format_resolution, format_virtual_mode,
+        MOUSE_MODES, RATE_SENSITIVITIES, Resolution, SMOOTHING_CHOICES, WARNING_STYLES,
+        codec_choice_strings, format_resolution, format_virtual_mode,
     },
     keymap::{Command, Shortcut},
     theme::{self, AMBER},
@@ -688,6 +688,20 @@ fn video_tab(ui: &mut Ui, rows: &mut Rows, live: Option<&Live>) {
                 |c, v| c.auto_bitrate = v,
                 |h| &mut h.auto_bitrate,
             );
+            if rows.config.effective(rows.host).auto_bitrate {
+                rows.choice(
+                    ui,
+                    "Bitrate reacts",
+                    "How readily automatic bitrate takes network delay and loss for \
+                     congestion. Quickly cuts at the first sign of delay; tolerantly \
+                     waits for congestion that lasts, for links that jitter without \
+                     being full (5G, busy Wi-Fi)",
+                    |c| c.rate_sensitivity.clone(),
+                    |c, v| c.rate_sensitivity = v,
+                    |h| &mut h.rate_sensitivity,
+                    &RATE_SENSITIVITIES,
+                );
+            }
         }
         // Android decoders rarely handle 4:4:4.
         if !cfg!(target_os = "android") && !pyrowave {

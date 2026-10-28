@@ -157,6 +157,10 @@ pub fn run(
     if e.mute_host {
         session.send(ClientMsg::SetMuteHost { enabled: true });
     }
+    // Hosts before protocol 16 skip this.
+    session.send(ClientMsg::SetRateSensitivity {
+        sensitivity: crate::config::rate_sensitivity(&e.rate_sensitivity),
+    });
     let mut viewer = Viewer::new(session.clone(), connected.host_name, options);
     #[cfg(target_os = "macos")]
     {
@@ -1249,6 +1253,11 @@ impl Viewer {
         if old.auto_bitrate != new.auto_bitrate {
             s.send(ClientMsg::SetAutoBitrate {
                 enabled: new.auto_bitrate,
+            });
+        }
+        if old.rate_sensitivity != new.rate_sensitivity {
+            s.send(ClientMsg::SetRateSensitivity {
+                sensitivity: crate::config::rate_sensitivity(&new.rate_sensitivity),
             });
         }
         if old.pyrowave_kbps != new.pyrowave_kbps {

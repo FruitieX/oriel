@@ -3,13 +3,20 @@
 //!
 //! Every quarter second the pipeline reports what it saw. Congestion (the
 //! round trip growing over its recent minimum, frames waiting on the client,
-//! or packet loss) cuts the bitrate at once; a clean link raises it again
-//! step by step, but only while the stream actually uses what it has.
+//! or packet loss) cuts the bitrate; a clean link raises it again step by
+//! step, but only while the stream actually uses what it has.
+//!
+//! Radio links (5G, busy Wi-Fi) jitter without being full, so the delay
+//! that counts grows with the jitter seen over the baseline window, and
+//! except for heavy delay or loss a cut needs congestion in several samples
+//! in a row. The client's [`RateSensitivity`] sets how much of that applies.
 
 use std::{
     collections::VecDeque,
     time::{Duration, Instant},
 };
+
+use oriel_proto::RateSensitivity;
 
 /// What the last quarter second looked like.
 #[derive(Debug, Clone, Copy, Default)]
@@ -23,28 +30,107 @@ pub struct Sample {
     pub sent_kbps: f32,
 }
 
+/// Why the bitrate was cut, for the log.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cause {
+    Delay,
+    Blocked,
+    Loss,
+}
+
+/// How one [`RateSensitivity`] tells congestion from noise.
+struct Profile {
+    /// Delay over the baseline that counts: a share of the baseline, at
+    /// least `delay_floor`, and at least `jitter` times the usual jitter.
+    delay_share: f32,
+    delay_floor: Duration,
+    jitter: f32,
+    /// Congested samples in a row before a cut.
+    persist: u32,
+    loss: f32,
+    /// Cut at once, without waiting for `persist` samples: this much loss,
+    /// or a round trip `heavy_delay` times the baseline and at least
+    /// `heavy_margin` margins over it.
+    heavy_loss: f32,
+    heavy_delay: u32,
+    heavy_margin: u32,
+    cut: f32,
+    heavy_cut: f32,
+    hold: Duration,
+}
+
+impl Profile {
+    fn of(s: RateSensitivity) -> Self {
+        match s {
+            // What automatic bitrate did before it had a choice.
+            RateSensitivity::Quick => Self {
+                delay_share: 0.5,
+                delay_floor: Duration::from_millis(4),
+                jitter: 0.0,
+                persist: 1,
+                loss: 0.03,
+                heavy_loss: 0.1,
+                heavy_delay: 3,
+                heavy_margin: 1,
+                cut: 0.8,
+                heavy_cut: 0.6,
+                hold: Duration::from_secs(2),
+            },
+            RateSensitivity::Balanced => Self {
+                delay_share: 0.5,
+                delay_floor: Duration::from_millis(6),
+                jitter: 3.0,
+                persist: 2,
+                loss: 0.05,
+                heavy_loss: 0.15,
+                heavy_delay: 3,
+                heavy_margin: 2,
+                cut: 0.85,
+                heavy_cut: 0.65,
+                hold: Duration::from_millis(1500),
+            },
+            RateSensitivity::Tolerant => Self {
+                delay_share: 1.0,
+                delay_floor: Duration::from_millis(15),
+                jitter: 4.0,
+                persist: 4,
+                loss: 0.1,
+                heavy_loss: 0.25,
+                heavy_delay: 4,
+                heavy_margin: 3,
+                cut: 0.9,
+                heavy_cut: 0.7,
+                hold: Duration::from_secs(1),
+            },
+        }
+    }
+}
+
 pub struct RateControl {
     max_kbps: u32,
     target_kbps: u32,
-    /// Recent round trips, for the uncongested baseline.
+    profile: Profile,
+    /// Recent round trips, for the uncongested baseline and the jitter.
     rtts: VecDeque<(Instant, Duration)>,
+    /// Congested samples in a row.
+    streak: u32,
     last_decrease: Option<Instant>,
     last_increase: Instant,
 }
 
 /// How long the round-trip baseline looks back.
 const BASELINE_WINDOW: Duration = Duration::from_secs(10);
-/// Wait this long after a cut before raising the bitrate again.
-const HOLD_AFTER_DECREASE: Duration = Duration::from_secs(2);
 const INCREASE_EVERY: Duration = Duration::from_millis(500);
 const DECREASE_EVERY: Duration = Duration::from_millis(300);
 
 impl RateControl {
-    pub fn new(max_kbps: u32, now: Instant) -> Self {
+    pub fn new(max_kbps: u32, sensitivity: RateSensitivity, now: Instant) -> Self {
         Self {
             max_kbps,
             target_kbps: max_kbps,
+            profile: Profile::of(sensitivity),
             rtts: VecDeque::new(),
+            streak: 0,
             last_decrease: None,
             last_increase: now,
         }
@@ -52,6 +138,11 @@ impl RateControl {
 
     pub fn target_kbps(&self) -> u32 {
         self.target_kbps
+    }
+
+    pub fn set_sensitivity(&mut self, sensitivity: RateSensitivity) {
+        self.profile = Profile::of(sensitivity);
+        self.streak = 0;
     }
 
     fn min_kbps(&self) -> u32 {
@@ -64,8 +155,27 @@ impl RateControl {
         self.target_kbps = self.target_kbps.min(max_kbps).max(self.min_kbps());
     }
 
-    /// Feed a quarter second's sample. Returns a new target worth applying.
-    pub fn update(&mut self, now: Instant, s: Sample) -> Option<u32> {
+    /// The usual change between successive round trips in the window.
+    fn jitter(&self) -> Duration {
+        let n = self.rtts.len();
+        if n < 2 {
+            return Duration::ZERO;
+        }
+        let sum: Duration = self
+            .rtts
+            .iter()
+            .zip(self.rtts.iter().skip(1))
+            .map(|((_, a), (_, b))| a.abs_diff(*b))
+            .sum();
+        sum / (n - 1) as u32
+    }
+
+    /// Feed a quarter second's sample. Returns a new target worth applying
+    /// and what caused a cut.
+    pub fn update(&mut self, now: Instant, s: Sample) -> Option<(u32, Option<Cause>)> {
+        // The jitter before this sample, so that a jump does not excuse
+        // itself.
+        let jitter = self.jitter();
         if !s.rtt.is_zero() {
             self.rtts.push_back((now, s.rtt));
         }
@@ -76,29 +186,40 @@ impl RateControl {
         {
             self.rtts.pop_front();
         }
+        let p = &self.profile;
         let base = self.rtts.iter().map(|(_, r)| *r).min().unwrap_or(s.rtt);
         // Queues building up somewhere on the path.
-        let delayed = s.rtt > base + (base / 2).max(Duration::from_millis(4));
-        let congested = delayed || s.blocked || s.loss >= 0.03;
+        let margin = base
+            .mul_f32(p.delay_share)
+            .max(p.delay_floor)
+            .max(jitter.mul_f32(p.jitter));
+        let cause = if s.loss >= p.loss {
+            Some(Cause::Loss)
+        } else if s.rtt > base + margin {
+            Some(Cause::Delay)
+        } else if s.blocked {
+            Some(Cause::Blocked)
+        } else {
+            None
+        };
+        self.streak = if cause.is_some() { self.streak + 1 } else { 0 };
+        let heavy = s.loss >= p.heavy_loss
+            || s.rtt > (base * p.heavy_delay).max(base + margin * p.heavy_margin);
 
         let old = self.target_kbps;
-        if congested {
-            if self
-                .last_decrease
-                .is_none_or(|t| now.duration_since(t) >= DECREASE_EVERY)
+        if cause.is_some() {
+            if (heavy || self.streak >= p.persist)
+                && self
+                    .last_decrease
+                    .is_none_or(|t| now.duration_since(t) >= DECREASE_EVERY)
             {
-                // Heavy loss or delay: cut harder.
-                let factor = if s.loss >= 0.1 || s.rtt > base * 3 {
-                    0.6
-                } else {
-                    0.8
-                };
+                let factor = if heavy { p.heavy_cut } else { p.cut };
                 self.target_kbps = ((old as f32 * factor) as u32).max(self.min_kbps());
                 self.last_decrease = Some(now);
             }
         } else if self
             .last_decrease
-            .is_none_or(|t| now.duration_since(t) >= HOLD_AFTER_DECREASE)
+            .is_none_or(|t| now.duration_since(t) >= p.hold)
             && now.duration_since(self.last_increase) >= INCREASE_EVERY
             // Only probe upwards while the stream uses its budget; a still
             // screen says nothing about what the link carries.
@@ -110,7 +231,7 @@ impl RateControl {
         // Small steps are not worth an encoder change.
         let changed = self.target_kbps.abs_diff(old) * 20 >= old;
         if changed {
-            Some(self.target_kbps)
+            Some((self.target_kbps, cause.filter(|_| self.target_kbps < old)))
         } else {
             self.target_kbps = old;
             None
@@ -134,20 +255,26 @@ mod tests {
     fn backs_off_and_recovers() {
         let t0 = Instant::now();
         let at = |ms: u64| t0 + Duration::from_millis(ms);
-        let mut rc = RateControl::new(50_000, t0);
+        let mut rc = RateControl::new(50_000, RateSensitivity::Quick, t0);
         // A clean link at full use keeps the maximum.
         assert_eq!(rc.update(at(250), clean(2, 45_000.0)), None);
         assert_eq!(rc.target_kbps(), 50_000);
 
         // Delay building up: cut at once, but not every sample.
-        assert_eq!(rc.update(at(500), clean(30, 45_000.0)), Some(30_000));
+        assert_eq!(
+            rc.update(at(500), clean(30, 45_000.0)),
+            Some((30_000, Some(Cause::Delay)))
+        );
         assert_eq!(rc.update(at(600), clean(30, 30_000.0)), None);
         // Frames waiting on the client count as congestion too.
         let blocked = Sample {
             blocked: true,
             ..clean(2, 30_000.0)
         };
-        assert_eq!(rc.update(at(900), blocked), Some(24_000));
+        assert_eq!(
+            rc.update(at(900), blocked),
+            Some((24_000, Some(Cause::Blocked)))
+        );
 
         // Held for a while after a cut, then raised step by step.
         assert_eq!(rc.update(at(1500), clean(2, 24_000.0)), None);
@@ -162,10 +289,85 @@ mod tests {
         }
     }
 
+    /// A 5G-like link: 25 ms round trips that wander by ±10 ms.
+    fn jittery(n: u64) -> Duration {
+        Duration::from_millis([25, 33, 20, 35, 24, 18, 30, 26][(n % 8) as usize])
+    }
+
+    #[test]
+    fn balanced_rides_out_jitter() {
+        let t0 = Instant::now();
+        for sensitivity in [RateSensitivity::Balanced, RateSensitivity::Tolerant] {
+            let mut rc = RateControl::new(50_000, sensitivity, t0);
+            for n in 1..200 {
+                let s = Sample {
+                    rtt: jittery(n),
+                    ..clean(0, 45_000.0)
+                };
+                rc.update(t0 + Duration::from_millis(n * 250), s);
+            }
+            assert_eq!(rc.target_kbps(), 50_000, "{sensitivity:?}");
+        }
+        // Quick takes the same jitter for congestion.
+        let mut rc = RateControl::new(50_000, RateSensitivity::Quick, t0);
+        for n in 1..200 {
+            let s = Sample {
+                rtt: jittery(n),
+                ..clean(0, 45_000.0)
+            };
+            rc.update(t0 + Duration::from_millis(n * 250), s);
+        }
+        assert!(rc.target_kbps() < 50_000);
+    }
+
+    #[test]
+    fn balanced_cuts_lasting_congestion() {
+        let t0 = Instant::now();
+        let at = |n: u64| t0 + Duration::from_millis(n * 250);
+        for (sensitivity, within) in [
+            (RateSensitivity::Balanced, 2),
+            (RateSensitivity::Tolerant, 4),
+        ] {
+            let mut rc = RateControl::new(50_000, sensitivity, t0);
+            for n in 1..40 {
+                rc.update(
+                    at(n),
+                    Sample {
+                        rtt: jittery(n),
+                        ..clean(0, 45_000.0)
+                    },
+                );
+            }
+            // A queue builds up: the round trip climbs and stays up.
+            let mut cut_after = None;
+            for k in 1..=8 {
+                let s = Sample {
+                    rtt: Duration::from_millis(60 + k * 10),
+                    ..clean(0, 45_000.0)
+                };
+                if rc.update(at(40 + k), s).is_some() {
+                    cut_after = Some(k);
+                    break;
+                }
+            }
+            assert!(
+                cut_after.is_some_and(|k| k <= within),
+                "{sensitivity:?}: {cut_after:?}"
+            );
+            // Heavy loss cuts on the first sample.
+            let mut rc = RateControl::new(50_000, sensitivity, t0);
+            let s = Sample {
+                loss: 0.5,
+                ..clean(25, 45_000.0)
+            };
+            assert!(matches!(rc.update(at(1), s), Some((_, Some(Cause::Loss)))));
+        }
+    }
+
     #[test]
     fn still_screens_do_not_probe() {
         let t0 = Instant::now();
-        let mut rc = RateControl::new(50_000, t0);
+        let mut rc = RateControl::new(50_000, RateSensitivity::Quick, t0);
         let loss = Sample {
             loss: 0.2,
             ..clean(2, 40_000.0)
@@ -183,7 +385,7 @@ mod tests {
     #[test]
     fn floor_and_new_maximum() {
         let t0 = Instant::now();
-        let mut rc = RateControl::new(50_000, t0);
+        let mut rc = RateControl::new(50_000, RateSensitivity::Quick, t0);
         for n in 1..40 {
             let loss = Sample {
                 loss: 0.5,
