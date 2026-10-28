@@ -78,6 +78,30 @@ pub async fn run(
         })
         .await?;
     }
+    // Windows has switched the monitors off: go straight to a virtual
+    // display rather than waiting for a picture that does not come (see
+    // `Event::NoPicture`).
+    #[cfg(windows)]
+    if virtual_mode.is_none()
+        && crate::win::displays_off()
+        && crate::capture::virtual_display_available(options.source)
+    {
+        auto_virtual = true;
+        let (width, height) = settings.resolution.unwrap_or((1920, 1080));
+        let mode = VirtualMode {
+            width,
+            height,
+            refresh_hz: 60,
+        };
+        tracing::info!(?mode, "the displays are off; using a virtual display");
+        virtual_mode = Some(mode);
+        ctl.send(&HostMsg::Notice {
+            text: "This computer's monitors are switched off, so it streams an extra \
+                   display instead"
+                .into(),
+        })
+        .await?;
+    }
     let shared = Arc::new(Shared::default());
     let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded();
     let (ev_tx, mut ev_rx) = tmpsc::unbounded_channel();

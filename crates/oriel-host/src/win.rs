@@ -17,6 +17,7 @@ use windows::Win32::{
 };
 
 pub fn init_process() {
+    watch_display_power();
     unsafe {
         // Physical pixel coordinates everywhere (capture, cursor, SendInput).
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
@@ -100,4 +101,65 @@ pub fn send_secure_attention() {
         send_sas(0);
         tracing::info!("sent Ctrl+Alt+Del");
     }
+}
+
+/// GUID_CONSOLE_DISPLAY_STATE: 0 off, 1 on, 2 dimmed; unknown until
+/// Windows reports it, which it does right after registration.
+static DISPLAY_STATE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(u32::MAX);
+
+/// Follow whether Windows has switched the displays off (power saving).
+fn watch_display_power() {
+    use windows::Win32::{
+        Foundation::{ERROR_SUCCESS, HANDLE},
+        System::{
+            Power::{DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS, PowerSettingRegisterNotification},
+            SystemServices::GUID_CONSOLE_DISPLAY_STATE,
+        },
+        UI::WindowsAndMessaging::DEVICE_NOTIFY_CALLBACK,
+    };
+    // Registered for the life of the process.
+    let params: &'static mut _ = Box::leak(Box::new(DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS {
+        Callback: Some(on_display_state),
+        Context: std::ptr::null_mut(),
+    }));
+    let mut handle = std::ptr::null_mut();
+    let err = unsafe {
+        PowerSettingRegisterNotification(
+            &GUID_CONSOLE_DISPLAY_STATE,
+            DEVICE_NOTIFY_CALLBACK,
+            HANDLE(params as *mut DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS as *mut _),
+            &mut handle,
+        )
+    };
+    if err != ERROR_SUCCESS {
+        tracing::warn!("cannot follow the display power state: {err:?}");
+    }
+}
+
+unsafe extern "system" fn on_display_state(
+    _context: *const std::ffi::c_void,
+    kind: u32,
+    setting: *const std::ffi::c_void,
+) -> u32 {
+    use windows::Win32::{
+        System::{Power::POWERBROADCAST_SETTING, SystemServices::GUID_CONSOLE_DISPLAY_STATE},
+        UI::WindowsAndMessaging::PBT_POWERSETTINGCHANGE,
+    };
+    if kind != PBT_POWERSETTINGCHANGE || setting.is_null() {
+        return 0;
+    }
+    let setting = setting as *const POWERBROADCAST_SETTING;
+    unsafe {
+        if (*setting).PowerSetting == GUID_CONSOLE_DISPLAY_STATE && (*setting).DataLength >= 4 {
+            let state = std::ptr::read_unaligned((*setting).Data.as_ptr() as *const u32);
+            DISPLAY_STATE.store(state, std::sync::atomic::Ordering::Relaxed);
+            tracing::debug!(state, "display power state");
+        }
+    }
+    0
+}
+
+/// Windows has switched the displays off: none would show a picture.
+pub fn displays_off() -> bool {
+    DISPLAY_STATE.load(std::sync::atomic::Ordering::Relaxed) == 0
 }
