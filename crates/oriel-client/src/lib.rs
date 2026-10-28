@@ -8,6 +8,7 @@ pub mod autostart;
 pub mod config;
 pub mod connection;
 mod decode;
+mod delivery;
 mod diagnostics;
 pub mod hub;
 mod playout;

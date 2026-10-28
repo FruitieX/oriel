@@ -46,11 +46,16 @@ display) and the client (connects to hosts).
   (`--codec pyrowave`, or `--codec auto` to switch between PyroWave and HEVC
   as the link allows).
 - Automatic bitrate (on by default): the host lowers the bitrate within a
-  fraction of a second when the round trip grows, frames wait on the client
-  or packets get lost, and raises it again up to the chosen bitrate once the
-  link is clean. NVENC, Quick Sync and x264 change it on the fly; other
-  encoders are reopened (a keyframe), at most every 2 s. PyroWave keeps its
-  own fallback to HEVC.
+  fraction of a second when the network cannot carry it, and raises it again
+  up to the chosen bitrate once the link is clean. The client reports how
+  frames arrive: a one-way delay that climbs steadily (a queue filling up,
+  unlike jitter), what the link delivered while frames waited (the cut goes
+  straight there), together with ECN congestion marks, and loss only where
+  it comes with a queue. "Bitrate reacts" (Settings → Video) trades
+  responsiveness for steadiness on links that jitter (5G); Quickly is the
+  original round-trip-based behaviour. NVENC, Quick Sync and x264 change the
+  bitrate on the fly; other encoders are reopened (a keyframe), at most
+  every 2 s. PyroWave keeps its own fallback to HEVC.
 - Smoothness (Settings → Video): off by default for the lowest latency;
   Automatic or a fixed 10–100 ms holds frames so that network jitter does
   not make motion stutter, showing each frame at its capture time plus the

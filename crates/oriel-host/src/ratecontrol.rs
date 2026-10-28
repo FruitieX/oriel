@@ -10,13 +10,31 @@
 //! that counts grows with the jitter seen over the baseline window, and
 //! except for heavy delay or loss a cut needs congestion in several samples
 //! in a row. The client's [`RateSensitivity`] sets how much of that applies.
+//!
+//! Beyond `Quick` (the original behaviour), clients that report how frames
+//! arrive ([`DeliveryReport`]) add better signals:
+//!
+//! - The one-way delay replaces the round trip, whose way back (the
+//!   client's uplink, often the worse half of a mobile link) does not
+//!   carry video. A queue filling up shows as a delay that climbs steadily
+//!   (the trend); jitter scatters around a flat line.
+//! - Loss counts only with a queue: loss on a steady delay is radio noise.
+//! - ECN congestion marks (QUIC counts them as congestion events without
+//!   losses) cut without waiting: a router said it is filling up.
+//! - While frames wait and the link carries well under the target, a cut
+//!   goes straight to what it carried rather than down in steps.
+//!
+//! QUIC's congestion window is logged with each cut but not used: video
+//! sends a frame at a time, which QUIC sees as application-limited, so the
+//! window stops growing at about what the stream uses and says little
+//! about what the link could carry.
 
 use std::{
     collections::VecDeque,
     time::{Duration, Instant},
 };
 
-use oriel_proto::RateSensitivity;
+use oriel_proto::{DeliveryReport, RateSensitivity};
 
 /// What the last quarter second looked like.
 #[derive(Debug, Clone, Copy, Default)]
@@ -28,18 +46,36 @@ pub struct Sample {
     pub loss: f32,
     /// What the encoder produced, kbit/s.
     pub sent_kbps: f32,
+    /// QUIC saw ECN congestion marks.
+    pub ecn_marked: bool,
+    /// The client's latest report, if fresh.
+    pub delivery: Option<DeliveryReport>,
+    /// What the encoder runs at, kbit/s (0: unknown). One that has to be
+    /// reopened for a new bitrate lags behind the target for a moment.
+    pub encoder_kbps: u32,
+    /// What QUIC's congestion window carries per round trip, kbit/s (0:
+    /// unknown); for the log.
+    #[expect(dead_code, reason = "logged with the sample")]
+    pub cwnd_kbps: f32,
 }
 
 /// Why the bitrate was cut, for the log.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Cause {
     Delay,
+    /// The one-way delay climbing.
+    Rising,
     Blocked,
     Loss,
+    Ecn,
 }
 
 /// How one [`RateSensitivity`] tells congestion from noise.
 struct Profile {
+    /// Use the newer signals (see the module comment).
+    signals: bool,
+    /// One-way delay growth that means a queue filling up, ms per second.
+    trend: f32,
     /// Delay over the baseline that counts: a share of the baseline, at
     /// least `delay_floor`, and at least `jitter` times the usual jitter.
     delay_share: f32,
@@ -64,6 +100,8 @@ impl Profile {
         match s {
             // What automatic bitrate did before it had a choice.
             RateSensitivity::Quick => Self {
+                signals: false,
+                trend: 0.0,
                 delay_share: 0.5,
                 delay_floor: Duration::from_millis(4),
                 jitter: 0.0,
@@ -77,6 +115,8 @@ impl Profile {
                 hold: Duration::from_secs(2),
             },
             RateSensitivity::Balanced => Self {
+                signals: true,
+                trend: 40.0,
                 delay_share: 0.5,
                 delay_floor: Duration::from_millis(6),
                 jitter: 3.0,
@@ -90,6 +130,8 @@ impl Profile {
                 hold: Duration::from_millis(1500),
             },
             RateSensitivity::Tolerant => Self {
+                signals: true,
+                trend: 80.0,
                 delay_share: 1.0,
                 delay_floor: Duration::from_millis(15),
                 jitter: 4.0,
@@ -114,6 +156,10 @@ pub struct RateControl {
     rtts: VecDeque<(Instant, Duration)>,
     /// Congested samples in a row.
     streak: u32,
+    /// The queue when the bitrate was last cut, and since when the encoder
+    /// runs at that cut.
+    queue_at_cut: Duration,
+    drain_from: Option<Instant>,
     last_decrease: Option<Instant>,
     last_increase: Instant,
 }
@@ -122,6 +168,10 @@ pub struct RateControl {
 const BASELINE_WINDOW: Duration = Duration::from_secs(10);
 const INCREASE_EVERY: Duration = Duration::from_millis(500);
 const DECREASE_EVERY: Duration = Duration::from_millis(300);
+/// After a cut (once the encoder runs at it) the queue it found takes a
+/// while to drain; until then it only counts as more congestion where it
+/// grew.
+const DRAIN: Duration = Duration::from_secs(1);
 
 impl RateControl {
     pub fn new(max_kbps: u32, sensitivity: RateSensitivity, now: Instant) -> Self {
@@ -131,6 +181,8 @@ impl RateControl {
             profile: Profile::of(sensitivity),
             rtts: VecDeque::new(),
             streak: 0,
+            queue_at_cut: Duration::ZERO,
+            drain_from: None,
             last_decrease: None,
             last_increase: now,
         }
@@ -188,34 +240,75 @@ impl RateControl {
         }
         let p = &self.profile;
         let base = self.rtts.iter().map(|(_, r)| *r).min().unwrap_or(s.rtt);
-        // Queues building up somewhere on the path.
+        // Queues building up somewhere on the path: delay over the baseline
+        // by more than this counts.
         let margin = base
             .mul_f32(p.delay_share)
             .max(p.delay_floor)
             .max(jitter.mul_f32(p.jitter));
-        let cause = if s.loss >= p.loss {
+        // Delay past this cuts at once.
+        let heavy_excess = (base * (p.heavy_delay - 1)).max(margin * p.heavy_margin);
+        let rtt_excess = s.rtt.saturating_sub(base);
+        let oneway = s.delivery.filter(|_| p.signals);
+        // The queue the video waits in: one way where the client says,
+        // else the round trip's growth.
+        let queue = oneway.map_or(rtt_excess, |d| Duration::from_micros(d.queue_us as u64));
+        let rising = oneway
+            .is_some_and(|d| d.trend_us_per_s as f32 / 1000.0 >= p.trend && queue >= margin / 2);
+        let delayed = queue > margin;
+        let lossy = s.loss >= p.loss
+            && (!p.signals || s.loss >= p.heavy_loss || rising || queue > margin / 2);
+        let ecn = p.signals && s.ecn_marked;
+        let cause = if lossy {
             Some(Cause::Loss)
-        } else if s.rtt > base + margin {
+        } else if ecn {
+            Some(Cause::Ecn)
+        } else if delayed {
             Some(Cause::Delay)
+        } else if rising {
+            Some(Cause::Rising)
         } else if s.blocked {
             Some(Cause::Blocked)
         } else {
             None
         };
+        // The queue a cut found only drains once the encoder runs at it.
+        if s.encoder_kbps as f32 > self.target_kbps as f32 * 1.05 && self.drain_from.is_some() {
+            self.drain_from = Some(now);
+        }
+        let draining = p.signals
+            && self
+                .drain_from
+                .is_some_and(|t| now.duration_since(t) < DRAIN)
+            && queue <= self.queue_at_cut + margin;
+        let cause = cause.filter(|c| !draining || !matches!(c, Cause::Delay | Cause::Blocked));
         self.streak = if cause.is_some() { self.streak + 1 } else { 0 };
-        let heavy = s.loss >= p.heavy_loss
-            || s.rtt > (base * p.heavy_delay).max(base + margin * p.heavy_margin);
+        let heavy = s.loss >= p.heavy_loss || (queue > heavy_excess && !draining);
+        // Frames held back (or a queue filling up) while the link carried
+        // well under the target: that was its capacity, cut to it in one
+        // go. (What the encoder produced is no measure here: frames held
+        // back are never encoded.)
+        let carried = oneway
+            .map(|d| d.delivered_kbps as f32)
+            .filter(|&k| k > 0.0 && k < self.target_kbps as f32 * 0.9 && (s.blocked || rising));
 
         let old = self.target_kbps;
         if cause.is_some() {
-            if (heavy || self.streak >= p.persist)
+            if (heavy || ecn || self.streak >= p.persist)
                 && self
                     .last_decrease
                     .is_none_or(|t| now.duration_since(t) >= DECREASE_EVERY)
             {
                 let factor = if heavy { p.heavy_cut } else { p.cut };
-                self.target_kbps = ((old as f32 * factor) as u32).max(self.min_kbps());
+                let mut target = old as f32 * factor;
+                if let Some(carried) = carried {
+                    // Not below a quarter at once: one report can be off.
+                    target = target.min(carried * 0.9).max(old as f32 * 0.25);
+                }
+                self.target_kbps = (target as u32).max(self.min_kbps());
                 self.last_decrease = Some(now);
+                self.queue_at_cut = queue;
+                self.drain_from = Some(now);
             }
         } else if self
             .last_decrease
@@ -361,6 +454,145 @@ mod tests {
                 ..clean(25, 45_000.0)
             };
             assert!(matches!(rc.update(at(1), s), Some((_, Some(Cause::Loss)))));
+        }
+    }
+
+    fn report(queue_ms: u32, trend_ms_per_s: i32, delivered: u32) -> Option<DeliveryReport> {
+        Some(DeliveryReport {
+            queue_us: queue_ms * 1000,
+            trend_us_per_s: trend_ms_per_s * 1000,
+            delivered_kbps: delivered,
+            frames: 40,
+        })
+    }
+
+    /// Balanced with a client reporting: a few seconds of settling on a
+    /// 25 ms link, then `then` for up to 8 quarters. Returns the first
+    /// change.
+    fn after_settling(then: Sample) -> Option<(u32, Option<Cause>)> {
+        let t0 = Instant::now();
+        let at = |n: u64| t0 + Duration::from_millis(n * 250);
+        let mut rc = RateControl::new(50_000, RateSensitivity::Balanced, t0);
+        for n in 1..40 {
+            let s = Sample {
+                delivery: report(1, 0, 20_000),
+                ..clean(25, 45_000.0)
+            };
+            assert_eq!(rc.update(at(n), s), None);
+        }
+        (40..48).find_map(|n| rc.update(at(n), then))
+    }
+
+    #[test]
+    fn uplink_delay_is_not_congestion() {
+        // The round trip doubles, but the video's way is clear.
+        let s = Sample {
+            delivery: report(1, 0, 20_000),
+            ..clean(60, 45_000.0)
+        };
+        assert_eq!(after_settling(s), None);
+    }
+
+    #[test]
+    fn loss_needs_a_queue() {
+        let noise = Sample {
+            loss: 0.06,
+            delivery: report(1, 0, 20_000),
+            ..clean(25, 45_000.0)
+        };
+        assert_eq!(after_settling(noise), None);
+        let full = Sample {
+            loss: 0.06,
+            delivery: report(10, 60, 20_000),
+            ..clean(25, 45_000.0)
+        };
+        assert!(matches!(after_settling(full), Some((_, Some(Cause::Loss)))));
+    }
+
+    #[test]
+    fn a_climbing_delay_cuts() {
+        let s = Sample {
+            delivery: report(8, 60, 44_000),
+            ..clean(25, 45_000.0)
+        };
+        assert!(matches!(after_settling(s), Some((_, Some(Cause::Rising)))));
+    }
+
+    #[test]
+    fn ecn_marks_cut_at_once() {
+        let t0 = Instant::now();
+        let mut rc = RateControl::new(50_000, RateSensitivity::Tolerant, t0);
+        let s = Sample {
+            ecn_marked: true,
+            ..clean(25, 45_000.0)
+        };
+        assert_eq!(
+            rc.update(t0 + Duration::from_millis(250), s),
+            Some((45_000, Some(Cause::Ecn)))
+        );
+    }
+
+    #[test]
+    fn cuts_to_what_the_link_carried() {
+        // The encoder made 45 Mbit/s; 12 got through while frames waited.
+        let s = Sample {
+            blocked: true,
+            delivery: report(30, 100, 12_000),
+            ..clean(25, 45_000.0)
+        };
+        let (kbps, _) = after_settling(s).expect("a cut");
+        assert_eq!(kbps, 12_500, "a quarter of 50 at most at once");
+        let s = Sample {
+            blocked: true,
+            delivery: report(30, 100, 30_000),
+            ..clean(25, 45_000.0)
+        };
+        assert_eq!(after_settling(s).expect("a cut").0, 27_000);
+    }
+
+    #[test]
+    fn lets_the_queue_drain() {
+        let t0 = Instant::now();
+        let at = |n: u64| t0 + Duration::from_millis(n * 250);
+        let mut rc = RateControl::new(50_000, RateSensitivity::Balanced, t0);
+        let s = |queue, delivered| Sample {
+            blocked: true,
+            delivery: report(queue, 0, delivered),
+            ..clean(25, 8_000.0)
+        };
+        rc.update(at(1), s(60, 30_000));
+        assert_eq!(rc.target_kbps(), 27_000);
+        // The queue it found stays a while: no further cuts.
+        for n in 2..=4 {
+            assert_eq!(rc.update(at(n), s(60, 26_000)), None);
+        }
+        // Still there after a second: the link carries less still.
+        assert!(rc.update(at(6), s(60, 20_000)).is_some());
+        // A queue that grows cuts at once.
+        let mut rc = RateControl::new(50_000, RateSensitivity::Balanced, t0);
+        rc.update(at(1), s(60, 30_000));
+        assert!(rc.update(at(3), s(90, 20_000)).is_some());
+    }
+
+    #[test]
+    fn waits_for_the_encoder() {
+        let t0 = Instant::now();
+        let at = |n: u64| t0 + Duration::from_millis(n * 250);
+        let mut rc = RateControl::new(50_000, RateSensitivity::Balanced, t0);
+        let s = |encoder_kbps| Sample {
+            blocked: true,
+            delivery: report(60, 0, 30_000),
+            encoder_kbps,
+            ..clean(25, 8_000.0)
+        };
+        rc.update(at(1), s(50_000));
+        assert_eq!(rc.target_kbps(), 27_000);
+        // The encoder is reopened at the cut only after two seconds.
+        for n in 2..=8 {
+            assert_eq!(rc.update(at(n), s(50_000)), None, "{n}");
+        }
+        for n in 9..=11 {
+            assert_eq!(rc.update(at(n), s(27_000)), None, "{n}");
         }
     }
 

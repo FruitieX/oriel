@@ -99,6 +99,12 @@ pub struct Shared {
     /// Packets sent and lost on the connection so far.
     pub sent_packets: AtomicU64,
     pub lost_packets: AtomicU64,
+    /// QUIC's congestion events so far (loss or ECN marks) and its
+    /// congestion window, bytes.
+    pub congestion_events: AtomicU64,
+    pub cwnd: AtomicU64,
+    /// The client's latest report on how frames arrive.
+    pub delivery: Mutex<Option<(Instant, oriel_proto::DeliveryReport)>>,
     /// Since when (µs since `epoch` + 1, 0 = not) frames wait for earlier
     /// ones to be decoded.
     blocked_since_us: AtomicU64,
@@ -117,6 +123,9 @@ impl Default for Shared {
             rtt_us: AtomicU64::new(0),
             sent_packets: AtomicU64::new(0),
             lost_packets: AtomicU64::new(0),
+            congestion_events: AtomicU64::new(0),
+            cwnd: AtomicU64::new(0),
+            delivery: Mutex::new(None),
             blocked_since_us: AtomicU64::new(0),
             geometry: Mutex::new(Geometry::default()),
         }
@@ -285,6 +294,7 @@ struct Quarter {
     bytes: u64,
     sent_packets: u64,
     lost_packets: u64,
+    congestion_events: u64,
 }
 
 impl Quarter {
@@ -297,6 +307,7 @@ impl Quarter {
             bytes: 0,
             sent_packets: shared.sent_packets.load(Ordering::Relaxed),
             lost_packets: shared.lost_packets.load(Ordering::Relaxed),
+            congestion_events: shared.congestion_events.load(Ordering::Relaxed),
         }
     }
 
@@ -305,6 +316,15 @@ impl Quarter {
         let wanted = self.captured.min((max_fps as f32 * secs) as u32);
         let sent = shared.sent_packets.load(Ordering::Relaxed) - self.sent_packets;
         let lost = shared.lost_packets.load(Ordering::Relaxed) - self.lost_packets;
+        let events = shared.congestion_events.load(Ordering::Relaxed) - self.congestion_events;
+        // Reports come every 100 ms while frames arrive; an old one is
+        // about another moment.
+        let delivery = shared
+            .delivery
+            .lock()
+            .filter(|(at, _)| at.elapsed() < Duration::from_millis(500))
+            .map(|(_, r)| r);
+        let cwnd = shared.cwnd.load(Ordering::Relaxed);
         crate::ratecontrol::Sample {
             rtt,
             // Waiting for acknowledgements is normal; it is congestion only
@@ -316,6 +336,16 @@ impl Quarter {
                 0.0
             },
             sent_kbps: self.bytes as f32 * 8.0 / 1000.0 / secs,
+            // QUIC counts a round of ECN congestion marks as a congestion
+            // event, like a loss: events without losses were marks.
+            ecn_marked: events > 0 && lost == 0,
+            delivery,
+            encoder_kbps: 0,
+            cwnd_kbps: if rtt.is_zero() {
+                0.0
+            } else {
+                cwnd as f32 * 8.0 / 1000.0 / rtt.as_secs_f32()
+            },
         }
     }
 }
@@ -699,33 +729,37 @@ impl Pipeline {
             }
 
             if quarter.start.elapsed() >= Duration::from_millis(250) {
-                let sample = quarter.sample(&self.shared, self.config.max_fps, self.rtt());
+                let mut sample = quarter.sample(&self.shared, self.config.max_fps, self.rtt());
+                sample.encoder_kbps = enc_kbps;
                 quarter = Quarter::new(&self.shared);
-                if self.config.auto_bitrate
-                    && codec != Codec::PyroWave
-                    && let Some((kbps, cause)) = self.rate.update(Instant::now(), sample)
-                {
-                    let kbps = kbps.min(*bitrate);
-                    if let Some(cause) = cause {
-                        tracing::info!(kbps, ?cause, ?sample, "automatic bitrate cut");
-                    } else {
-                        tracing::debug!(kbps, ?sample, "automatic bitrate raised");
-                    }
-                    if !enc.set_bitrate(kbps) {
-                        // Reopening costs a keyframe: only for real cuts, or
-                        // to climb back after a while.
-                        let current = enc_kbps;
-                        let worth = kbps * 5 < current * 4
-                            || (kbps > current && reopened.elapsed() >= Duration::from_secs(5));
-                        if worth && reopened.elapsed() >= Duration::from_secs(2) {
-                            let (new, _) = self.open_encoder(cap, kbps)?;
-                            *enc = new;
-                            force_key = true;
-                            enc_kbps = kbps;
-                            reopened = Instant::now();
+                if self.config.auto_bitrate && codec != Codec::PyroWave {
+                    if let Some((kbps, cause)) = self.rate.update(Instant::now(), sample) {
+                        if let Some(cause) = cause {
+                            tracing::info!(kbps, ?cause, ?sample, "automatic bitrate cut");
+                        } else {
+                            tracing::debug!(kbps, ?sample, "automatic bitrate raised");
                         }
-                    } else {
-                        enc_kbps = kbps;
+                    }
+                    // Until the encoder runs at the target: one that has to
+                    // be reopened may not be yet.
+                    let kbps = self.rate.target_kbps().min(*bitrate);
+                    if kbps != enc_kbps {
+                        if enc.set_bitrate(kbps) {
+                            enc_kbps = kbps;
+                        } else {
+                            // Reopening costs a keyframe: only for real cuts,
+                            // or to climb back after a while.
+                            let current = enc_kbps;
+                            let worth = kbps * 5 < current * 4
+                                || (kbps > current && reopened.elapsed() >= Duration::from_secs(5));
+                            if worth && reopened.elapsed() >= Duration::from_secs(2) {
+                                let (new, _) = self.open_encoder(cap, kbps)?;
+                                *enc = new;
+                                force_key = true;
+                                enc_kbps = kbps;
+                                reopened = Instant::now();
+                            }
+                        }
                     }
                 }
             }

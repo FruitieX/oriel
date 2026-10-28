@@ -23,7 +23,7 @@ pub const ALPN: &[u8] = b"oriel/1";
 /// when it only checks whether the host is up.
 pub const PROBE_REASON: &[u8] = b"probe";
 
-pub const PROTOCOL_VERSION: u32 = 16;
+pub const PROTOCOL_VERSION: u32 = 17;
 pub const DEFAULT_PORT: u16 = 48600;
 /// Upper bound for a single control/input message.
 pub const MAX_MESSAGE_LEN: usize = 32 * 1024 * 1024;
@@ -478,6 +478,27 @@ pub enum Datagram {
         seq: u32,
         state: GamepadState,
     },
+    /// Client → host, every 100 ms while video arrives: how it arrives,
+    /// for automatic bitrate. One-way delays are when a frame's first bytes
+    /// reach the client minus the host's send time (`capture_us +
+    /// encode_us`); the clocks' offset cancels out of everything here.
+    Delivery(DeliveryReport),
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct DeliveryReport {
+    /// One-way delay of the latest frames over the lowest in the last
+    /// 10 s, µs: a queue somewhere on the way here.
+    pub queue_us: u32,
+    /// How fast that delay grows (positive) or shrinks over the last
+    /// half second, µs per second. A queue filling up grows steadily;
+    /// jitter does not.
+    pub trend_us_per_s: i32,
+    /// The rate frames arrived at over the last half second, kbit/s (0:
+    /// too few frames). While frames queue, this is what the link carries.
+    pub delivered_kbps: u32,
+    /// Frames these figures rest on.
+    pub frames: u16,
 }
 
 /// A gamepad in XInput terms (Xbox layout).

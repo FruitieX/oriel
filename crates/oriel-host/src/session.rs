@@ -292,6 +292,9 @@ pub async fn run(
                     }
                 }
                 Ok(Datagram::FrameAck { seq, .. }) => datagram_shared.decoded(seq),
+                Ok(Datagram::Delivery(report)) => {
+                    *datagram_shared.delivery.lock() = Some((std::time::Instant::now(), report));
+                }
                 Ok(Datagram::Gamepad { pad, seq, state }) => {
                     let _ = datagram_pads.send(crate::gamepad::Cmd::State { pad, seq, state });
                 }
@@ -339,6 +342,10 @@ pub async fn run(
             rtt_shared
                 .lost_packets
                 .store(path.lost_packets, Ordering::Relaxed);
+            rtt_shared
+                .congestion_events
+                .store(path.congestion_events, Ordering::Relaxed);
+            rtt_shared.cwnd.store(path.cwnd, Ordering::Relaxed);
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
     });

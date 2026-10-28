@@ -420,6 +420,9 @@ pub fn start(
     }
     tokio::spawn(async move {
         let at = |what: String| *reading.lock() = (Instant::now(), what);
+        // How frames arrive, for the host's automatic bitrate.
+        let mut delivery = crate::delivery::DeliveryTracker::default();
+        let epoch = Instant::now();
         let result: Result<()> = async {
             'frames: loop {
                 at("waiting for a frame stream".into());
@@ -446,6 +449,7 @@ pub fn start(
                     header.seq,
                     stream.id()
                 ));
+                let started_us = epoch.elapsed().as_micros() as i64;
                 let local_us = frame_clock.lock().local_us(Instant::now());
                 frame_stats.lock().arrived(header.capture_us, local_us);
                 // One broken frame costs that frame (the decoder asks for
@@ -493,7 +497,15 @@ pub fn start(
                     let secs = data.len() as f64 * 8.0 / (kbps as f64 * 1000.0);
                     tokio::time::sleep(Duration::from_secs_f64(secs)).await;
                 }
-                if decoder.send((header, data, Instant::now())).is_err() {
+                let now = Instant::now();
+                delivery.arrived(&header, data.len(), started_us, now);
+                // Hosts before protocol 17 ignore it.
+                if let Some(report) = delivery.report(now)
+                    && let Ok(bytes) = oriel_proto::encode(&Datagram::Delivery(report))
+                {
+                    let _ = frame_conn.send_datagram(bytes.into());
+                }
+                if decoder.send((header, data, now)).is_err() {
                     anyhow::bail!("the decoder stopped");
                 }
             }
