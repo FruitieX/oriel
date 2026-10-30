@@ -24,4 +24,4 @@ directories.workspace = true
 hex.workspace = true
 ureq = { version = "3", features = ["json"] }
 serde_json = "1"
-if-addrs = "0.13"
+if-addrs = "0.15"

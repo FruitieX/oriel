@@ -4,9 +4,8 @@
 //! real certificate.
 
 use anyhow::{Result, bail};
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use oriel_proto::{ClientMsg, HostMsg, PairMsg};
-use rand::Rng;
 use sha2::Sha256;
 use spake2::{Ed25519Group, Identity as SpakeId, Password, Spake2};
 
@@ -16,7 +15,7 @@ const ID_CLIENT: &[u8] = b"oriel-client";
 const ID_HOST: &[u8] = b"oriel-host";
 
 pub fn generate_pin() -> String {
-    format!("{:06}", rand::rng().random_range(0..1_000_000))
+    format!("{:06}", rand::random_range(0..1_000_000))
 }
 
 fn confirm_mac(key: &[u8], role: &[u8], client: &Fingerprint, host: &Fingerprint) -> Vec<u8> {

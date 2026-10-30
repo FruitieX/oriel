@@ -22,15 +22,15 @@ thiserror = "2"
 bytes = "1"
 serde = { version = "1", features = ["derive"] }
 postcard = { version = "1", features = ["use-std"] }
-toml = "0.9"
+toml = "1.1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util", "signal"] }
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring", "log"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "logging", "tls12"] }
 rcgen = "0.14"
-sha2 = "0.10"
+sha2 = "0.11"
 spake2 = "0.4"
-hmac = "0.12"
-rand = "0.9"
+hmac = "0.13"
+rand = "0.10"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4", features = ["derive"] }
@@ -41,9 +41,9 @@ wgpu = "30"
 egui = { version = "0.37", features = ["default_fonts"] }
 egui-wgpu = "0.37"
 egui-winit = "0.37"
-pollster = "0.4"
+pollster = "1.0"
 crossbeam-channel = "0.5"
-parking_lot = "0.12"
+parking_lot = "0.13"
 arboard = { version = "3", default-features = false }
 windows-service = "0.8"
 tray-icon = "0.26"

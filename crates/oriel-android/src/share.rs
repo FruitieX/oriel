@@ -5,14 +5,19 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use jni::objects::JValue;
+use jni::{
+    jni_sig, jni_str,
+    objects::{JFloatArray, JValue},
+    signature::MethodSignature,
+    strings::JNIStr,
+};
 use oriel_client::android::with_activity;
 use oriel_host::input::android::{Gestures, Global};
 use oriel_media::share;
 use oriel_net::Paths;
 use oriel_proto::Codec;
 
-fn call(method: &str, sig: &str, args: &[JValue]) {
+fn call(method: &JNIStr, sig: MethodSignature, args: &[JValue]) {
     with_activity(|env, activity| env.call_method(activity, method, sig, args).map(|_| ()));
 }
 
@@ -29,8 +34,8 @@ impl share::Control for JavaShare {
             let mime = env.new_string(mime)?;
             env.call_method(
                 activity,
-                "startEncoder",
-                "(Ljava/lang/String;IIII)Z",
+                jni_str!("startEncoder"),
+                jni_sig!("(Ljava/lang/String;IIII)Z"),
                 &[
                     JValue::Object(&mime),
                     JValue::Int(width as i32),
@@ -48,15 +53,19 @@ impl share::Control for JavaShare {
     }
 
     fn stop(&self) {
-        call("stopEncoder", "()V", &[]);
+        call(jni_str!("stopEncoder"), jni_sig!("()V"), &[]);
     }
 
     fn keyframe(&self) {
-        call("requestKeyframe", "()V", &[]);
+        call(jni_str!("requestKeyframe"), jni_sig!("()V"), &[]);
     }
 
     fn bitrate(&self, kbps: u32) {
-        call("setBitrate", "(I)V", &[JValue::Int(kbps as i32)]);
+        call(
+            jni_str!("setBitrate"),
+            jni_sig!("(I)V"),
+            &[JValue::Int(kbps as i32)],
+        );
     }
 }
 
@@ -66,25 +75,21 @@ struct JavaGestures;
 impl Gestures for JavaGestures {
     fn tap(&self, x: f32, y: f32, long: bool) {
         call(
-            "a11yTap",
-            "(FFZ)V",
-            &[
-                JValue::Float(x),
-                JValue::Float(y),
-                JValue::Bool(long.into()),
-            ],
+            jni_str!("a11yTap"),
+            jni_sig!("(FFZ)V"),
+            &[JValue::Float(x), JValue::Float(y), JValue::Bool(long)],
         );
     }
 
     fn swipe(&self, path: &[(f32, f32)], ms: u32) {
         with_activity(|env, activity| {
             let flat: Vec<f32> = path.iter().flat_map(|(x, y)| [*x, *y]).collect();
-            let arr = env.new_float_array(flat.len() as i32)?;
-            env.set_float_array_region(&arr, 0, &flat)?;
+            let arr = JFloatArray::new(env, flat.len())?;
+            arr.set_region(env, 0, &flat)?;
             env.call_method(
                 activity,
-                "a11ySwipe",
-                "([FI)V",
+                jni_str!("a11ySwipe"),
+                jni_sig!("([FI)V"),
                 &[JValue::Object(&arr), JValue::Int(ms as i32)],
             )
             .map(|_| ())
@@ -97,7 +102,7 @@ impl Gestures for JavaGestures {
             Global::Home => 2,
             Global::Recents => 3,
         };
-        call("a11yGlobal", "(I)V", &[JValue::Int(n)]);
+        call(jni_str!("a11yGlobal"), jni_sig!("(I)V"), &[JValue::Int(n)]);
     }
 
     fn text(&self, text: &str) {
@@ -105,8 +110,8 @@ impl Gestures for JavaGestures {
             let s = env.new_string(text)?;
             env.call_method(
                 activity,
-                "a11yText",
-                "(Ljava/lang/String;)V",
+                jni_str!("a11yText"),
+                jni_sig!("(Ljava/lang/String;)V"),
                 &[JValue::Object(&s)],
             )
             .map(|_| ())
@@ -114,11 +119,11 @@ impl Gestures for JavaGestures {
     }
 
     fn backspace(&self) {
-        call("a11yBackspace", "()V", &[]);
+        call(jni_str!("a11yBackspace"), jni_sig!("()V"), &[]);
     }
 
     fn enter(&self) {
-        call("a11yEnter", "()V", &[]);
+        call(jni_str!("a11yEnter"), jni_sig!("()V"), &[]);
     }
 }
 
@@ -189,12 +194,12 @@ impl oriel_client::launcher::HostControl for PhoneHost {
     fn start(&mut self) -> Result<()> {
         // Asks for the screen (Android's consent dialog) and, the first
         // time, for the accessibility service that controls the phone.
-        call("requestScreenShare", "()V", &[]);
+        call(jni_str!("requestScreenShare"), jni_sig!("()V"), &[]);
         Ok(())
     }
 
     fn stop(&mut self) {
-        call("stopScreenShare", "()V", &[]);
+        call(jni_str!("stopScreenShare"), jni_sig!("()V"), &[]);
     }
 
     fn is_running(&self) -> bool {
@@ -203,7 +208,8 @@ impl oriel_client::launcher::HostControl for PhoneHost {
 
     fn description(&self) -> String {
         let control = with_activity(|env, activity| {
-            env.call_method(activity, "a11yEnabled", "()Z", &[])?.z()
+            env.call_method(activity, jni_str!("a11yEnabled"), jni_sig!("()Z"), &[])?
+                .z()
         })
         .unwrap_or(false);
         let mut text = match share::screen_size() {

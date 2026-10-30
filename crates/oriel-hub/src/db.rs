@@ -30,6 +30,11 @@ pub fn now() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
+/// `now()` as SQLite stores integers (rusqlite has no `u64` conversions).
+fn now_sql() -> i64 {
+    i64::try_from(now()).unwrap_or(i64::MAX)
+}
+
 pub fn random_hex(bytes: usize) -> String {
     let mut buf = vec![0u8; bytes];
     rand::fill(&mut buf[..]);
@@ -59,7 +64,7 @@ fn row(r: &rusqlite::Row) -> rusqlite::Result<DeviceRow> {
                 .unwrap_or_default(),
         }),
         push_token: r.get(8)?,
-        last_seen: r.get(9)?,
+        last_seen: u64::try_from(r.get::<_, i64>(9)?).unwrap_or(0),
     })
 }
 
@@ -120,7 +125,7 @@ impl Db {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)
              ON CONFLICT(fingerprint) DO UPDATE SET owner = ?2, owner_name = ?3, name = ?5,
                  platform = ?6, token_hash = ?7, last_seen = ?8",
-            params![id, owner, owner_name, fingerprint, name, platform, hash(&token), now()],
+            params![id, owner, owner_name, fingerprint, name, platform, hash(&token), now_sql()],
         )?;
         Ok((id, token))
     }
@@ -150,7 +155,7 @@ impl Db {
                     .as_ref()
                     .map(|h| serde_json::to_string(&h.addresses).unwrap_or_default()),
                 p.push_token,
-                now()
+                now_sql()
             ],
         )?;
         Ok(())

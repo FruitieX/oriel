@@ -14,10 +14,7 @@ use futures_util::StreamExt;
 use oriel_proto::DisplayInfo;
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
-use zbus::{
-    Connection, proxy,
-    zvariant::{OwnedObjectPath, OwnedValue, Value},
-};
+use zbus::{Connection, OwnedObjectPath, OwnedVariant, Variant, proxy};
 
 use crate::capture::{Geometry, Target};
 
@@ -58,8 +55,10 @@ trait RemoteDesktopSession {
     default_path = "/org/gnome/Mutter/ScreenCast"
 )]
 trait ScreenCast {
-    fn create_session(&self, properties: HashMap<&str, Value<'_>>)
-    -> zbus::Result<OwnedObjectPath>;
+    fn create_session(
+        &self,
+        properties: HashMap<&str, Variant<'_>>,
+    ) -> zbus::Result<OwnedObjectPath>;
 }
 
 #[proxy(
@@ -70,10 +69,12 @@ trait ScreenCastSession {
     fn record_monitor(
         &self,
         connector: &str,
-        properties: HashMap<&str, Value<'_>>,
+        properties: HashMap<&str, Variant<'_>>,
     ) -> zbus::Result<OwnedObjectPath>;
-    fn record_virtual(&self, properties: HashMap<&str, Value<'_>>)
-    -> zbus::Result<OwnedObjectPath>;
+    fn record_virtual(
+        &self,
+        properties: HashMap<&str, Variant<'_>>,
+    ) -> zbus::Result<OwnedObjectPath>;
 }
 
 #[proxy(
@@ -84,7 +85,7 @@ trait ScreenCastStream {
     #[zbus(signal)]
     fn pipe_wire_stream_added(&self, node_id: u32) -> zbus::Result<()>;
     #[zbus(property)]
-    fn parameters(&self) -> zbus::Result<HashMap<String, OwnedValue>>;
+    fn parameters(&self) -> zbus::Result<HashMap<String, OwnedVariant>>;
 }
 
 type MonitorSpec = (String, String, String, String);
@@ -95,9 +96,9 @@ type Mode = (
     f64,
     f64,
     Vec<f64>,
-    HashMap<String, OwnedValue>,
+    HashMap<String, OwnedVariant>,
 );
-type Monitor = (MonitorSpec, Vec<Mode>, HashMap<String, OwnedValue>);
+type Monitor = (MonitorSpec, Vec<Mode>, HashMap<String, OwnedVariant>);
 type LogicalMonitor = (
     i32,
     i32,
@@ -105,7 +106,7 @@ type LogicalMonitor = (
     u32,
     bool,
     Vec<MonitorSpec>,
-    HashMap<String, OwnedValue>,
+    HashMap<String, OwnedVariant>,
 );
 
 #[proxy(
@@ -121,7 +122,7 @@ trait DisplayConfig {
         u32,
         Vec<Monitor>,
         Vec<LogicalMonitor>,
-        HashMap<String, OwnedValue>,
+        HashMap<String, OwnedVariant>,
     )>;
 }
 
@@ -199,14 +200,14 @@ impl GnomeSession {
                 .create_session()
                 .await
                 .context("create a Mutter remote desktop session")?;
-            let rd_session = RemoteDesktopSessionProxy::builder(&conn).path(rd_path)?.build().await?;
+            let rd_session = RemoteDesktopSessionProxy::builder(&conn).path(rd_path).build().await?;
             let session_id = rd_session.session_id().await?;
             let sc = ScreenCastProxy::new(&conn).await?;
             let sc_path = sc
-                .create_session(HashMap::from([("remote-desktop-session-id", Value::from(session_id.as_str()))]))
+                .create_session(HashMap::from([("remote-desktop-session-id", Variant::from(session_id.as_str()))]))
                 .await
                 .context("create a Mutter screen cast session")?;
-            let sc_session = ScreenCastSessionProxy::builder(&conn).path(sc_path)?.build().await?;
+            let sc_session = ScreenCastSessionProxy::builder(&conn).path(sc_path).build().await?;
             // cursor-mode 2: the cursor travels as stream metadata.
             let stream_path = match target {
                 Target::Virtual(mode) => {
@@ -215,19 +216,19 @@ impl GnomeSession {
                     tracing::info!(?mode, "creating a virtual monitor");
                     sc_session
                         .record_virtual(HashMap::from([
-                            ("cursor-mode", Value::U32(2)),
-                            ("is-platform", Value::Bool(true)),
+                            ("cursor-mode", Variant::U32(2)),
+                            ("is-platform", Variant::Bool(true)),
                         ]))
                         .await
                         .context("create a virtual monitor")?
                 }
                 Target::Display(_) => sc_session
-                    .record_monitor(&monitor.connector, HashMap::from([("cursor-mode", Value::U32(2))]))
+                    .record_monitor(&monitor.connector, HashMap::from([("cursor-mode", Variant::U32(2))]))
                     .await
                     .with_context(|| format!("record monitor {}", monitor.connector))?,
             };
             let stream = ScreenCastStreamProxy::builder(&conn)
-                .path(stream_path.clone())?
+                .path(stream_path.clone())
                 .build()
                 .await?;
             let mut added = stream.receive_pipe_wire_stream_added().await?;
@@ -313,7 +314,7 @@ impl Drop for GnomeSession {
     }
 }
 
-fn pair(params: &HashMap<String, OwnedValue>, key: &str) -> Option<(i32, i32)> {
+fn pair(params: &HashMap<String, OwnedVariant>, key: &str) -> Option<(i32, i32)> {
     let v: (i32, i32) = params.get(key)?.try_clone().ok()?.try_into().ok()?;
     Some(v)
 }

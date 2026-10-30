@@ -13,7 +13,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use jni::{
-    JNIEnv, JavaVM,
+    Env, JavaVM, jni_sig, jni_str,
     objects::{JObject, JString, JValue},
 };
 use parking_lot::Mutex;
@@ -121,18 +121,15 @@ pub(crate) fn keyboard_shown() -> bool {
 }
 
 /// Run `f` with the JNI environment and the activity object.
-pub fn with_activity<T>(
-    f: impl FnOnce(&mut JNIEnv, &JObject) -> jni::errors::Result<T>,
-) -> Option<T> {
+pub fn with_activity<T>(f: impl FnOnce(&mut Env, &JObject) -> jni::errors::Result<T>) -> Option<T> {
     let app = app();
-    let vm = unsafe { JavaVM::from_raw(app.vm_as_ptr().cast()) }.ok()?;
-    let mut env = vm.attach_current_thread().ok()?;
-    let activity = unsafe { JObject::from_raw(app.activity_as_ptr().cast()) };
-    let result = f(&mut env, &activity);
-    if env.exception_check().unwrap_or(false) {
-        let _ = env.exception_describe();
-        let _ = env.exception_clear();
-    }
+    let vm = unsafe { JavaVM::from_raw(app.vm_as_ptr().cast()) };
+    // Attaching catches (clears) a pending Java exception and returns it
+    // as the error.
+    let result = vm.attach_current_thread(|env| {
+        let activity = unsafe { JObject::from_raw(env, app.activity_as_ptr().cast()) };
+        f(env, &activity)
+    });
     match result {
         Ok(v) => Some(v),
         Err(e) => {
@@ -146,9 +143,9 @@ pub(crate) fn show_keyboard(show: bool) {
     with_activity(|env, activity| {
         env.call_method(
             activity,
-            "showKeyboard",
-            "(Z)V",
-            &[JValue::Bool(show.into())],
+            jni_str!("showKeyboard"),
+            jni_sig!("(Z)V"),
+            &[JValue::Bool(show)],
         )
         .map(|_| ())
     });
@@ -159,9 +156,9 @@ pub(crate) fn set_immersive(on: bool) {
     with_activity(|env, activity| {
         env.call_method(
             activity,
-            "setFullScreen",
-            "(Z)V",
-            &[JValue::Bool(on.into())],
+            jni_str!("setFullScreen"),
+            jni_sig!("(Z)V"),
+            &[JValue::Bool(on)],
         )
         .map(|_| ())
     });
@@ -172,12 +169,17 @@ pub(crate) fn device_name() -> Option<String> {
     APP.get()?;
     with_activity(|env, activity| {
         let obj = env
-            .call_method(activity, "deviceName", "()Ljava/lang/String;", &[])?
+            .call_method(
+                activity,
+                jni_str!("deviceName"),
+                jni_sig!("()Ljava/lang/String;"),
+                &[],
+            )?
             .l()?;
         if obj.is_null() {
             return Ok(None);
         }
-        Ok(Some(env.get_string(&JString::from(obj))?.into()))
+        Ok(Some(env.cast_local::<JString>(obj)?.try_to_string(env)?))
     })
     .flatten()
     .filter(|s: &String| !s.trim().is_empty())
@@ -189,8 +191,8 @@ pub(crate) fn open_url(url: &str) {
         let s = env.new_string(url)?;
         env.call_method(
             activity,
-            "openUrl",
-            "(Ljava/lang/String;)V",
+            jni_str!("openUrl"),
+            jni_sig!("(Ljava/lang/String;)V"),
             &[JValue::Object(&s)],
         )
         .map(|_| ())
@@ -200,21 +202,30 @@ pub(crate) fn open_url(url: &str) {
 /// Send the app to the background (Back on the start page).
 pub(crate) fn move_to_back() {
     with_activity(|env, activity| {
-        env.call_method(activity, "moveTaskToBack", "(Z)Z", &[JValue::Bool(1)])
-            .map(|_| ())
+        env.call_method(
+            activity,
+            jni_str!("moveTaskToBack"),
+            jni_sig!("(Z)Z"),
+            &[JValue::Bool(true)],
+        )
+        .map(|_| ())
     });
 }
 
 pub(crate) fn clipboard_text() -> Option<String> {
     with_activity(|env, activity| {
         let obj = env
-            .call_method(activity, "clipboardText", "()Ljava/lang/String;", &[])?
+            .call_method(
+                activity,
+                jni_str!("clipboardText"),
+                jni_sig!("()Ljava/lang/String;"),
+                &[],
+            )?
             .l()?;
         if obj.is_null() {
             return Ok(None);
         }
-        let s = JString::from(obj);
-        Ok(Some(env.get_string(&s)?.into()))
+        Ok(Some(env.cast_local::<JString>(obj)?.try_to_string(env)?))
     })
     .flatten()
 }
@@ -224,8 +235,8 @@ pub(crate) fn set_clipboard_text(text: &str) {
         let s = env.new_string(text)?;
         env.call_method(
             activity,
-            "setClipboardText",
-            "(Ljava/lang/String;)V",
+            jni_str!("setClipboardText"),
+            jni_sig!("(Ljava/lang/String;)V"),
             &[JValue::Object(&s)],
         )
         .map(|_| ())

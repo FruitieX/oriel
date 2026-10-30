@@ -98,7 +98,8 @@ impl Drop for Logcat {
 // Called by OrielActivity (android/java/.../OrielActivity.java).
 
 use jni::{
-    JNIEnv,
+    EnvUnowned,
+    errors::LogErrorAndDefault,
     objects::{JClass, JString},
     sys::{jboolean, jint},
 };
@@ -106,18 +107,20 @@ use oriel_client::android::{Insets, TextInput, push_input};
 
 #[unsafe(no_mangle)]
 extern "system" fn Java_org_fruitiex_oriel_OrielActivity_nativeText(
-    mut env: JNIEnv,
+    mut env: EnvUnowned,
     _class: JClass,
     text: JString,
 ) {
-    if let Ok(text) = env.get_string(&text) {
-        push_input(TextInput::Text(text.into()));
-    }
+    env.with_env(|env| -> jni::errors::Result<()> {
+        push_input(TextInput::Text(text.try_to_string(env)?));
+        Ok(())
+    })
+    .resolve::<LogErrorAndDefault>()
 }
 
 #[unsafe(no_mangle)]
 extern "system" fn Java_org_fruitiex_oriel_OrielActivity_nativeDelete(
-    _env: JNIEnv,
+    _env: EnvUnowned,
     _class: JClass,
     before: jint,
     after: jint,
@@ -130,31 +133,27 @@ extern "system" fn Java_org_fruitiex_oriel_OrielActivity_nativeDelete(
 
 #[unsafe(no_mangle)]
 extern "system" fn Java_org_fruitiex_oriel_OrielActivity_nativeKey(
-    _env: JNIEnv,
+    _env: EnvUnowned,
     _class: JClass,
     code: jint,
     down: jboolean,
     meta: jint,
 ) {
-    push_input(TextInput::Key {
-        code,
-        down: down != 0,
-        meta,
-    });
+    push_input(TextInput::Key { code, down, meta });
 }
 
 #[unsafe(no_mangle)]
 extern "system" fn Java_org_fruitiex_oriel_OrielActivity_nativeKeyboardShown(
-    _env: JNIEnv,
+    _env: EnvUnowned,
     _class: JClass,
     shown: jboolean,
 ) {
-    oriel_client::android::set_keyboard_shown(shown != 0);
+    oriel_client::android::set_keyboard_shown(shown);
 }
 
 #[unsafe(no_mangle)]
 extern "system" fn Java_org_fruitiex_oriel_OrielActivity_nativeInsets(
-    _env: JNIEnv,
+    _env: EnvUnowned,
     _class: JClass,
     left: jint,
     top: jint,
@@ -170,7 +169,7 @@ extern "system" fn Java_org_fruitiex_oriel_OrielActivity_nativeInsets(
 
 #[unsafe(no_mangle)]
 extern "system" fn Java_org_fruitiex_oriel_OrielActivity_nativeShareStarted(
-    _env: JNIEnv,
+    _env: EnvUnowned,
     _class: JClass,
     width: jint,
     height: jint,
@@ -181,7 +180,7 @@ extern "system" fn Java_org_fruitiex_oriel_OrielActivity_nativeShareStarted(
 
 #[unsafe(no_mangle)]
 extern "system" fn Java_org_fruitiex_oriel_OrielActivity_nativeShareStopped(
-    _env: JNIEnv,
+    _env: EnvUnowned,
     _class: JClass,
 ) {
     tracing::info!("screen share stopped");
@@ -190,24 +189,30 @@ extern "system" fn Java_org_fruitiex_oriel_OrielActivity_nativeShareStopped(
 
 #[unsafe(no_mangle)]
 extern "system" fn Java_org_fruitiex_oriel_OrielActivity_nativeEncodedFrame(
-    env: JNIEnv,
+    mut env: EnvUnowned,
     _class: JClass,
     data: jni::objects::JByteArray,
     keyframe: jboolean,
     encode_us: jint,
 ) {
-    if let Ok(bytes) = env.convert_byte_array(&data) {
-        oriel_media::share::push(bytes, keyframe != 0, encode_us.max(0) as u32);
-    }
+    env.with_env(|env| -> jni::errors::Result<()> {
+        let bytes = env.convert_byte_array(&data)?;
+        oriel_media::share::push(bytes, keyframe, encode_us.max(0) as u32);
+        Ok(())
+    })
+    .resolve::<LogErrorAndDefault>()
 }
 
 #[unsafe(no_mangle)]
 extern "system" fn Java_org_fruitiex_oriel_OrielActivity_nativePushToken(
-    mut env: JNIEnv,
+    mut env: EnvUnowned,
     _class: JClass,
     token: JString,
 ) {
-    let Ok(token) = env.get_string(&token).map(String::from) else {
+    let Some(token) = env
+        .with_env(|env| token.try_to_string(env).map(Some))
+        .resolve::<LogErrorAndDefault>()
+    else {
         return;
     };
     if let Ok(dir) = oriel_client::android::data_dir() {
