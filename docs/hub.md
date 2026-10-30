@@ -68,8 +68,8 @@ and moves the app to the back. Without a push, test it with
 The homelab runs it (`FruitieX/homelab`, `apps/oriel-hub`) at
 https://oriel.fruitiex.org; `.github/workflows/hub.yml` builds the container
 (`nix build .#hub-container`) on changes and dispatches the digest to the
-homelab. The relay listens on UDP 48700 (a LoadBalancer IP the router
-forwards WAN UDP 48700 to). Configuration is by environment; see
+homelab. The relay listens on UDP 48700, which must be reachable from the
+internet (e.g. a LoadBalancer IP with the port forwarded). Configuration is by environment; see
 `crates/oriel-hub/src/main.rs`.
 
 Running one locally:

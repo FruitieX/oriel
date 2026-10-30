@@ -124,7 +124,7 @@ codecs = ["hevc", "h264"]
 mouse = "auto"      # or "desktop", "captured"
 audio = true
 
-[hosts.watermelon]  # overrides for one computer
+[hosts.my-desktop] # overrides for one computer
 max_fps = 144
 resolution = "2560x1440"  # or "client" with resolution_scale = 0.5
 

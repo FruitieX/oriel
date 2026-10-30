@@ -32,13 +32,13 @@ Read [docs/architecture.md](docs/architecture.md) first.
   call: the client decodes into shared R8 Metal textures and copies the
   planes out (`pyrowave.rs`, `mod metal`). Test it with a test-pattern host
   on the same Mac (`--codec pyrowave`) and `oriel connect … --headless`.
-- Windows is tested on the owner's PC (watermelon) through the Samba
+- Windows is tested on the owner's Windows PC through the Samba
   share: `dist/windows` is `Y:\projects\oriel\dist\windows` there. Once
   the owner has started `run-host.bat`, every `build-windows.sh` run
   redeploys automatically (the host restarts into the new build within
-  seconds) and the host logs to `dist/host.log`. honeydew is paired with it
-  as `watermelon`, so `oriel connect watermelon --headless 5` (with that
-  client's `ORIEL_CONFIG_DIR`) tests the real Windows host from here. Only
+  seconds) and the host logs to `dist/host.log`. the owner's Linux
+  workstation is paired with it, so `oriel connect <its paired name> --headless 5`
+  (with that client's `ORIEL_CONFIG_DIR`) tests the real Windows host from here. Only
   release builds go to `dist/` (debug builds overflowed the Windows main
   thread stack).
 
@@ -83,8 +83,8 @@ Read [docs/architecture.md](docs/architecture.md) first.
   "system-images;android-35;google_apis;x86_64"`, then `emulator -avd
   oriel35 -no-window -gpu swiftshader_indirect`. Its Vulkan crashes the
   emulator on wgpu's shaders, so the app uses OpenGL ES there
-  (`ro.hardware` = ranchu). A host on honeydew is `10.0.2.2` from the
-  emulator. `adb shell input tap/swipe/keyevent` drive it; `input text`
+  (`ro.hardware` = ranchu). A host on the emulator's machine is `10.0.2.2`
+  from the emulator. `adb shell input tap/swipe/keyevent` drive it; `input text`
   sends key events, not the soft keyboard (tap its keys for that).
   The emulator's UDP forwarding (`adb emu redir add udp:…`) carries plain
   datagrams but not oriel's QUIC: test a shared phone from the emulator's
@@ -120,8 +120,8 @@ Read [docs/architecture.md](docs/architecture.md) first.
   nixpkgs#dbus -c dbus-run-session -- <script>` (tools from the dev shell
   mismatch Mutter: "Could not connect: Invalid argument").
 - Gamepads: the uinput tests (`gamepad` in oriel-host and oriel-client)
-  need write access to `/dev/uinput` and skip without it. honeydew has
-  none; run the test binaries as root on a machine that does.
+  need write access to `/dev/uinput` and skip without it. The owner's
+  workstation has none; run the test binaries as root on a machine that does.
   `ORIEL_DEBUG_GAMEPAD=1` makes `--headless` send a synthetic controller,
   `ORIEL_DEBUG_MIC=1` its test tone as the microphone.
 - Audio device routing: run a private `pipewire` and `wireplumber` (in
@@ -129,7 +129,7 @@ Read [docs/architecture.md](docs/architecture.md) first.
   `ORIEL_AUDIO_DEVICE_TEST=1 cargo test -p oriel-audio routing`. Keep
   `XDG_RUNTIME_DIR` short: PipeWire fails with "File name too long" on
   long socket paths.
-- Do not test `av1_vaapi` on the Radeon 780M (honeydew): Mesa accepts the
+- Do not test `av1_vaapi` on the workstation's Radeon 780M: Mesa accepts the
   encoder but the GPU context is reset.
 
 ## Conventions
