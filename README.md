@@ -10,7 +10,7 @@ display, and the client, which connects to one.
 
 ![The start window with three paired computers, two online and one offline](docs/screenshots/launcher.png)
 
-![The menu during a session, over the host's test pattern, with the live statistics and display settings](docs/screenshots/session-menu.png)
+![The menu during a session with a GNOME desktop: a file manager, a text editor and a web radio page behind it, with the live statistics and display settings](docs/screenshots/session-menu.png)
 
 ## What it does
 
