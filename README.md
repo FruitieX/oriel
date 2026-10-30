@@ -1,181 +1,150 @@
+<img src="assets/oriel.svg" width="96" alt="">
+
 # oriel
 
-Low-latency remote desktop in Rust. One binary is both the host (shares a
-display) and the client (connects to hosts).
+oriel is a low-latency remote desktop written in Rust, for using your own
+computers from your other computers and phones: at home over the LAN, or from
+elsewhere through an optional hub. It's quick enough for games as well as
+desktop work. A single `oriel` binary is both the host, which shares a
+display, and the client, which connects to one.
 
-- Hosts: Windows (Desktop Duplication + NVENC/AMF/QSV/Media Foundation via
-  FFmpeg, zero-copy on NVIDIA and AMD) and Linux under GNOME (Mutter's
-  remote desktop API + PipeWire, no permission prompt; VAAPI encoding).
-- Clients: Linux (Wayland, X11), Windows, Android, macOS (an app bundle
-  from `scripts/package-macos.sh`).
-- Client-side cursor: the host sends cursor images, the client's own OS cursor
-  draws them, so pointing feels local even with latency. When an application
-  on the host hides and confines the cursor (games), the client switches to
-  relative mouse input automatically.
-- A menu button opens quick actions (displays, full screen, statistics,
-  Ctrl+Alt+Del, disconnect, settings); its shortcut (default
-  **Ctrl+Alt+Shift+M**) opens the full menu. Drag it anywhere; Settings →
-  Interface picks its look (logo and shortcut, shortcut, logo) and size, or
-  hides it. While either is open, keys and shortcuts (Alt+Tab) stay local.
-- The host's display can switch to a resolution for the session: one it
-  lists, or this computer's screen scaled 10–100 % (the closest mode the
-  display supports, preferring the same shape). Windows hosts set it again
-  when a monitor that slept comes back in its own mode.
-- System audio (Opus) from the host output you pick in the menu, played on
-  the local output chosen in Settings; text clipboard sync; display
-  selection.
-- Clipboard sync of text and images (images as PNG, up to 24 MB).
-- Microphone (off by default; Settings → Sound, or the menu): the host
-  sees it as "oriel microphone" on Linux, and on Windows as the recording
-  end of Steam Streaming Microphone or VB-Audio Virtual Cable.
-- Gamepads: the client's controllers appear on the host as Xbox 360 pads,
-  with rumble, while the viewer has focus. Windows hosts need the
-  [ViGEmBus](https://github.com/nefarius/ViGEmBus/releases) driver; Linux
-  hosts need write access to `/dev/uinput`.
-- Use the client as an extra display: the host creates a virtual monitor
-  in the mode you pick in the menu (default: the client's screen). GNOME
-  hosts work as they are; Windows hosts need the
-  [SudoVDA](https://github.com/SudoMaker/SudoVDA) driver (installed by
-  [Apollo](https://github.com/ClassicOldSong/Apollo/releases)'s installer;
-  oriel only needs the driver, not Apollo). The client draws the host's
-  cursor when the host's own mouse moves it onto that display.
-- Shortcuts for the menu, fullscreen, next/previous display, statistics and
-  disconnecting; rebind them in Settings → Input.
-- Codecs: HEVC/H.264/AV1 through FFmpeg, and
-  [PyroWave](https://github.com/Themaister/pyrowave) for fast LANs
-  (`--codec pyrowave`, or `--codec auto` to switch between PyroWave and HEVC
-  as the link allows).
-- Automatic bitrate (on by default): the host lowers the bitrate within a
-  fraction of a second when the network cannot carry it, and raises it again
-  up to the chosen bitrate once the link is clean. The client reports how
-  frames arrive: a one-way delay that climbs steadily (a queue filling up,
-  unlike jitter), what the link delivered while frames waited (the cut goes
-  straight there), together with ECN congestion marks, and loss only where
-  it comes with a queue. "Bitrate reacts" (Settings → Video) trades
-  responsiveness for steadiness on links that jitter (5G); Quickly is the
-  original round-trip-based behaviour. NVENC, Quick Sync and x264 change the
-  bitrate on the fly; other encoders are reopened (a keyframe), at most
-  every 2 s. PyroWave keeps its own fallback to HEVC.
-- Smoothness (Settings → Video): off by default for the lowest latency;
-  Automatic or a fixed 10–100 ms holds frames so that network jitter does
-  not make motion stutter, showing each frame at its capture time plus the
-  buffer. The statistics show the buffer and how evenly frames are shown.
-- Warnings that explain a slow stream while it lasts: a link that cannot
-  carry the bitrate, packet loss, jitter, high latency, sound dropouts, a
-  host that stops answering, slow encoding or decoding, and a host on
-  another oriel version (which still connects), each with what to try
-  (Settings → Interface: detailed, short or off).
-  `ORIEL_DEBUG_BAD_NETWORK=1` fakes a bad network to see them.
-- Only paired devices can connect: pairing uses a PIN shown on the host and
-  pins both devices' certificates.
+![The start window with three paired computers, two online and one offline](docs/screenshots/launcher.png)
 
-## Use
+![The menu during a session, over the host's test pattern, with the live statistics and display settings](docs/screenshots/session-menu.png)
+
+## What it does
+
+oriel streams the host's screen as HEVC, H.264 or AV1 (encoded on the GPU
+where possible) over QUIC, and sends keyboard, mouse, touch, gamepad and microphone input back. The
+client draws the host's cursor with its own OS cursor, so pointing feels local
+even with some latency, and switches to relative mouse input when a game
+captures the cursor. Sound, the clipboard (text and images), multiple
+displays, per-session resolution changes and using the client as an extra
+virtual monitor all work. The bitrate follows what the network can carry, and
+the client explains a slow stream while it happens (packet loss, jitter, a
+host that can't keep up).
+
+[PyroWave](https://github.com/Themaister/pyrowave), an intra-only wavelet
+codec for fast LANs, is supported experimentally (`--codec pyrowave`, or
+`--codec auto` to fall back to HEVC when the link can't carry it).
+
+[docs/usage.md](docs/usage.md) goes through the session features, settings,
+the Windows service and the Android app in detail.
+
+## Components and platforms
+
+- `oriel` (crates/oriel) is the desktop app and CLI. Without arguments it
+  opens the start window shown above, where you pair with and connect to
+  computers, and share this one.
+- Hosts run on Windows (Desktop Duplication, encoding with NVENC, AMF, Quick
+  Sync or Media Foundation via FFmpeg) and on Linux under GNOME (Mutter's
+  remote desktop API and PipeWire, VAAPI encoding). On Windows, an installer
+  sets oriel up as a service, so the sign-in, lock and UAC screens can be
+  shared too, with a tray app to control it.
+- Clients run on Linux (Wayland and X11), Windows and macOS.
+- The Android app (`android/` and crates/oriel-android, Android 9+) is a
+  client with touch controls and an on-screen keyboard, and can also share
+  the phone's screen.
+- The hub (crates/oriel-hub) is an optional server for logging devices in
+  to an account and relaying connections that can't be made directly.
+
+## Pairing and connecting
+
+Devices only talk to devices they have paired with. To pair, the host shows a
+six-digit PIN ("Allow pairing" in the app, or `oriel host --pair`) and you type
+it into the client. The PIN is used for a SPAKE2 exchange that pins both
+devices' certificates, so later connections need no PIN and a man in the
+middle can't take part. Sessions run over a single QUIC connection on UDP port
+48600.
+
+With a hub, you log each device in once instead (Settings → App → Account,
+through your OpenID Connect provider), and every device under the account can
+reach every computer shared under it. Clients try the host's known and
+reported addresses first and fall back to relaying through the hub. The hub
+only forwards encrypted packets; it never sees the stream. See
+[docs/hub.md](docs/hub.md).
+
+## Getting started
+
+Build it (see below), then on the computer you want to reach:
 
 ```sh
-# On the host (Windows: oriel.exe):
 oriel host --pair            # prints a PIN; allow UDP 48600 in the firewall
+```
 
-# On the client:
+and on the client:
+
+```sh
 oriel pair <host-address> --pin <PIN>
-oriel connect <host-name>    # --stats, --fullscreen, --codec hevc,h264, ...
+oriel connect <host-name>    # or just run `oriel` for the start window
 ```
 
-On Windows, install with `oriel-VERSION-windows-x64-setup.exe` (from
-`scripts/package-windows.sh`, see below). It installs for every user in
-Program Files and, by default, the hosting service (shares this computer
-from startup, including the sign-in, lock and UAC screens, with a firewall
-rule for UDP 48600 on private networks, and for the local subnet on
-networks Windows calls Public) and the tray app at sign-in. The
-app then shows and controls the service: the user who installed it can
-start and stop sharing and allow pairing without a UAC prompt (others are
-asked for administrator rights), and quitting the app leaves the service
-running. Each pairing PIN pairs one device within ten minutes. The service
-takes over the installing user's identity and paired clients, so clients
-paired before keep working. A portable ZIP is built too.
+`oriel connect --help` lists options such as `--fullscreen`, `--stats` and
+`--codec`. `oriel hosts`, `oriel clients`, `oriel forget` and `oriel unpair`
+manage pairings, and `oriel info` shows this device's identity, encoders,
+displays and config directory.
 
-Without the installer, the service can be set up by hand (in an
-Administrator terminal):
+On Windows, `scripts/package-windows.sh` builds an installer that sets up the
+hosting service and the tray app; see [docs/usage.md](docs/usage.md#windows-installer-and-service).
 
-```powershell
-oriel.exe service install      # copies to Program Files, opens UDP 48600
-oriel.exe service pair         # prints a single-use PIN valid for ten minutes
-```
+## Configuration
 
-The service keeps its own identity and pairings in `C:\ProgramData\oriel`
-(logs: `oriel-service.log`, `oriel-host.log`).
-
-Without `--pair`, the host only accepts already paired clients. `oriel hosts`,
-`oriel clients`, `oriel forget`, `oriel unpair` manage pairings; `oriel info`
-shows the identity, encoders and displays.
-
-Settings are one set of defaults plus per-computer overrides, edited in
-the same panel everywhere: Settings in the start window (the defaults),
-a computer tile's ⋯ menu → Settings (that computer), and the menu while
-connected (that computer, applied immediately). Settings → App can start
-oriel at login (in the tray on Windows, minimized elsewhere). They are
-stored in `client.toml` in the config directory (`oriel info` prints it),
-overrides under `[hosts.<name>]`:
+Everything is in the app's Settings: one set of defaults, which each computer
+can override (from its tile's ⋯ menu, or from the menu during a session). The
+settings are stored in `client.toml` in the config directory, for example:
 
 ```toml
-menu_shortcut = "Ctrl+Alt+Shift+M"
 bitrate_kbps = 50000
 max_fps = 120
 codecs = ["hevc", "h264"]
-mouse = "auto"      # or "desktop", "captured"
-audio = true
 
-[hosts.my-desktop] # overrides for one computer
+[hosts.my-desktop]   # overrides for one computer
 max_fps = 144
-resolution = "2560x1440"  # or "client" with resolution_scale = 0.5
-
-[shortcuts]         # defaults shown; "" disables one
-fullscreen = "Ctrl+Alt+Shift+F"
-next_display = "Ctrl+Alt+Shift+Right"
-previous_display = "Ctrl+Alt+Shift+Left"
-stats = "Ctrl+Alt+Shift+S"
-disconnect = "Ctrl+Alt+Shift+Q"
 ```
 
-## Hub (optional)
+## Running a hub
 
-Instead of pairing every client with every host, devices can log in to a
-hub (Settings → App → Account): every logged-in device reaches every
-computer shared under the account, and connections that cannot be made
-directly go through the hub's relay. See [docs/hub.md](docs/hub.md).
+The hub is published as a container image, `ghcr.io/fruitiex/oriel-hub`. It
+serves its API over HTTP on port 8080, behind your own reverse proxy. Relaying
+is optional and uses a UDP port of your choice, which has to be reachable from
+the internet. It is configured with environment variables, the main ones
+being:
 
-## Android
+```sh
+ORIEL_HUB_OIDC_ISSUER=https://id.example.com
+ORIEL_HUB_OIDC_CLIENT_ID=oriel
+ORIEL_HUB_OIDC_CLIENT_SECRET=...
+ORIEL_HUB_RELAY_BIND=0.0.0.0:48700
+ORIEL_HUB_RELAY_PUBLIC=hub.example.com:48700
+```
 
-The Android app (Android 9 and newer) connects to hosts; it does not
-share the phone. Video decodes in hardware (MediaCodec, asking for
-low-latency decoding); PyroWave is desktop-only.
+The full list is at the top of `crates/oriel-hub/src/main.rs`. Push wake-ups
+for Android phones are optional and need a Firebase service account.
 
-- Tap: click. Drag: hold the left button. Long press or two-finger tap:
-  right click.
-- Two fingers pinch to zoom and pan the picture (zoom is local; the
-  quick menu resets it); while the whole picture fits, they scroll. Three
-  fingers scroll.
-- The keyboard button (bottom left) shows the phone's keyboard; what it
-  types goes to the host as text, whatever the host's keyboard layout. A
-  row above it adds Esc, Tab, arrows and Ctrl/Alt/Shift/Win, which latch
-  for the next key (Ctrl, then C).
-- Back opens or closes the menu; "Fill the screen" hides the system bars.
-- The clipboard's text syncs both ways. Gamepads and the microphone are
-  not supported on Android yet.
+## Building
 
-## Build
+Everything builds in the Nix dev shells:
 
 ```sh
 nix develop
-cargo build --release -p oriel          # Linux client (and test host)
+cargo build --release -p oriel          # Linux client and host
 ./scripts/build-windows.sh --release    # Windows build in dist/windows
-./scripts/package-windows.sh            # installer + portable ZIP in dist/
-./scripts/package-macos.sh              # on a Mac: oriel.app + ZIP in dist/
+./scripts/package-windows.sh            # Windows installer and portable ZIP in dist/
+./scripts/package-macos.sh              # on a Mac: oriel.app and a ZIP in dist/
 nix build                               # Nix package
+nix build .#hub-container               # hub container image
 
 nix develop .#android
-./scripts/build-android.sh [--install]  # debug APK in dist/ (arm64 + x86_64)
-./scripts/android-release.sh            # release APK, signed with the release key
+./scripts/build-android.sh [--install]  # debug APK in dist/
 ```
 
-See [docs/architecture.md](docs/architecture.md) for how it works and
-[AGENTS.md](AGENTS.md) for development notes.
+## Development
+
+```sh
+cargo test --workspace
+oriel host --test-pattern               # a host that needs no real display
+```
+
+[docs/architecture.md](docs/architecture.md) explains the protocol, pacing and
+the capture and encoding paths. [AGENTS.md](AGENTS.md) has development notes,
+including how to test without real hardware.
