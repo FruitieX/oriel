@@ -1,0 +1,34 @@
+name: Android
+# The APK (x86_64), on pull requests that touch what it is built from: the
+# Gradle project, the crates the app links (all but the desktop binary and
+# the hub), the dependencies, the Android dev shell and the build script.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - android/**
+      - crates/**
+      - "!crates/oriel/**"
+      - "!crates/oriel-hub/**"
+      - assets/oriel.svg
+      - Cargo.toml
+      - Cargo.lock
+      - flake.nix
+      - flake.lock
+      - scripts/build-android.sh
+      - .github/workflows/android.yml
+permissions:
+  contents: read
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - run: nix develop .#android-ci --command scripts/build-android.sh --abi x86_64
