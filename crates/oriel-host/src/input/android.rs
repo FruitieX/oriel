@@ -135,6 +135,8 @@ impl Injector for AccessibilityInjector {
             }
             InputEvent::ReleaseAll => self.drag = None,
             InputEvent::SecureAttention => g.global(Global::Home),
+            // Gestures type each key once; nothing repeats here.
+            InputEvent::KeysHeld { .. } => {}
         }
         Ok(())
     }
