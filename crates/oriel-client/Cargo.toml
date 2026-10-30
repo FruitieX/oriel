@@ -24,29 +24,29 @@ pollster.workspace = true
 crossbeam-channel.workspace = true
 parking_lot.workspace = true
 serde.workspace = true
-png = "0.18"
-ash = { version = "0.38", default-features = false, features = ["std"] }
+png = "=0.18.1"
+ash = { version = "=0.38.0", default-features = false, features = ["std"] }
 toml.workspace = true
 hex.workspace = true
-gilrs = "0.11"
+gilrs = "=0.11.2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-wayland-client = { version = "0.31", features = ["system", "dlopen"] }
-wayland-backend = { version = "0.3", features = ["client_system", "dlopen"] }
-wayland-protocols = { version = "0.32", features = ["client", "unstable"] }
+wayland-client = { version = "=0.31.15", features = ["system", "dlopen"] }
+wayland-backend = { version = "=0.3.17", features = ["client_system", "dlopen"] }
+wayland-protocols = { version = "=0.32.13", features = ["client", "unstable"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-objc2 = "0.6"
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSProcessInfo", "NSString", "NSObject", "NSArray", "NSEnumerator"] }
-objc2-game-controller = { version = "0.3", default-features = false, features = ["std", "block2", "GCDevice", "GCMouse", "GCMouseInput", "GCPhysicalInputProfile"] }
-block2 = "0.6"
+objc2 = "=0.6.5"
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSProcessInfo", "NSString", "NSObject", "NSArray", "NSEnumerator"] }
+objc2-game-controller = { version = "=0.3.2", default-features = false, features = ["std", "block2", "GCDevice", "GCMouse", "GCMouseInput", "GCPhysicalInputProfile"] }
+block2 = "=0.6.2"
 
 [target.'cfg(unix)'.dependencies]
-libc = "0.2"
+libc = "=0.2.191"
 
 [target.'cfg(target_os = "android")'.dependencies]
-android_system_properties = "0.1"
-jni = "0.22"
+android_system_properties = "=0.1.6"
+jni = "=0.22.4"
 
 [target.'cfg(windows)'.dependencies]
 tray-icon.workspace = true
@@ -60,4 +60,4 @@ windows = { workspace = true, features = [
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # Fake controllers for the gamepad tests.
-evdev = "0.13"
+evdev = "=0.13.2"

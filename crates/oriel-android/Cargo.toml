@@ -21,5 +21,5 @@ tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 winit = { workspace = true, features = ["android-native-activity"] }
-ndk-sys = "0.6"
-jni = "0.22"
+ndk-sys = "=0.6.0"
+jni = "=0.22.4"
