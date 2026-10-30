@@ -12,6 +12,10 @@ on:
       - Cargo.lock
       - flake.nix
       - flake.lock
+      - nix/closure-notices.nix
+      - scripts/rust-notices.sh
+      - about.toml
+      - packaging/notices/**
       - .github/workflows/hub.yml
 permissions:
   contents: read
@@ -47,6 +51,8 @@ jobs:
           done
           curl -fsS http://127.0.0.1:8080/healthz
           test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/api/devices)" = 401
+          docker cp hub:/licenses/THIRD-PARTY-NOTICES-RUST.txt - > /dev/null
+          docker cp hub:/licenses/THIRD-PARTY-NOTICES.txt - > /dev/null
           docker logs hub
           docker rm -f hub
       - name: Publish container

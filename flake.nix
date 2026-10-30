@@ -53,6 +53,23 @@
           # gilrs (gamepads)
           systemd
         ];
+
+      # Keeps the builder's home out of the binaries (panic locations, file
+      # names in C asserts, debug info): Rust and C compilers see the Cargo
+      # home as /cargo and this checkout as /oriel. Store paths stay. Cargo
+      # cannot expand variables in its config, so the dev shells export the
+      # flags; target-specific RUSTFLAGS (the Windows cross-build's) replace
+      # CARGO_BUILD_RUSTFLAGS and need them too (`$ORIEL_REMAP_RUSTFLAGS`).
+      remapPathsHook = ''
+        oriel_root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+        oriel_cargo_home=''${CARGO_HOME:-$HOME/.cargo}
+        export ORIEL_REMAP_RUSTFLAGS="--remap-path-prefix=$oriel_cargo_home=/cargo --remap-path-prefix=$oriel_root=/oriel"
+        export CARGO_BUILD_RUSTFLAGS="''${CARGO_BUILD_RUSTFLAGS:+$CARGO_BUILD_RUSTFLAGS }$ORIEL_REMAP_RUSTFLAGS"
+        for flags in CFLAGS CXXFLAGS; do
+          export "$flags=''${!flags:+''${!flags} }-ffile-prefix-map=$oriel_cargo_home=/cargo -ffile-prefix-map=$oriel_root=/oriel"
+        done
+        unset oriel_root oriel_cargo_home flags
+      '';
     in
     {
       packages = forAllSystems (
@@ -61,12 +78,25 @@
           pkgs = pkgsFor system;
           lib = pkgs.lib;
           pyrowave = pkgs.callPackage ./nix/pyrowave.nix { };
+          # License notices for a package's Rust crates (for the platform it
+          # is built for), with oriel's own licenses, in
+          # $out/share/licenses/<package>.
+          rustNotices = package: ''
+            licenses=$out/share/licenses/${package}
+            (
+              cd "$NIX_BUILD_TOP/$sourceRoot"
+              install -Dm644 -t "$licenses" LICENSE-MIT LICENSE-APACHE
+              bash scripts/rust-notices.sh ${package} "$licenses/THIRD-PARTY-NOTICES-RUST.txt" \
+                ${pkgs.stdenv.hostPlatform.rust.rustcTarget}
+            )
+          '';
         in
         rec {
           inherit pyrowave;
           # License metadata for the libraries scripts/package-macos.sh
           # bundles (read by scripts/third-party-notices.sh).
           third-party-meta = pkgs.callPackage ./nix/third-party-meta.nix {
+            nixpkgsRev = nixpkgs.rev;
             roots = [
               pkgs.ffmpeg_8
               pkgs.opus
@@ -91,13 +121,79 @@
               "-p"
               "oriel-hub"
             ];
+            nativeBuildInputs = [
+              pkgs.cargo-about
+              pkgs.jq
+            ];
+            postInstall = rustNotices "oriel-hub";
             meta.mainProgram = "oriel-hub";
+          };
+          # License notices for the Nix packages in the hub's image.
+          hub-closure-notices = pkgs.callPackage ./nix/closure-notices.nix {
+            rootPaths = [
+              hub
+              pkgs.cacert
+            ];
+            own = [ hub ];
+            nixpkgsRev = nixpkgs.rev;
+            packages = [
+              {
+                drv = pkgs.glibc;
+                texts = [
+                  "LICENSES"
+                  "COPYING.LIB"
+                  "COPYING.LESSERv2"
+                  "COPYINGv2"
+                  "COPYINGv3"
+                ];
+              }
+              {
+                drv = pkgs.stdenv.cc.cc;
+                # glibc's libgcc_s, from a bootstrap build of the same GCC.
+                paths = [ pkgs.glibc.libgcc ];
+                texts = [
+                  "COPYING.RUNTIME"
+                  "COPYING3"
+                  "COPYING3.LIB"
+                  "COPYING"
+                  "COPYING.LIB"
+                ];
+                note = "Its runtime libraries (libgcc_s, libstdc++) are under the GPL-3.0 with the GCC Runtime Library Exception 3.1 (COPYING.RUNTIME).";
+              }
+              {
+                drv = pkgs.libidn2;
+                texts = [
+                  "COPYING"
+                  "COPYING.LESSERv3"
+                  "COPYINGv2"
+                  "COPYING.unicode"
+                ];
+              }
+              {
+                drv = pkgs.libunistring;
+                texts = [
+                  "COPYING"
+                  "COPYING.LIB"
+                ];
+              }
+              {
+                drv = pkgs.cacert;
+                spdxTexts = [ "MPL-2.0" ];
+                note = "The CA certificates from NSS's certdata.txt (the source above), in /etc/ssl/certs.";
+              }
+            ];
           };
           hub-container = pkgs.dockerTools.buildLayeredImage {
             name = "ghcr.io/fruitiex/oriel-hub";
             tag = "main";
             contents = [ pkgs.cacert ];
-            extraCommands = "mkdir -p data tmp; chmod 1777 tmp";
+            # Licenses in /licenses: the hub's and its Rust crates', and those
+            # of the Nix packages in the image.
+            extraCommands = ''
+              mkdir -p data tmp licenses
+              chmod 1777 tmp
+              cp -r ${hub}/share/licenses/oriel-hub/. ${hub-closure-notices}/. licenses/
+            '';
             fakeRootCommands = "chown 10001:10001 data";
             config = {
               User = "10001:10001";
@@ -112,6 +208,11 @@
                 "48700/udp" = { };
               };
               Volumes."/data" = { };
+              Labels = {
+                "org.opencontainers.image.source" = "https://github.com/FruitieX/oriel";
+                "org.opencontainers.image.revision" = self.rev or "dirty";
+                "org.opencontainers.image.licenses" = "MIT OR Apache-2.0";
+              };
             };
           };
           default = pkgs.rustPlatform.buildRustPackage {
@@ -137,6 +238,8 @@
               rustPlatform.bindgenHook
               makeWrapper
               copyDesktopItems
+              cargo-about
+              jq
             ];
             desktopItems = [
               (pkgs.makeDesktopItem {
@@ -155,7 +258,8 @@
             ];
             postInstall = ''
               install -Dm644 assets/oriel.svg $out/share/icons/hicolor/scalable/apps/oriel.svg
-            '';
+            ''
+            + rustNotices "oriel";
             buildInputs = [
               pkgs.ffmpeg_8.dev
               pkgs.opus
@@ -180,6 +284,7 @@
         // lib.optionalAttrs (system == "x86_64-linux") {
           # The same for the DLLs scripts/package-windows.sh takes from Nix.
           third-party-meta-windows = pkgs.callPackage ./nix/third-party-meta.nix {
+            nixpkgsRev = nixpkgs.rev;
             roots = with pkgs.pkgsCross.mingwW64; [
               (callPackage ./nix/pyrowave.nix { })
               windows.pthreads
@@ -260,7 +365,11 @@
                 unzip
                 # The launcher icon from assets/oriel.svg.
                 resvg
+                # License notices (scripts/rust-notices.sh)
+                cargo-about
+                jq
               ];
+              shellHook = remapPathsHook;
               ANDROID_HOME = "${androidSdk}/share/android-sdk";
               ANDROID_SDK_ROOT = "${androidSdk}/share/android-sdk";
               ANDROID_NDK_HOME = "${androidSdk}/share/android-sdk/ndk/30.0.16248370";
@@ -280,8 +389,10 @@
                 with pkgs;
                 [
                   rust
-                  # License notices (scripts/third-party-notices.sh)
+                  # License notices (scripts/third-party-notices.sh,
+                  # scripts/rust-notices.sh)
                   jq
+                  cargo-about
                   # Windows installer (scripts/package-windows.sh)
                   nsis
                   zip
@@ -312,6 +423,16 @@
                 );
 
               LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
+              # No run path to ./outputs/out/lib (the shell's $out) in the
+              # binaries built here.
+              NIX_NO_SELF_RPATH = true;
+              shellHook =
+                remapPathsHook
+                + lib.optionalString windowsCross ''
+                  export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUSTFLAGS="$CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUSTFLAGS $ORIEL_REMAP_RUSTFLAGS"
+                  # Prefixed mingw tools (dlltool for windows-rs import libraries).
+                  export PATH="$PATH:${mingw.stdenv.cc}/bin:${mingw.stdenv.cc.bintools.bintools}/bin"
+                '';
             }
             // lib.optionalAttrs isLinux {
               ORIEL_PYROWAVE_LIB = "${pyrowave}/lib/libpyrowave-shared.so.1";
@@ -334,11 +455,6 @@
               ORIEL_MINGW_CC = mingw.stdenv.cc;
               ORIEL_WINE = "${pkgs.wineWow64Packages.stable}/bin/wine";
               ORIEL_PYROWAVE_WIN64 = mingw.callPackage ./nix/pyrowave.nix { };
-
-              shellHook = ''
-                # Prefixed mingw tools (dlltool for windows-rs import libraries).
-                export PATH="$PATH:${mingw.stdenv.cc}/bin:${mingw.stdenv.cc.bintools.bintools}/bin"
-              '';
             }
           );
         }

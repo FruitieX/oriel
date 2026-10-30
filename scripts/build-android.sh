@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# The Android app: the Rust library (arm64 phones, x86_64 emulators) and
-# the launcher icon into target/android, then the Gradle project in
+# The Android app: the Rust library (arm64 phones, x86_64 emulators), the
+# launcher icon and the license notices (assets/licenses) into target/android, then the Gradle project in
 # android/ (Kotlin) builds the APK; it lands in dist/. Run inside
 # `nix develop .#android`.
 #
@@ -28,8 +28,8 @@ done
 : "${ANDROID_HOME:?run inside nix develop .#android}"
 
 out=target/android
-rm -rf "$out/jniLibs" "$out/icons"
-mkdir -p "$out/icons" dist
+rm -rf "$out/jniLibs" "$out/icons" "$out/assets"
+mkdir -p "$out/icons" "$out/assets/licenses" dist
 
 # Rust
 cargo_flags=(-p oriel-android)
@@ -37,6 +37,18 @@ cargo_flags=(-p oriel-android)
 targets=()
 for abi in "${abis[@]}"; do targets+=(-t "$abi"); done
 cargo ndk -P 28 "${targets[@]}" -o "$out/jniLibs" build "${cargo_flags[@]}"
+
+# Licenses: oriel's, and the Rust crates' (and the C code they compile in).
+cp LICENSE-MIT LICENSE-APACHE "$out/assets/licenses/"
+rust_targets=()
+for abi in "${abis[@]}"; do
+  case "$abi" in
+    arm64-v8a) rust_targets+=(aarch64-linux-android) ;;
+    x86_64) rust_targets+=(x86_64-linux-android) ;;
+    *) echo "unknown ABI $abi" >&2; exit 1 ;;
+  esac
+done
+./scripts/rust-notices.sh oriel-android "$out/assets/licenses/THIRD-PARTY-NOTICES-RUST.txt" "${rust_targets[@]}"
 
 # The launcher icon in a few densities.
 for d in mdpi:48 hdpi:72 xhdpi:96 xxhdpi:144 xxxhdpi:192; do

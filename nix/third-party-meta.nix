@@ -8,6 +8,8 @@
   writeText,
   fetchurl,
   roots,
+  # The Nixpkgs revision, for links to each package's recipe and patches.
+  nixpkgsRev,
 }:
 let
   # License texts for packages that install none and whose source has none
@@ -66,6 +68,16 @@ let
         name = toString l;
         url = null;
       };
+  recipeOf =
+    d:
+    let
+      position = orNull (d.meta.position or null);
+      m = if position == null then null else builtins.match ".*-source/(.*):([0-9]+)" position;
+    in
+    if m == null then
+      null
+    else
+      "https://github.com/NixOS/nixpkgs/blob/${nixpkgsRev}/${lib.head m}#L${lib.last m}";
   info = d: rec {
     name = d.pname or (lib.getName d);
     version = d.version or (lib.getVersion d);
@@ -73,6 +85,9 @@ let
     homepage = orNull (lib.head (lib.toList (d.meta.homepage or [ null ])));
     src = orNull (if d ? src && d.src != null then plain d.src else null);
     srcUrls = map plain (orEmpty (lib.toList (d.src.urls or d.src.url or [ ])));
+    srcRev = orNull (d.src.rev or d.src.tag or null);
+    srcHash = orNull (d.src.outputHash or null);
+    recipe = orNull (recipeOf d);
     outputs = map (o: plain d.${o}.outPath) (d.outputs or [ "out" ]);
     texts = map toString (extraTexts.${name} or [ ]);
     srcTexts = sourceTexts.${name} or [ ];

@@ -5,8 +5,8 @@ plugins {
     alias(libs.plugins.android.application)
 }
 
-// Built by scripts/build-android.sh: the Rust library (cargo ndk) and the
-// launcher icon land in ../target/android first.
+// Built by scripts/build-android.sh: the Rust library (cargo ndk), the
+// launcher icon and the license notices land in ../target/android first.
 val shared = rootProject.file("../target/android")
 
 // Firebase Cloud Messaging lets the hub wake the phone to share it. Its
@@ -76,6 +76,7 @@ android {
     sourceSets["main"].apply {
         jniLibs.srcDir(shared.resolve("jniLibs"))
         res.srcDir(shared.resolve("icons"))
+        assets.srcDir(shared.resolve("assets"))
     }
 
     compileOptions {

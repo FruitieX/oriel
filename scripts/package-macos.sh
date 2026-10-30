@@ -114,7 +114,9 @@ ffmpeg_license=$(LC_ALL=C grep -aom1 'libavutil license: [ -~]*' "$contents"/Fra
   sed 's/^libavutil license: \(.*\)/The FFmpeg libraries in this build are under the \1./' || true)
 cat > "$licenses/THIRD-PARTY-NOTICES.txt" <<NOTICE
 oriel is licensed under the MIT license (LICENSE-MIT) or the Apache License
-2.0 (LICENSE-APACHE). It bundles the libraries below, built by Nixpkgs, in
+2.0 (LICENSE-APACHE). The Rust crates compiled into it, and the C libraries
+they compile in (such as libopus), are listed with their licenses in
+THIRD-PARTY-NOTICES-RUST.txt. It bundles the libraries below, built by Nixpkgs, in
 Contents/Frameworks (PyroWave in Contents/MacOS); each package's license
 texts are in the directory named after it. The libraries can be replaced
 with compatible builds; their sources are at the links below.
@@ -125,6 +127,7 @@ mapfile -t libraries < <(printf '%s\n' "${!bundled[@]}" | sort)
 if [ -n "${ORIEL_PYROWAVE_LIB:-}" ]; then libraries+=("$ORIEL_PYROWAVE_LIB"); fi
 ./scripts/third-party-notices.sh "$(nix build --no-link --print-out-paths .#third-party-meta)" \
   "$licenses" "${libraries[@]}"
+./scripts/rust-notices.sh oriel "$licenses/THIRD-PARTY-NOTICES-RUST.txt" "$(rustc -vV | sed -n 's/^host: //p')"
 
 # Ad-hoc signature: runs on this Mac (and others after "Open" once); not
 # notarized.

@@ -23,3 +23,16 @@ jobs:
       - run: nix develop --command cargo fmt --all --check
       - run: nix develop --command cargo clippy --workspace --all-targets -- -D warnings
       - run: nix develop --command cargo test --workspace
+      # The license notices of the Rust crates in every program and
+      # platform; fails on a crate under a license about.toml does not
+      # accept (the packaging scripts generate them the same way).
+      - name: License notices
+        run: |
+          out=$(mktemp -d)
+          for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu x86_64-pc-windows-gnu \
+            aarch64-apple-darwin x86_64-apple-darwin; do
+            nix develop --command scripts/rust-notices.sh oriel "$out/oriel-$target.txt" "$target"
+          done
+          nix develop --command scripts/rust-notices.sh oriel-android "$out/oriel-android.txt" \
+            aarch64-linux-android x86_64-linux-android
+          nix develop --command scripts/rust-notices.sh oriel-hub "$out/oriel-hub.txt" x86_64-unknown-linux-gnu

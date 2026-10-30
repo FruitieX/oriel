@@ -4,7 +4,7 @@
 #   scripts/third-party-notices.sh META DEST LIBRARY...
 #
 # META is `nix build .#third-party-meta` (store path -> package name,
-# version, licenses, homepage and source). For each package a LIBRARY comes
+# version, licenses, homepage, source URLs and hash, and Nixpkgs recipe). For each package a LIBRARY comes
 # from, this appends a section to DEST/THIRD-PARTY-NOTICES.txt and copies the
 # package's license files to DEST/<name>-<version>/: the texts the metadata
 # names and those in any of its outputs that are in the store, else those in
@@ -119,6 +119,9 @@ for key in "${packages[@]}"; do
     echo "  License: ${licenses:-not recorded in Nixpkgs}"
     if [ -n "$(field .homepage)" ]; then echo "  Homepage: $(field .homepage)"; fi
     while read -r url; do echo "  Source: $url"; done < <(field '.srcUrls[]?')
+    if [ -n "$(field .srcRev)" ]; then echo "  Source revision: $(field .srcRev)"; fi
+    if [ -n "$(field .srcHash)" ]; then echo "  Source hash: $(field .srcHash)"; fi
+    if [ -n "$(field .recipe)" ]; then echo "  Nixpkgs recipe and patches: $(field .recipe)"; fi
     if [ -n "$(ls -A "$dir")" ]; then
       echo "  License texts: $key/ ($(cd "$dir" && echo *))"
     else

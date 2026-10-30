@@ -19,6 +19,8 @@ cp "$ORIEL_FFMPEG_WIN64/LICENSE.txt" "$stage/licenses/FFmpeg-LICENSE.txt"
 ./scripts/third-party-notices.sh "$(nix build --no-link --print-out-paths .#third-party-meta-windows)" \
   "$stage/licenses" "$ORIEL_PYROWAVE_WIN64/bin/libpyrowave-shared-1.dll" \
   "$ORIEL_MINGW_PTHREADS/bin/libwinpthread-1.dll"
+# The Rust crates (and the C code they compile in) in oriel.exe.
+./scripts/rust-notices.sh oriel "$stage/licenses/THIRD-PARTY-NOTICES-RUST.txt" x86_64-pc-windows-gnu
 
 setup="dist/oriel-$version-windows-x64-setup.exe"
 portable="dist/oriel-$version-windows-x64-portable.zip"

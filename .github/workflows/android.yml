@@ -16,6 +16,9 @@ on:
       - flake.nix
       - flake.lock
       - scripts/build-android.sh
+      - scripts/rust-notices.sh
+      - about.toml
+      - packaging/notices/**
       - .github/workflows/android.yml
 permissions:
   contents: read

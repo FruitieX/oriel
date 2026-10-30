@@ -27,6 +27,22 @@ Read [docs/architecture.md](docs/architecture.md) first.
   runs on Linux too). Not notarized: another Mac needs right-click →
   Open the first time. The bundle id `org.fruitiex.oriel` matches the
   config directory, so the app shares the CLI's pairings.
+- `scripts/rust-notices.sh PACKAGE OUT TARGET...` writes the license
+  notices of the Rust crates in a program (cargo-about: `about.toml`
+  lists the accepted licenses, `packaging/notices/rust.hbs` the layout),
+  then of the C code their build scripts compile in (libopus, ring,
+  SQLite, …; add a section there when a new `-sys` crate vendors C). Every
+  package ships it as `THIRD-PARTY-NOTICES-RUST.txt` (the Nix packages in
+  `share/licenses/<name>`, the APK in `assets/licenses`); CI's checks
+  generate it for all targets. The hub image's `/licenses` also covers
+  its Nix closure (`nix/closure-notices.nix`, which fails the build on a
+  store path it does not list).
+- The dev shells remap the Cargo home to `/cargo` and the checkout to
+  `/oriel` in Rust and C builds (`remapPathsHook` in `flake.nix`, via
+  `CARGO_BUILD_RUSTFLAGS`, CFLAGS and the Windows target's RUSTFLAGS), so
+  binaries carry no home paths: check with `strings … | grep /home/`. A
+  new target-specific `CARGO_TARGET_*_RUSTFLAGS` must add
+  `$ORIEL_REMAP_RUSTFLAGS`.
 - PyroWave on macOS uses its native Metal port (`metal/` in the PyroWave
   repository, built by `nix/pyrowave.nix` on Darwin as
   `libpyrowave-metal.1.dylib`; the dev shell points `ORIEL_PYROWAVE_LIB`
