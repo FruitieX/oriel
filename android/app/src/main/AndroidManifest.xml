@@ -18,7 +18,6 @@
         android:label="oriel"
         android:icon="@mipmap/ic_launcher"
         android:hasCode="true"
-        android:extractNativeLibs="true"
         android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
         <activity
             android:name=".OrielActivity"

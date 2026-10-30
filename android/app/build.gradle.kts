@@ -1,6 +1,8 @@
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+
+// AGP 9 compiles Kotlin itself; the root build file picks the Kotlin version.
 plugins {
     alias(libs.plugins.android.application)
-    alias(libs.plugins.kotlin.android)
 }
 
 // Built by scripts/build-android.sh: the Rust library (cargo ndk) and the
@@ -36,7 +38,7 @@ val firebaseConfig: Map<String, String> = run {
 android {
     namespace = "org.fruitiex.oriel"
     compileSdk = 35
-    ndkVersion = "27.2.12479018"
+    ndkVersion = "30.0.16248370"
 
     defaultConfig {
         applicationId = "org.fruitiex.oriel"
@@ -79,11 +81,21 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions {
-        jvmTarget = "17"
-    }
     buildFeatures {
         buildConfig = true
+    }
+    // Extract the native libraries at install (AGP 9 refuses the manifest's
+    // extractNativeLibs).
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget = JvmTarget.JVM_17
     }
 }
 

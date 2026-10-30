@@ -148,7 +148,13 @@
               pkgs.ffmpeg_8.dev
               pkgs.opus
             ]
-            ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux ([ pkgs.pipewire.dev pkgs.systemd.dev ] ++ linuxRuntimeLibs pkgs);
+            ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux (
+              [
+                pkgs.pipewire.dev
+                pkgs.systemd.dev
+              ]
+              ++ linuxRuntimeLibs pkgs
+            );
             postFixup = lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
               wrapProgram $out/bin/oriel \
                 --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath (linuxRuntimeLibs pkgs ++ [ pyrowave ])}
@@ -190,19 +196,22 @@
             url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-10-21-13-06/ffmpeg-n8.1.3-20-gc8de997cb1-win64-lgpl-shared-8.1.zip";
             hash = "sha256-Y0aC2ExTMwoIILKwvAFPNuhRvw7Mf5n8iBCvKDjBZsc=";
           };
-        in
-        {
-          # The Android client: `scripts/build-android.sh` builds the APK.
-          android =
+
+          androidShell =
+            { emulator }:
             let
               androidSdk = android-nixpkgs.sdk.${system} (
-                sdk: with sdk; [
+                sdk:
+                with sdk;
+                [
                   cmdline-tools-latest
-                  build-tools-35-0-0
+                  build-tools-36-0-0
                   platform-tools
                   platforms-android-35
-                  ndk-27-2-12479018
-                  emulator
+                  ndk-30-0-16248370
+                ]
+                ++ lib.optionals emulator [
+                  sdk.emulator
                   system-images-android-35-google-apis-x86-64
                 ]
               );
@@ -233,10 +242,16 @@
               ];
               ANDROID_HOME = "${androidSdk}/share/android-sdk";
               ANDROID_SDK_ROOT = "${androidSdk}/share/android-sdk";
-              ANDROID_NDK_HOME = "${androidSdk}/share/android-sdk/ndk/27.2.12479018";
+              ANDROID_NDK_HOME = "${androidSdk}/share/android-sdk/ndk/30.0.16248370";
               JAVA_HOME = "${pkgs.jdk17}";
               LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
             };
+        in
+        {
+          # The Android client: `scripts/build-android.sh` builds the APK.
+          android = androidShell { emulator = true; };
+          # The same without the emulator, for CI.
+          android-ci = androidShell { emulator = false; };
 
           default = pkgs.mkShell (
             {
@@ -265,7 +280,13 @@
                   opus
                   vulkan-headers
                 ]
-                ++ lib.optionals isLinux ([ pipewire.dev systemd.dev ] ++ linuxRuntimeLibs pkgs);
+                ++ lib.optionals isLinux (
+                  [
+                    pipewire.dev
+                    systemd.dev
+                  ]
+                  ++ linuxRuntimeLibs pkgs
+                );
 
               LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
             }
