@@ -816,11 +816,16 @@ impl Viewer {
         self.sized_window = true;
     }
 
+    /// Android's Back opens (or closes) the menu.
+    fn back(&mut self) {
+        self.set_menu(!self.menu_open);
+    }
+
     fn handle_key(&mut self, event: &KeyEvent) {
         // Android's Back opens (or closes) the menu.
         if is_back(event) {
             if event.state == ElementState::Pressed && !event.repeat {
-                self.set_menu(!self.menu_open);
+                self.back();
             }
             return;
         }
@@ -2353,6 +2358,7 @@ impl ApplicationHandler<UiEvent> for Viewer {
                 self.handle_platform();
                 self.request_redraw();
             }
+            UiEvent::Back => self.back(),
             UiEvent::HookKeys => {
                 #[cfg(windows)]
                 self.handle_hook_keys();

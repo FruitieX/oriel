@@ -205,14 +205,14 @@
                 with sdk;
                 [
                   cmdline-tools-latest
-                  build-tools-36-0-0
+                  build-tools-37-0-0
                   platform-tools
-                  platforms-android-35
+                  platforms-android-37-0
                   ndk-30-0-16248370
                 ]
                 ++ lib.optionals emulator [
                   sdk.emulator
-                  system-images-android-35-google-apis-x86-64
+                  system-images-android-37-0-google-apis-x86-64
                 ]
               );
               rustAndroid = pkgs.rust-bin.stable.latest.default.override {

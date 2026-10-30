@@ -53,6 +53,13 @@ fn wake() {
     }
 }
 
+/// Back, from the activity's `OnBackInvokedCallback`.
+pub fn back() {
+    if let Some(p) = &*PROXY.lock() {
+        let _ = p.send_event(UiEvent::Back);
+    }
+}
+
 /// What the soft keyboard did.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TextInput {

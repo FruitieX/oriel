@@ -5,6 +5,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Build
@@ -15,6 +16,7 @@ import android.view.KeyEvent
 import android.view.View
 import android.view.WindowInsets
 import android.view.WindowInsetsController
+import android.window.OnBackInvokedDispatcher
 import android.view.inputmethod.BaseInputConnection
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
@@ -67,8 +69,31 @@ class OrielActivity : NativeActivity() {
             }
             v.onApplyWindowInsets(insets)
         }
+        // Back: from Android 13 a callback (the only way from Android 16,
+        // which no longer sends KEYCODE_BACK); Rust decides what it does.
+        if (Build.VERSION.SDK_INT >= 33) {
+            onBackInvokedDispatcher.registerOnBackInvokedCallback(
+                OnBackInvokedDispatcher.PRIORITY_DEFAULT,
+            ) { nativeBack() }
+        }
         Push.register(this)
+        // Not over an unattended wake-up: nobody is there to answer.
+        if (intent?.action != ACTION_WAKE) requestPermissions()
         handle(intent)
+    }
+
+    /**
+     * Runtime permissions, asked for once at start: notifications (wake-up
+     * requests) and, from Android 17, reaching hosts on the local network.
+     * Denied, the app still works: no notifications, or only hosts beyond
+     * the local network.
+     */
+    private fun requestPermissions() {
+        val wanted = buildList {
+            if (Build.VERSION.SDK_INT >= 33) add(android.Manifest.permission.POST_NOTIFICATIONS)
+            if (Build.VERSION.SDK_INT >= 37) add(PERMISSION_LOCAL_NETWORK)
+        }.filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+        if (wanted.isNotEmpty()) requestPermissions(wanted.toTypedArray(), REQUEST_PERMISSIONS)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -330,6 +355,9 @@ class OrielActivity : NativeActivity() {
         /** A wake-up allowed to start sharing unattended (see `Wake`). */
         const val ACTION_WAKE = "org.fruitiex.oriel.WAKE_SHARE"
         private const val REQUEST_SHARE = 7
+        private const val REQUEST_PERMISSIONS = 8
+        /** Manifest.permission.ACCESS_LOCAL_NETWORK (API 37). */
+        private const val PERMISSION_LOCAL_NETWORK = "android.permission.ACCESS_LOCAL_NETWORK"
 
         init {
             // Also makes the native methods below resolvable.
@@ -346,6 +374,9 @@ class OrielActivity : NativeActivity() {
         @JvmStatic external fun nativeKey(keyCode: Int, down: Boolean, metaState: Int)
 
         @JvmStatic external fun nativeKeyboardShown(shown: Boolean)
+
+        /** Back (button or gesture); see onCreate. */
+        @JvmStatic external fun nativeBack()
 
         /** Window areas under system bars and cut-outs, and the keyboard height (px). */
         @JvmStatic external fun nativeInsets(left: Int, top: Int, right: Int, bottom: Int, keyboard: Int)

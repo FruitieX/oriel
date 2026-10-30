@@ -152,6 +152,14 @@ extern "system" fn Java_org_fruitiex_oriel_OrielActivity_nativeKeyboardShown(
 }
 
 #[unsafe(no_mangle)]
+extern "system" fn Java_org_fruitiex_oriel_OrielActivity_nativeBack(
+    _env: EnvUnowned,
+    _class: JClass,
+) {
+    oriel_client::android::back();
+}
+
+#[unsafe(no_mangle)]
 extern "system" fn Java_org_fruitiex_oriel_OrielActivity_nativeInsets(
     _env: EnvUnowned,
     _class: JClass,

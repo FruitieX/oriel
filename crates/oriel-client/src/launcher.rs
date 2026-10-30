@@ -419,6 +419,20 @@ impl SettingsDialog {
 }
 
 impl Launcher {
+    /// Android's Back closes a dialog, else leaves (to the background).
+    #[cfg(target_os = "android")]
+    fn back(&mut self) {
+        if self.settings.is_some() || self.pair_dialog.is_some() {
+            self.settings = None;
+            self.pair_dialog = None;
+            if let Some((window, ..)) = &self.gfx {
+                window.request_redraw();
+            }
+        } else {
+            crate::android::move_to_back();
+        }
+    }
+
     fn reload_hosts(&mut self) {
         self.hosts = TrustStore::load(&self.paths.known_hosts())
             .map(|s| s.peers)
@@ -1310,18 +1324,11 @@ impl ApplicationHandler<UiEvent> for Launcher {
                 }
             }
             WindowEvent::RedrawRequested if self.occluded => {}
-            // Android's Back closes a dialog, else leaves (to the background).
             #[cfg(target_os = "android")]
             WindowEvent::KeyboardInput { event, .. }
                 if crate::app::is_back(&event) && event.state.is_pressed() =>
             {
-                if self.settings.is_some() || self.pair_dialog.is_some() {
-                    self.settings = None;
-                    self.pair_dialog = None;
-                    window.request_redraw();
-                } else {
-                    crate::android::move_to_back();
-                }
+                self.back();
             }
             WindowEvent::RedrawRequested => {
                 #[allow(unused_mut)]
@@ -1366,6 +1373,10 @@ impl ApplicationHandler<UiEvent> for Launcher {
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UiEvent) {
+        #[cfg(target_os = "android")]
+        if matches!(event, UiEvent::Back) {
+            self.back();
+        }
         // Take the news before the redraw: it can come before
         // `about_to_wait`.
         if matches!(event, UiEvent::Refresh) {

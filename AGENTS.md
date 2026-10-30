@@ -76,12 +76,19 @@ Read [docs/architecture.md](docs/architecture.md) first.
   appears: the launcher and viewer create their window on
   `StartCause::Init` when it already exists, drop the GPU surface on
   `Suspended`, and make a fresh egui context per window (egui sends each
-  texture only once). Back arrives as `NamedKey::BrowserBack`.
+  texture only once). Back arrives as `UiEvent::Back` from the activity's
+  `OnBackInvokedCallback` (Android 13+; Android 16 no longer sends the
+  key), and as `NamedKey::BrowserBack` on older versions: handle both.
+- Targets API 37: reaching hosts on the local network needs the runtime
+  `ACCESS_LOCAL_NETWORK` permission (asked for at start with
+  notifications). Without it LAN connections fail (UDP `EPERM`); grant it
+  in Settings or with `adb shell pm grant org.fruitiex.oriel
+  android.permission.ACCESS_LOCAL_NETWORK`.
 - Video: `oriel-media/src/android.rs` decodes with MediaCodec into an
   `AImageReader` and copies the YUV planes out (no FFmpeg on Android).
-- Emulator: `avdmanager create avd -n oriel35 -k
-  "system-images;android-35;google_apis;x86_64"`, then `emulator -avd
-  oriel35 -no-window -gpu swiftshader_indirect`. Its Vulkan crashes the
+- Emulator: `avdmanager create avd -n oriel37 -k
+  "system-images;android-37.0;google_apis;x86_64"`, then `emulator -avd
+  oriel37 -no-window -gpu swiftshader_indirect`. Its Vulkan crashes the
   emulator on wgpu's shaders, so the app uses OpenGL ES there
   (`ro.hardware` = ranchu). A host on the emulator's machine is `10.0.2.2`
   from the emulator. `adb shell input tap/swipe/keyevent` drive it; `input text`

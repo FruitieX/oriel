@@ -37,13 +37,14 @@ val firebaseConfig: Map<String, String> = run {
 
 android {
     namespace = "org.fruitiex.oriel"
-    compileSdk = 35
+    compileSdk = 37
+    buildToolsVersion = "37.0.0"
     ndkVersion = "30.0.16248370"
 
     defaultConfig {
         applicationId = "org.fruitiex.oriel"
         minSdk = 28
-        targetSdk = 35
+        targetSdk = 37
         versionCode = System.getenv("ORIEL_VERSION_CODE")?.toIntOrNull() ?: 1
         versionName = System.getenv("ORIEL_VERSION_NAME") ?: "0.1.0"
         for (key in listOf("FIREBASE_APP_ID", "FIREBASE_API_KEY", "FIREBASE_PROJECT_ID", "FIREBASE_SENDER_ID")) {

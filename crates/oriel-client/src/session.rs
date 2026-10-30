@@ -25,6 +25,9 @@ pub enum UiEvent {
     /// Android: typed text, insets or the keyboard changed (see
     /// `crate::android`).
     Platform,
+    /// Android: Back (button or gesture), which arrives as a callback
+    /// rather than a key from Android 13 on (see `OrielActivity`).
+    Back,
     /// Background work (the hub account) has news for the launcher.
     Refresh,
     /// Keys were taken by the Windows keyboard hook.
