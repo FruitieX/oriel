@@ -1,4 +1,5 @@
-oriel bundles these libraries as separate DLLs:
+oriel is licensed under the MIT license (LICENSE-MIT) or the Apache License
+2.0 (LICENSE-APACHE). It bundles these libraries as separate DLLs:
 
 FFmpeg (avcodec, avutil, swresample, swscale)
   LGPL 2.1 or later; the build from https://github.com/BtbN/FFmpeg-Builds
@@ -6,15 +7,13 @@ FFmpeg (avcodec, avutil, swresample, swscale)
   is available from https://ffmpeg.org and the build recipes from the link
   above. The DLLs can be replaced with compatible builds.
 
-PyroWave (libpyrowave-shared-1.dll)
-  MIT license; https://github.com/Themaister/pyrowave, with Granite
-  (https://github.com/Themaister/Granite, MIT) and volk
-  (https://github.com/zeux/volk, MIT).
-
-MinGW-w64 winpthreads (libwinpthread-1.dll)
-  MIT and BSD-style licenses; https://www.mingw-w64.org.
+PyroWave (libpyrowave-shared-1.dll), with parts of Granite, volk and
+Vulkan-Headers compiled in, and MinGW-w64 winpthreads (libwinpthread-1.dll)
+  Built by Nix; listed with their licenses at the end of this file, the
+  license texts in the directories named there.
 
 The service uses the ViGEmBus driver for virtual gamepads when installed
 separately (https://github.com/nefarius/ViGEmBus) and the SudoVDA driver
 for extra displays when installed separately
 (https://github.com/SudoMaker/SudoVDA); neither is included.
+

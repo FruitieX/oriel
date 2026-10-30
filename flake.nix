@@ -64,6 +64,18 @@
         in
         rec {
           inherit pyrowave;
+          # License metadata for the libraries scripts/package-macos.sh
+          # bundles (read by scripts/third-party-notices.sh).
+          third-party-meta = pkgs.callPackage ./nix/third-party-meta.nix {
+            roots = [
+              pkgs.ffmpeg_8
+              pkgs.opus
+              pkgs.libiconv
+              pyrowave
+            ]
+            # libc++ on macOS.
+            ++ lib.optional (pkgs.stdenv.cc.libcxx or null != null) pkgs.stdenv.cc.libcxx;
+          };
           # The optional hub service (crates/oriel-hub), and its container
           # for the homelab (published by .github/workflows/hub.yml).
           hub = pkgs.rustPlatform.buildRustPackage {
@@ -165,6 +177,15 @@
             };
           };
         }
+        // lib.optionalAttrs (system == "x86_64-linux") {
+          # The same for the DLLs scripts/package-windows.sh takes from Nix.
+          third-party-meta-windows = pkgs.callPackage ./nix/third-party-meta.nix {
+            roots = with pkgs.pkgsCross.mingwW64; [
+              (callPackage ./nix/pyrowave.nix { })
+              windows.pthreads
+            ];
+          };
+        }
       );
 
       devShells = forAllSystems (
@@ -259,6 +280,8 @@
                 with pkgs;
                 [
                   rust
+                  # License notices (scripts/third-party-notices.sh)
+                  jq
                   # Windows installer (scripts/package-windows.sh)
                   nsis
                   zip

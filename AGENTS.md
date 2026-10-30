@@ -22,9 +22,11 @@ Read [docs/architecture.md](docs/architecture.md) first.
   libraries and everything they load from the Nix store are copied into
   `Contents/Frameworks` (73 of them; two packages share library names,
   those get their package's name as a prefix) and relinked to `@rpath`,
-  and everything is signed ad hoc. Not notarized: another Mac needs
-  right-click → Open the first time. The bundle id `org.fruitiex.oriel`
-  matches the config directory, so the app shares the CLI's pairings.
+  and everything is signed ad hoc. License texts go to
+  `Contents/Resources/licenses` (`scripts/third-party-notices.sh`, which
+  runs on Linux too). Not notarized: another Mac needs right-click →
+  Open the first time. The bundle id `org.fruitiex.oriel` matches the
+  config directory, so the app shares the CLI's pairings.
 - PyroWave on macOS uses its native Metal port (`metal/` in the PyroWave
   repository, built by `nix/pyrowave.nix` on Darwin as
   `libpyrowave-metal.1.dylib`; the dev shell points `ORIEL_PYROWAVE_LIB`

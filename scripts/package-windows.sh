@@ -12,8 +12,13 @@ stage=target/package/oriel
 rm -rf target/package
 mkdir -p "$stage/licenses"
 cp dist/windows/*.exe dist/windows/*.dll "$stage/"
-cp packaging/windows/THIRD-PARTY-NOTICES.txt "$stage/licenses/"
+cp LICENSE-MIT LICENSE-APACHE packaging/windows/THIRD-PARTY-NOTICES.txt "$stage/licenses/"
+chmod u+w "$stage/licenses/THIRD-PARTY-NOTICES.txt"
 cp "$ORIEL_FFMPEG_WIN64/LICENSE.txt" "$stage/licenses/FFmpeg-LICENSE.txt"
+# PyroWave and winpthreads, from Nix (scripts/third-party-notices.sh).
+./scripts/third-party-notices.sh "$(nix build --no-link --print-out-paths .#third-party-meta-windows)" \
+  "$stage/licenses" "$ORIEL_PYROWAVE_WIN64/bin/libpyrowave-shared-1.dll" \
+  "$ORIEL_MINGW_PTHREADS/bin/libwinpthread-1.dll"
 
 setup="dist/oriel-$version-windows-x64-setup.exe"
 portable="dist/oriel-$version-windows-x64-portable.zip"

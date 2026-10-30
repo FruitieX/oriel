@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# macOS package: a release build as dist/oriel.app (with the icon and the
-# FFmpeg libraries from the Nix store inside, ad-hoc signed) and a ZIP of
-# it. Run inside `nix develop`. Drag the app to /Applications to install.
+# macOS package: a release build as dist/oriel.app (with the icon, the
+# FFmpeg libraries from the Nix store and their licenses inside, ad-hoc
+# signed) and a ZIP of it. Run inside `nix develop`. Drag the app to
+# /Applications to install.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -103,6 +104,27 @@ if otool -L "$contents/MacOS/oriel" "$contents"/Frameworks/* | grep -q /nix/stor
   echo "the bundle still loads from /nix/store" >&2
   exit 1
 fi
+
+# Licenses, in Contents/Resources/licenses: oriel's, and those of every
+# package a bundled library comes from (scripts/third-party-notices.sh).
+licenses=$contents/Resources/licenses
+mkdir -p "$licenses"
+cp LICENSE-MIT LICENSE-APACHE "$licenses/"
+ffmpeg_license=$(LC_ALL=C grep -aom1 'libavutil license: [ -~]*' "$contents"/Frameworks/libavutil.*.dylib |
+  sed 's/^libavutil license: \(.*\)/The FFmpeg libraries in this build are under the \1./' || true)
+cat > "$licenses/THIRD-PARTY-NOTICES.txt" <<NOTICE
+oriel is licensed under the MIT license (LICENSE-MIT) or the Apache License
+2.0 (LICENSE-APACHE). It bundles the libraries below, built by Nixpkgs, in
+Contents/Frameworks (PyroWave in Contents/MacOS); each package's license
+texts are in the directory named after it. The libraries can be replaced
+with compatible builds; their sources are at the links below.
+$ffmpeg_license
+
+NOTICE
+mapfile -t libraries < <(printf '%s\n' "${!bundled[@]}" | sort)
+if [ -n "${ORIEL_PYROWAVE_LIB:-}" ]; then libraries+=("$ORIEL_PYROWAVE_LIB"); fi
+./scripts/third-party-notices.sh "$(nix build --no-link --print-out-paths .#third-party-meta)" \
+  "$licenses" "${libraries[@]}"
 
 # Ad-hoc signature: runs on this Mac (and others after "Open" once); not
 # notarized.

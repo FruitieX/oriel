@@ -70,6 +70,19 @@ stdenv.mkDerivation {
     cp -P libpyrowave-shared.so* $out/lib/ 2>/dev/null || true
     cp -P libpyrowave-metal*.dylib $out/lib/ 2>/dev/null || true
     cp *.dll $out/bin/ 2>/dev/null || true
+    install -Dm644 ../LICENSE $out/share/licenses/pyrowave/LICENSE
+  ''
+  # The Vulkan build compiles in parts of Granite, volk and Vulkan-Headers.
+  + lib.optionalString (!stdenv.hostPlatform.isDarwin) ''
+    install -Dm644 ../Granite/LICENSE $out/share/licenses/pyrowave/Granite-LICENSE
+    install -Dm644 ../Granite/third_party/volk/LICENSE.md $out/share/licenses/pyrowave/volk-LICENSE.md
+    install -Dm644 ../Granite/third_party/khronos/vulkan-headers/LICENSE.md \
+      $out/share/licenses/pyrowave/Vulkan-Headers-LICENSE.md
+    for f in ../Granite/third_party/khronos/vulkan-headers/LICENSES/*; do
+      install -Dm644 "$f" "$out/share/licenses/pyrowave/Vulkan-Headers-$(basename "$f")"
+    done
+  ''
+  + ''
     runHook postInstall
   '';
 
