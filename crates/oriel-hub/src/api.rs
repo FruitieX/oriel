@@ -344,7 +344,103 @@ async fn wake(
 
 #[cfg(test)]
 mod tests {
+    use axum::{body::Body, http::Request};
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
     use super::*;
+
+    fn app() -> Arc<App> {
+        let oidc = Oidc::new(crate::oidc::Config {
+            issuer: "http://127.0.0.1:9".into(),
+            client_id: "oriel".into(),
+            client_secret: "secret".into(),
+            allowed_groups: vec![],
+        });
+        Arc::new(App::new(
+            Db::memory().unwrap(),
+            oidc,
+            None,
+            String::new(),
+            None,
+        ))
+    }
+
+    async fn call(
+        app: &Arc<App>,
+        method: &str,
+        uri: &str,
+        token: Option<&str>,
+        body: Option<serde_json::Value>,
+    ) -> (StatusCode, Vec<u8>) {
+        let mut req = Request::builder().method(method).uri(uri);
+        if let Some(token) = token {
+            req = req.header("authorization", format!("Bearer {token}"));
+        }
+        let req = match body {
+            Some(json) => req
+                .header("content-type", "application/json")
+                .body(Body::from(json.to_string())),
+            None => req.body(Body::empty()),
+        }
+        .unwrap();
+        let resp = router(app.clone()).oneshot(req).await.unwrap();
+        let status = resp.status();
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        (status, bytes.to_vec())
+    }
+
+    // Smoke tests of the HTTP API: health, authentication, and a logged-in
+    // device reporting in and listing the account's devices.
+    #[tokio::test]
+    async fn health_answers() {
+        let (status, body) = call(&app(), "GET", "/healthz", None, None).await;
+        assert_eq!((status, body.as_slice()), (StatusCode::OK, &b"ok"[..]));
+    }
+
+    #[tokio::test]
+    async fn api_needs_a_device_token() {
+        let app = app();
+        let (status, body) = call(&app, "GET", "/api/devices", None, None).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        let err: ApiError = serde_json::from_slice(&body).unwrap();
+        assert_eq!(err.error, "not logged in");
+        let (status, _) = call(&app, "GET", "/api/devices", Some("nope"), None).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn presence_and_device_list() {
+        let app = app();
+        let (id, token) = app
+            .db
+            .register("sub1", "Rasmus", &"ab".repeat(32), "laptop", "linux")
+            .unwrap();
+        let presence = serde_json::json!({
+            "name": "laptop",
+            "platform": "linux",
+            "host": { "port": 48600, "addresses": ["192.168.1.2"] },
+        });
+        let (status, body) =
+            call(&app, "POST", "/api/presence", Some(&token), Some(presence)).await;
+        assert_eq!(status, StatusCode::OK);
+        let listed: Devices = serde_json::from_slice(&body).unwrap();
+        assert_eq!(listed.user, "Rasmus");
+        let me = &listed.devices[0];
+        assert_eq!(me.id, id);
+        assert!(me.online && me.this_device);
+        assert_eq!(me.host.as_ref().unwrap().port, 48600);
+
+        let (status, body) = call(&app, "GET", "/api/devices", Some(&token), None).await;
+        assert_eq!(status, StatusCode::OK);
+        let again: Devices = serde_json::from_slice(&body).unwrap();
+        assert_eq!(again.devices, listed.devices);
+
+        // This hub has no relay.
+        let req = serde_json::json!({ "device_id": id });
+        let (status, _) = call(&app, "POST", "/api/relay", Some(&token), Some(req)).await;
+        assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
+    }
 
     #[test]
     fn relay_target_prefers_lan_addresses() {
