@@ -1,0 +1,34 @@
+name: Checks
+# The rest of the workspace (the hub has its own workflow): every pull
+# request, so dependency updates are only merged once everything builds.
+on:
+  workflow_dispatch:
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - run: nix develop --command cargo fmt --all --check
+      - run: nix develop --command cargo clippy --workspace --all-targets -- -D warnings
+      - run: nix develop --command cargo test --workspace
+      # The Windows host and client, cross-compiled.
+      - run: nix develop --command scripts/build-windows.sh --check
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - run: nix develop .#android-ci --command scripts/build-android.sh --abi x86_64

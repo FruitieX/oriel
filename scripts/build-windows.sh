@@ -2,6 +2,7 @@
 # Cross-compile oriel for Windows (x86_64-pc-windows-gnu) and assemble a
 # runnable folder in dist/windows with the FFmpeg DLLs next to oriel.exe.
 # Run inside `nix develop`. Extra arguments go to cargo (e.g. --release).
+# `--check` only runs clippy on the workspace for Windows (CI).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -12,6 +13,11 @@ target=x86_64-pc-windows-gnu
 # mingw headers to parse FFmpeg's.
 export FFMPEG_DIR="$ORIEL_FFMPEG_WIN64"
 export BINDGEN_EXTRA_CLANG_ARGS_x86_64_pc_windows_gnu="--target=x86_64-w64-mingw32 -D__IMMINTRIN_H -D__X86INTRIN_H $("${CC_x86_64_pc_windows_gnu}" -E -Wp,-v -x c /dev/null 2>&1 | grep -v '/lib/gcc/' | sed -n 's/^ \(\/nix.*include.*\)$/-isystem \1/p' | tr '\n' ' ')"
+
+if [ "${1:-}" = --check ]; then
+  shift
+  exec cargo clippy --target "$target" --workspace --all-targets "$@"
+fi
 
 # Always release: dist/ is what the test PC runs (debug builds can overflow
 # Windows' 1 MB main thread stack).

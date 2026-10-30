@@ -1,6 +1,9 @@
 name: Hub
 on:
   workflow_dispatch:
+  # Every pull request (Renovate's too) gets the full checks, whatever it
+  # touches: the hub's container is only published from main.
+  pull_request:
   push:
     branches: [main]
     paths:
@@ -24,20 +27,34 @@ jobs:
     env:
       HAS_DISPATCH_TOKEN: ${{ secrets.HOMELAB_DISPATCH_TOKEN != '' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: cachix/install-nix-action@v31
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes
-      # Builds the hub and runs its tests.
+      # Builds the hub and runs its tests (including the API smoke tests).
       - run: nix build .#hub-container --out-link result-container
+      - name: Smoke test the container
+        run: |
+          docker load -i result-container
+          docker run -d --name hub -p 8080:8080 \
+            -e ORIEL_HUB_OIDC_ISSUER=http://127.0.0.1:9 \
+            -e ORIEL_HUB_OIDC_CLIENT_ID=ci -e ORIEL_HUB_OIDC_CLIENT_SECRET=ci \
+            ghcr.io/fruitiex/oriel-hub:main
+          for _ in $(seq 30); do
+            curl -fsS http://127.0.0.1:8080/healthz && break
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:8080/healthz
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/api/devices)" = 401
+          docker logs hub
+          docker rm -f hub
       - name: Publish container
         id: publish
-        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          docker load -i result-container
           printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
           docker tag ghcr.io/fruitiex/oriel-hub:main ghcr.io/fruitiex/oriel-hub:${{ github.sha }}
           docker push ghcr.io/fruitiex/oriel-hub:main
