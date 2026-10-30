@@ -148,3 +148,7 @@ oriel host --test-pattern               # a host that needs no real display
 [docs/architecture.md](docs/architecture.md) explains the protocol, pacing and
 the capture and encoding paths. [AGENTS.md](AGENTS.md) has development notes,
 including how to test without real hardware.
+
+## License
+
+MIT or Apache-2.0, at your option, see [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE).
