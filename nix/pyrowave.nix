@@ -12,31 +12,31 @@ let
   granite = fetchFromGitHub {
     owner = "Themaister";
     repo = "Granite";
-    rev = "53090429539bf3404250d18fe58db971f0907c04";
+    rev = "69f450c62dc3780680b936539a931b5d03e436fb";
     hash = "sha256-9ro0Tsf22ZQEG9CID5/7AbpZmrzZb0DyBlr/rnvvfHE=";
   };
   volk = fetchFromGitHub {
     owner = "zeux";
     repo = "volk";
-    rev = "47cddf7ed97b94118a08aacb548a411188e016cc";
-    hash = "sha256-46z0o6AnID2RGZn0jJTmEwZW/S0kP5TFb2bR5PfqEuw=";
+    rev = "b7764bc7f5880139859a15d1609d2ee0c6251608";
+    hash = "sha256-JPvPhETKYQRJ/FeJEx0pTYzqt6Vnm+Rp3cAuB/MJvFM=";
   };
   vulkanHeaders = fetchFromGitHub {
     owner = "KhronosGroup";
     repo = "Vulkan-Headers";
-    rev = "6802bb4733b63ed5efd3adb308a6c885ef180ea1";
-    hash = "sha256-E/SBlMW1oUeUT0MtWzQp0k+OSZLc9ho7g+1oTd7z7+Y=";
+    rev = "9fbc2a782ee3f8a4db64e7d991e23da75e893f44";
+    hash = "sha256-Y7w5o+kDsEXN3r0ADreS8WwBZjJvnO5VOSt9WZo0rDk=";
   };
 in
 stdenv.mkDerivation {
   pname = "pyrowave";
-  version = "1.0.0-unstable-2026-10-17";
+  version = "1.0.0-unstable-2026-10-27";
 
   src = fetchFromGitHub {
     owner = "Themaister";
     repo = "pyrowave";
-    rev = "21f099d24df0ab0e4c10c3288c924b6b1717e581";
-    hash = "sha256-Is/hlS8WifU+CimRrSZ1DvYRL81TYMVZfrRdKxfN2OQ=";
+    rev = "7fe0e2667cd3076b8b2bf04bcb80bc8d691b800b";
+    hash = "sha256-dtIWgg6OiNDAr9+bFtsnGPQOKhIU/bIg0ffNd+LX2tM=";
   };
 
   postUnpack = ''
