@@ -20,17 +20,17 @@ parking_lot.workspace = true
 rand.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
-zbus = { version = "6", default-features = false, features = ["tokio", "proxy"] }
-pipewire = "0.10"
-futures-util = { version = "0.3", default-features = false }
+zbus = { version = "=6.2.0", default-features = false, features = ["tokio", "proxy"] }
+pipewire = "=0.10.1"
+futures-util = { version = "=0.3.34", default-features = false }
 # Virtual gamepads through uinput.
-evdev = "0.13"
-libc = "0.2"
+evdev = "=0.13.2"
+libc = "=0.2.191"
 
 [target.'cfg(windows)'.dependencies]
 windows-service.workspace = true
 # Virtual Xbox 360 gamepads through the ViGEmBus driver.
-vigem-client = { version = "0.1", features = ["unstable_xtarget_notification"] }
+vigem-client = { version = "=0.1.4", features = ["unstable_xtarget_notification"] }
 windows = { workspace = true, features = [
   "Win32_System_RemoteDesktop",
   "Win32_System_Environment",
