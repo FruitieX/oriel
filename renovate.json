@@ -2,5 +2,12 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
     "github>FruitieX/renovate-config"
+  ],
+  "packageRules": [
+    {
+      "description": "windows-core must match the version the windows crate uses",
+      "matchPackageNames": ["windows", "windows-core"],
+      "groupName": "windows-rs"
+    }
   ]
 }
