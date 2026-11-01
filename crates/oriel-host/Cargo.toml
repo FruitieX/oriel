@@ -20,7 +20,7 @@ parking_lot.workspace = true
 rand.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
-zbus = { version = "=6.2.0", default-features = false, features = ["tokio", "proxy"] }
+zbus = { version = "=6.2.1", default-features = false, features = ["tokio", "proxy"] }
 pipewire = "=0.10.1"
 futures-util = { version = "=0.3.34", default-features = false }
 # Virtual gamepads through uinput.
