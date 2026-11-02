@@ -460,11 +460,12 @@ pub async fn run(
                         if let (None, Some(res)) = (mode, resolution) {
                             mode_guard = set_mode(options.source, display, res, &ev_tx_audio);
                         }
-                        let target = match mode {
-                            Some(m) => Target::Virtual(m),
-                            None => Target::Display(display),
-                        };
-                        let _ = cmd_tx.send(Cmd::Target(target));
+                        let _ = cmd_tx.send(match mode {
+                            // Shares another client's extra display as it is,
+                            // or resizes this client's.
+                            Some(m) => Cmd::VirtualMode(m),
+                            None => Cmd::Target(Target::Display(display)),
+                        });
                     }
                     Some(ClientMsg::SetCodecs {
                         codecs,
@@ -484,7 +485,7 @@ pub async fn run(
                         if let (Some(m), Some((width, height))) = (virtual_mode, resolution) {
                             let mode = VirtualMode { width, height, ..m };
                             virtual_mode = Some(mode);
-                            let _ = cmd_tx.send(Cmd::Target(Target::Virtual(mode)));
+                            let _ = cmd_tx.send(Cmd::VirtualMode(mode));
                         }
                     }
                     Some(ClientMsg::SetResolution { resolution: res }) => {

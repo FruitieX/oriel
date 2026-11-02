@@ -44,6 +44,10 @@ pub enum Cmd {
     Keyframe,
     /// Capture this target instead (display switch, virtual monitor).
     Target(capture::Target),
+    /// Stream the extra display in this mode (created in it if there is
+    /// none, resized in place if there is; other sessions sharing it see
+    /// the new size too).
+    VirtualMode(oriel_proto::VirtualMode),
     /// Codecs, automatic switching, those wanted at 4:4:4, and software
     /// encoding.
     Codecs(Vec<Codec>, bool, Vec<Codec>, bool),
@@ -241,6 +245,7 @@ pub fn spawn(
                 cmds,
                 events,
                 graphics_capture_failed: false,
+                shared_display_noticed: false,
             };
             if let Err(e) = p.run() {
                 if p.events.is_closed() {
@@ -265,6 +270,8 @@ struct Pipeline {
     /// Windows Graphics Capture failed to start; not tried again until it
     /// is asked for anew.
     graphics_capture_failed: bool,
+    /// The extra display was already in use at another size; said once.
+    shared_display_noticed: bool,
 }
 
 enum Flow {
@@ -389,6 +396,23 @@ impl Pipeline {
                 Ok(c) => {
                     if reported {
                         self.send(Event::Notice("Capture resumed".into()))?;
+                    }
+                    if !self.shared_display_noticed
+                        && let capture::Target::Virtual(mode) = self.config.target
+                    {
+                        let (width, height) = c.size();
+                        if (width, height) != (mode.width, mode.height) {
+                            self.shared_display_noticed = true;
+                            tracing::info!(
+                                ?mode,
+                                width,
+                                height,
+                                "the extra display is in use at another size"
+                            );
+                            self.send(Event::Notice(format!(
+                                "The extra display is shown at {width}×{height}"
+                            )))?;
+                        }
                     }
                     return Ok(Some(c));
                 }
@@ -640,6 +664,17 @@ impl Pipeline {
                     }
                     Cmd::Target(target) => {
                         if self.config.target != target {
+                            self.config.target = target;
+                            return Ok(Flow::Continue);
+                        }
+                    }
+                    Cmd::VirtualMode(mode) => {
+                        let target = capture::Target::Virtual(mode);
+                        if self.config.target != target {
+                            // In place when a monitor exists (other sessions
+                            // may share it); the capturer reopens at the new
+                            // size either way.
+                            capture::set_virtual_mode(mode);
                             self.config.target = target;
                             return Ok(Flow::Continue);
                         }

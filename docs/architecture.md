@@ -84,10 +84,13 @@ On Windows the virtual monitor comes from the SudoVDA indirect display
 driver (`capture/sudovda.rs`): IOCTLs on its device interface add a
 monitor with a fixed GUID (so Windows remembers its placement) and return
 its adapter LUID and target id, which DisplayConfig maps to the
-`\\.\DISPLAYn` that Desktop Duplication captures. The driver drops all its
-monitors when not pinged within its watchdog timeout, so a thread pings it
-while any exist. The pipeline keeps the monitor across capture restarts
-(desktop switches) and releases it before switching targets.
+`\\.\DISPLAYn` that Desktop Duplication captures. The host keeps one such
+monitor, so sessions that ask for the extra display share it: a second
+client gets it in the mode the first created, and a resolution change
+resizes it for all of them. The driver drops all its monitors when not
+pinged within its watchdog timeout, so a thread pings it while any exist.
+The pipeline keeps the monitor across capture restarts (desktop switches)
+and releases it before switching targets.
 
 Testing without a desktop: run PipeWire, WirePlumber (plus a null sink for
 audio) and `gnome-shell --headless --wayland --virtual-monitor 1920x1080`

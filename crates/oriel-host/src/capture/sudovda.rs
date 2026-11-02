@@ -225,7 +225,8 @@ pub fn available() -> bool {
 /// A virtual monitor; removed when dropped.
 pub struct VirtualMonitor {
     driver: Arc<Driver>,
-    pub mode: VirtualMode,
+    /// The mode it is in. Not public: `set_mode` changes it in place.
+    mode: Mutex<VirtualMode>,
     /// GDI name, e.g. `\\.\DISPLAY5`.
     pub device_name: [u16; 32],
 }
@@ -246,15 +247,22 @@ impl Drop for VirtualMonitor {
 
 static CURRENT: Mutex<Option<Weak<VirtualMonitor>>> = Mutex::new(None);
 
-/// The virtual monitor in `mode`, created if needed. A monitor in another
-/// mode must have been dropped first.
+/// The host's virtual monitor, created in `mode` if there is none. Sessions
+/// share one (another client may be streaming it already), so an existing
+/// monitor keeps its mode: a client that wants it resized asks for that
+/// with `set_mode`, and a capturer that merely reopens does not.
 pub fn acquire(mode: VirtualMode) -> Result<Arc<VirtualMonitor>> {
     let mut current = CURRENT.lock();
     if let Some(m) = current.as_ref().and_then(Weak::upgrade) {
-        if m.mode == mode {
-            return Ok(m);
+        let actual = *m.mode.lock();
+        if actual != mode {
+            tracing::info!(
+                ?mode,
+                ?actual,
+                "another client is using the virtual monitor; capturing it as it is"
+            );
         }
-        bail!("another virtual monitor is still in use");
+        return Ok(m);
     }
     let driver = driver()?;
     let mut params = AddParams {
@@ -282,7 +290,7 @@ pub fn acquire(mode: VirtualMode) -> Result<Arc<VirtualMonitor>> {
     }
     let monitor = Arc::new(VirtualMonitor {
         driver,
-        mode,
+        mode: Mutex::new(mode),
         device_name: device_name.context("the virtual monitor did not appear")?,
     });
     apply_mode(&monitor.device_name, mode);
@@ -293,6 +301,21 @@ pub fn acquire(mode: VirtualMode) -> Result<Arc<VirtualMonitor>> {
     );
     *current = Some(Arc::downgrade(&monitor));
     Ok(monitor)
+}
+
+/// Change the virtual monitor's mode, if there is one. The sessions
+/// capturing it lose desktop duplication and reopen it at the new size.
+pub fn set_mode(mode: VirtualMode) {
+    let Some(monitor) = CURRENT.lock().as_ref().and_then(Weak::upgrade) else {
+        return;
+    };
+    if *monitor.mode.lock() == mode {
+        return;
+    }
+    tracing::info!(?mode, "resizing the virtual monitor");
+    if apply_mode(&monitor.device_name, mode) {
+        *monitor.mode.lock() = mode;
+    }
 }
 
 /// The GDI device name of the monitor the driver reported.
@@ -334,8 +357,8 @@ fn gdi_name(out: &AddOut) -> Option<[u16; 32]> {
 }
 
 /// Make sure the monitor runs in `mode` (the driver prefers it, but Windows
-/// may restore a remembered one).
-fn apply_mode(device: &[u16; 32], mode: VirtualMode) {
+/// may restore a remembered one). Whether it is in that mode afterwards.
+fn apply_mode(device: &[u16; 32], mode: VirtualMode) -> bool {
     unsafe {
         let mut current = DEVMODEW {
             dmSize: size_of::<DEVMODEW>() as u16,
@@ -348,7 +371,7 @@ fn apply_mode(device: &[u16; 32], mode: VirtualMode) {
             current.dmDisplayFrequency,
         ) == (mode.width, mode.height, mode.refresh_hz)
         {
-            return;
+            return true;
         }
         let wanted = DEVMODEW {
             dmSize: size_of::<DEVMODEW>() as u16,
@@ -368,5 +391,6 @@ fn apply_mode(device: &[u16; 32], mode: VirtualMode) {
         if result != DISP_CHANGE_SUCCESSFUL {
             tracing::warn!(?mode, ?result, "cannot set the virtual monitor's mode");
         }
+        result == DISP_CHANGE_SUCCESSFUL
     }
 }

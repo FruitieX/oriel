@@ -97,6 +97,18 @@ pub fn virtual_display_available(source: SourceKind) -> bool {
     }
 }
 
+/// Change the extra display's mode, if this host has one. Windows keeps a
+/// single virtual monitor for all sessions, so a client resizing "its"
+/// extra display resizes the one the others may be streaming too.
+pub fn set_virtual_mode(mode: oriel_proto::VirtualMode) {
+    #[cfg(windows)]
+    sudovda::set_mode(mode);
+    // Elsewhere a virtual monitor belongs to one capture session: the
+    // target change alone reopens it in the new mode.
+    #[cfg(not(windows))]
+    let _ = mode;
+}
+
 /// State shared between the test pattern source and its input sink.
 pub type TestState = Arc<Mutex<test_pattern::State>>;
 
