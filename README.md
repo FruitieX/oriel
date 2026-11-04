@@ -138,6 +138,21 @@ nix develop .#android
 ./scripts/build-android.sh [--install]  # debug APK in dist/
 ```
 
+### Installing and updating the Android app
+
+Every push to `main` that touches the app publishes a release-signed APK as a
+GitHub prerelease (`oriel-android-main-<versionCode>-<sha>.apk`, see
+[android-release.yml](.github/workflows/android-release.yml)). To get updates
+without a cable, install [Obtainium](https://obtainium.imranr.dev/) and add
+`https://github.com/FruitieX/oriel` (or open
+`obtainium://add/https://github.com/FruitieX/oriel` on the phone) with
+"Include prereleases" on and the APK filter `oriel-android-main-.*\.apk`.
+Obtainium installs updates silently in the background on Android 12+ once it
+installed the app itself.
+
+A debug build from `build-android.sh --install` is signed with the debug key;
+uninstall it once before installing the release APK (and vice versa).
+
 ## Development
 
 ```sh

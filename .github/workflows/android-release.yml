@@ -1,0 +1,109 @@
+name: Android release
+# A release-signed APK as a GitHub prerelease on every push to main that
+# touches what the app is built from, for Obtainium on the family's phones.
+# android.yml only builds an unsigned-for-release x86_64 APK on pull
+# requests; this one signs with the release key from repository secrets.
+#
+# Secrets: ORIEL_ANDROID_KEYSTORE_BASE64, ORIEL_ANDROID_KEYSTORE_PASS (the
+# oriel release key, see scripts/android-release.sh) and
+# ORIEL_GOOGLE_SERVICES_JSON (Firebase config, for push wake-ups).
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - android/**
+      - crates/**
+      - "!crates/oriel/**"
+      - "!crates/oriel-hub/**"
+      - assets/oriel.svg
+      - Cargo.toml
+      - Cargo.lock
+      - flake.nix
+      - flake.lock
+      - scripts/build-android.sh
+      - scripts/rust-notices.sh
+      - about.toml
+      - packaging/notices/**
+      - .github/workflows/android-release.yml
+permissions:
+  contents: write
+concurrency:
+  group: android-release
+  cancel-in-progress: false
+env:
+  # SHA-256 of the oriel release certificate, as registered with the
+  # Android Developer Console. Public; the build fails if the APK is signed
+  # with anything else (Gradle falls back to the debug key without a keystore).
+  RELEASE_CERT_SHA256: d9f37349e44436ea2bd3e123a8ebbf6f5f4b190e03667d2bab48664b7c682565
+  KEEP_RELEASES: 5
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # versionCode is the commit count (scripts/build-android.sh).
+          fetch-depth: 0
+      - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31.11.3
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - name: Write signing key and Firebase config
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ORIEL_ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASS: ${{ secrets.ORIEL_ANDROID_KEYSTORE_PASS }}
+          GOOGLE_SERVICES_JSON: ${{ secrets.ORIEL_GOOGLE_SERVICES_JSON }}
+        run: |
+          for name in KEYSTORE_BASE64 KEYSTORE_PASS GOOGLE_SERVICES_JSON; do
+            if [[ -z "${!name}" ]]; then
+              echo "secret for $name is not set; refusing to build a release without it" >&2
+              exit 1
+            fi
+          done
+          umask 077
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/release.jks"
+          printf '%s' "$GOOGLE_SERVICES_JSON" > "$RUNNER_TEMP/google-services.json"
+          {
+            echo "ORIEL_ANDROID_KEYSTORE=$RUNNER_TEMP/release.jks"
+            echo "ORIEL_ANDROID_KEYSTORE_ALIAS=oriel"
+            echo "ORIEL_GOOGLE_SERVICES_JSON=$RUNNER_TEMP/google-services.json"
+          } >> "$GITHUB_ENV"
+          echo "::add-mask::$KEYSTORE_PASS"
+          echo "ORIEL_ANDROID_KEYSTORE_PASS=$KEYSTORE_PASS" >> "$GITHUB_ENV"
+      # The phones are arm64; the x86_64 build is for emulators.
+      - name: Build release APK
+        run: nix develop .#android-ci --command scripts/build-android.sh --release --abi arm64-v8a
+      - name: Verify the signing certificate
+        run: |
+          nix develop .#android-ci --command bash -euo pipefail -c '
+            apk=$(ls dist/oriel-*-android.apk)
+            apksigner=$(find "$ANDROID_HOME/build-tools" -name apksigner | sort -V | tail -n 1)
+            "$apksigner" verify --print-certs "$apk" | tee "$RUNNER_TEMP/certs.txt"
+            grep -qi "certificate SHA-256 digest: $RELEASE_CERT_SHA256" "$RUNNER_TEMP/certs.txt" \
+              || { echo "APK is not signed with the registered release certificate" >&2; exit 1; }
+          '
+      - name: Publish prerelease
+        run: |
+          apk=$(ls dist/oriel-*-android.apk)
+          version_code=$(git rev-list --count HEAD)
+          short_sha=$(git rev-parse --short=7 HEAD)
+          tag="android-main-${version_code}-${short_sha}"
+          asset="dist/oriel-android-main-${version_code}-${short_sha}.apk"
+          cp "$apk" "$asset"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release delete "$tag" --yes --cleanup-tag
+          fi
+          gh release create "$tag" "$asset" \
+            --target "$GITHUB_SHA" \
+            --prerelease \
+            --title "Oriel Android build ${version_code}" \
+            --notes "Automated Oriel Android build from main (${GITHUB_SHA}, versionCode ${version_code}), signed with the Oriel release key. A device that has a debug-signed build from USB deployment must uninstall it once before installing this APK."
+          # Keep only the latest prereleases.
+          gh release list --limit 100 --json tagName,isPrerelease \
+            --jq '.[] | select(.isPrerelease and (.tagName | startswith("android-main-"))) | .tagName' \
+            | tail -n +$((KEEP_RELEASES + 1)) \
+            | while read -r old; do gh release delete "$old" --yes --cleanup-tag || true; done
