@@ -44,9 +44,8 @@ pub enum Cmd {
     Keyframe,
     /// Capture this target instead (display switch, virtual monitor).
     Target(capture::Target),
-    /// Stream the extra display in this mode (created in it if there is
-    /// none, resized in place if there is; other sessions sharing it see
-    /// the new size too).
+    /// Stream the extra display in this mode: resize it (for every session
+    /// sharing it) when already streaming it, else as `Target`.
     VirtualMode(oriel_proto::VirtualMode),
     /// Codecs, automatic switching, those wanted at 4:4:4, and software
     /// encoding.
@@ -246,7 +245,9 @@ pub fn spawn(
                 events,
                 graphics_capture_failed: false,
                 shared_display_noticed: false,
+                virtual_claim: None,
             };
+            p.claim_virtual(false);
             if let Err(e) = p.run() {
                 if p.events.is_closed() {
                     return;
@@ -272,6 +273,9 @@ struct Pipeline {
     graphics_capture_failed: bool,
     /// The extra display was already in use at another size; said once.
     shared_display_noticed: bool,
+    /// This session's claim on the extra display's mode: it created the
+    /// display or resized it.
+    virtual_claim: Option<capture::VirtualClaim>,
 }
 
 enum Flow {
@@ -370,6 +374,21 @@ impl Pipeline {
             bail!("session ended");
         }
         Ok(())
+    }
+
+    /// Bring this session's claim on the extra display in line with its
+    /// target. Without `resize` it claims the display only when it is the
+    /// one to create it; with it, it resizes the display to its mode.
+    fn claim_virtual(&mut self, resize: bool) {
+        let capture::Target::Virtual(mode) = self.config.target else {
+            self.virtual_claim = None;
+            return;
+        };
+        match &mut self.virtual_claim {
+            Some(claim) if resize => claim.set(mode),
+            Some(_) => {}
+            None => self.virtual_claim = capture::claim_virtual(self.config.source, mode, resize),
+        }
     }
 
     fn open_capturer(&mut self) -> Result<Option<Box<dyn Capturer>>> {
@@ -523,9 +542,13 @@ impl Pipeline {
             Option<Arc<dyn std::any::Any + Send + Sync>>,
         )> = None;
         loop {
-            if keep.as_ref().is_some_and(|(t, _)| *t != self.config.target) {
-                // Release the old target first (a virtual monitor in
-                // another mode must go before the new one is added).
+            if keep
+                .as_ref()
+                .is_some_and(|(t, _)| !capture::same_target(*t, self.config.target))
+            {
+                // Release the old target first (elsewhere than on Windows a
+                // virtual monitor in another mode must go before the new one
+                // is added).
                 drop(keep.take());
             }
             let Some(mut cap) = self.open_capturer()? else {
@@ -665,17 +688,19 @@ impl Pipeline {
                     Cmd::Target(target) => {
                         if self.config.target != target {
                             self.config.target = target;
+                            self.claim_virtual(false);
                             return Ok(Flow::Continue);
                         }
                     }
                     Cmd::VirtualMode(mode) => {
+                        let resize = matches!(self.config.target, capture::Target::Virtual(_));
                         let target = capture::Target::Virtual(mode);
-                        if self.config.target != target {
-                            // In place when a monitor exists (other sessions
-                            // may share it); the capturer reopens at the new
-                            // size either way.
-                            capture::set_virtual_mode(mode);
-                            self.config.target = target;
+                        // Claimed even for the mode it already asked for:
+                        // another client may have resized the display since.
+                        let changed = self.config.target != target;
+                        self.config.target = target;
+                        self.claim_virtual(resize);
+                        if changed {
                             return Ok(Flow::Continue);
                         }
                     }

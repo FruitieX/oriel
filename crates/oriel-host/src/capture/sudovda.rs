@@ -225,7 +225,7 @@ pub fn available() -> bool {
 /// A virtual monitor; removed when dropped.
 pub struct VirtualMonitor {
     driver: Arc<Driver>,
-    /// The mode it is in. Not public: `set_mode` changes it in place.
+    /// The mode it is in. Not public: claims change it in place.
     mode: Mutex<VirtualMode>,
     /// GDI name, e.g. `\\.\DISPLAY5`.
     pub device_name: [u16; 32],
@@ -245,25 +245,100 @@ impl Drop for VirtualMonitor {
     }
 }
 
-static CURRENT: Mutex<Option<Weak<VirtualMonitor>>> = Mutex::new(None);
+/// The host's one virtual monitor and the modes sessions asked it for.
+struct State {
+    monitor: Option<Weak<VirtualMonitor>>,
+    /// Oldest first; the newest one is in force. A session that streams
+    /// the monitor as another one made it has none.
+    claims: Vec<(u64, VirtualMode)>,
+    next_claim: u64,
+}
 
-/// The host's virtual monitor, created in `mode` if there is none. Sessions
-/// share one (another client may be streaming it already), so an existing
-/// monitor keeps its mode: a client that wants it resized asks for that
-/// with `set_mode`, and a capturer that merely reopens does not.
+static STATE: Mutex<State> = Mutex::new(State {
+    monitor: None,
+    claims: Vec::new(),
+    next_claim: 0,
+});
+
+impl State {
+    fn monitor(&self) -> Option<Arc<VirtualMonitor>> {
+        self.monitor.as_ref().and_then(Weak::upgrade)
+    }
+
+    /// Put the monitor (if there is one) in the newest claim's mode. The
+    /// sessions capturing it lose their capture and reopen at the new size.
+    fn apply(&self) {
+        let (Some(monitor), Some(&(_, mode))) = (self.monitor(), self.claims.last()) else {
+            return;
+        };
+        if *monitor.mode.lock() != mode {
+            tracing::info!(?mode, "resizing the virtual monitor");
+            if apply_mode(&monitor.device_name, mode) {
+                *monitor.mode.lock() = mode;
+            }
+        }
+    }
+}
+
+/// A session's wish for the virtual monitor's mode. The newest one is in
+/// force; dropping it hands the monitor back to the one before, like a
+/// physical display's mode claims.
+pub struct Claim(u64);
+
+impl Claim {
+    /// Ask for another mode; this claim becomes the newest.
+    pub fn set(&mut self, mode: VirtualMode) {
+        let mut state = STATE.lock();
+        state.claims.retain(|(id, _)| *id != self.0);
+        state.claims.push((self.0, mode));
+        state.apply();
+    }
+}
+
+impl Drop for Claim {
+    fn drop(&mut self) {
+        let mut state = STATE.lock();
+        let newest = state.claims.last().is_some_and(|(id, _)| *id == self.0);
+        state.claims.retain(|(id, _)| *id != self.0);
+        if newest {
+            state.apply();
+        }
+    }
+}
+
+/// Claim the virtual monitor's mode. Without `resize` only a session that
+/// will create the monitor claims it; one that finds it in use streams it
+/// as it is (`None`).
+pub fn claim(mode: VirtualMode, resize: bool) -> Option<Claim> {
+    let mut state = STATE.lock();
+    if !resize && state.monitor().is_some() {
+        return None;
+    }
+    let id = state.next_claim;
+    state.next_claim += 1;
+    state.claims.push((id, mode));
+    state.apply();
+    Some(Claim(id))
+}
+
+/// The host's virtual monitor, created if there is none: in the newest
+/// claim's mode, or `mode` without one. Sessions share it (another client
+/// may be streaming it already), and an existing monitor keeps its mode:
+/// only claims resize it, never a capturer that reopens.
 pub fn acquire(mode: VirtualMode) -> Result<Arc<VirtualMonitor>> {
-    let mut current = CURRENT.lock();
-    if let Some(m) = current.as_ref().and_then(Weak::upgrade) {
+    let mut state = STATE.lock();
+    if let Some(m) = state.monitor() {
         let actual = *m.mode.lock();
         if actual != mode {
             tracing::info!(
                 ?mode,
                 ?actual,
-                "another client is using the virtual monitor; capturing it as it is"
+                "another client sized the virtual monitor; capturing it as it is"
             );
         }
         return Ok(m);
     }
+    let mode = state.claims.last().map_or(mode, |&(_, m)| m);
     let driver = driver()?;
     let mut params = AddParams {
         width: mode.width,
@@ -299,23 +374,8 @@ pub fn acquire(mode: VirtualMode) -> Result<Arc<VirtualMonitor>> {
         name = %String::from_utf16_lossy(&monitor.device_name).trim_end_matches('\0'),
         "created a virtual monitor"
     );
-    *current = Some(Arc::downgrade(&monitor));
+    state.monitor = Some(Arc::downgrade(&monitor));
     Ok(monitor)
-}
-
-/// Change the virtual monitor's mode, if there is one. The sessions
-/// capturing it lose desktop duplication and reopen it at the new size.
-pub fn set_mode(mode: VirtualMode) {
-    let Some(monitor) = CURRENT.lock().as_ref().and_then(Weak::upgrade) else {
-        return;
-    };
-    if *monitor.mode.lock() == mode {
-        return;
-    }
-    tracing::info!(?mode, "resizing the virtual monitor");
-    if apply_mode(&monitor.device_name, mode) {
-        *monitor.mode.lock() = mode;
-    }
 }
 
 /// The GDI device name of the monitor the driver reported.

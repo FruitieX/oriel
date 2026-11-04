@@ -97,16 +97,51 @@ pub fn virtual_display_available(source: SourceKind) -> bool {
     }
 }
 
-/// Change the extra display's mode, if this host has one. Windows keeps a
-/// single virtual monitor for all sessions, so a client resizing "its"
-/// extra display resizes the one the others may be streaming too.
-pub fn set_virtual_mode(mode: oriel_proto::VirtualMode) {
+/// A session's claim on the extra display's mode (see `claim_virtual`).
+/// Windows keeps one virtual monitor for all sessions: the newest claim
+/// sets its mode, and dropping a claim gives it back to the one before.
+/// Elsewhere a virtual monitor belongs to one capture session, which opens
+/// it in its target's mode, so there are no claims.
+pub struct VirtualClaim {
     #[cfg(windows)]
-    sudovda::set_mode(mode);
-    // Elsewhere a virtual monitor belongs to one capture session: the
-    // target change alone reopens it in the new mode.
-    #[cfg(not(windows))]
-    let _ = mode;
+    inner: sudovda::Claim,
+}
+
+impl VirtualClaim {
+    /// Ask for another mode; this claim becomes the newest.
+    pub fn set(&mut self, mode: oriel_proto::VirtualMode) {
+        #[cfg(windows)]
+        self.inner.set(mode);
+        #[cfg(not(windows))]
+        let _ = mode;
+    }
+}
+
+/// Claim the extra display's mode for a session. Without `resize`, a
+/// session that finds the extra display in use streams it as it is
+/// (`None`); with it, the display takes `mode` until the claim is dropped or
+/// a newer one replaces it.
+pub fn claim_virtual(
+    source: SourceKind,
+    mode: oriel_proto::VirtualMode,
+    resize: bool,
+) -> Option<VirtualClaim> {
+    #[cfg(windows)]
+    if source == SourceKind::Auto {
+        return sudovda::claim(mode, resize).map(|inner| VirtualClaim { inner });
+    }
+    let _ = (source, mode, resize);
+    None
+}
+
+/// Whether reopening `to` can keep what capturing `from` kept alive. On
+/// Windows the virtual monitor is resized in place rather than recreated.
+pub fn same_target(from: Target, to: Target) -> bool {
+    #[cfg(windows)]
+    if matches!((from, to), (Target::Virtual(_), Target::Virtual(_))) {
+        return true;
+    }
+    from == to
 }
 
 /// State shared between the test pattern source and its input sink.

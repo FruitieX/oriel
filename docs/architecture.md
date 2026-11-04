@@ -86,11 +86,14 @@ monitor with a fixed GUID (so Windows remembers its placement) and return
 its adapter LUID and target id, which DisplayConfig maps to the
 `\\.\DISPLAYn` that Desktop Duplication captures. The host keeps one such
 monitor, so sessions that ask for the extra display share it: a second
-client gets it in the mode the first created, and a resolution change
-resizes it for all of them. The driver drops all its monitors when not
-pinged within its watchdog timeout, so a thread pings it while any exist.
-The pipeline keeps the monitor across capture restarts (desktop switches)
-and releases it before switching targets.
+client gets it in the mode the first created it in. Sessions that create
+or resize it claim a mode (`sudovda::Claim`); the newest claim is in
+force, and when its session ends or leaves the display, the display goes
+back to the mode of the claim before. Capture reopens at the new size.
+The driver drops all its monitors when not pinged within its watchdog
+timeout, so a thread pings it while any exist. The pipeline keeps the
+monitor across capture restarts (desktop switches) and resizes, and
+releases it before switching to a physical display.
 
 Testing without a desktop: run PipeWire, WirePlumber (plus a null sink for
 audio) and `gnome-shell --headless --wayland --virtual-monitor 1920x1080`
