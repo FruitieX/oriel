@@ -315,12 +315,12 @@
           };
 
           # Prebuilt LGPL FFmpeg for the Windows host (NVENC, AMF and QSV/VPL
-          # encoders, D3D11VA). BtbN prunes dated autobuilds after a while; a
-          # copy is attached to the FruitieX/oriel release `deps-ffmpeg-8.1.3`
-          # (`gh release download`, then `nix store add-file`) if this URL dies.
+          # encoders, D3D11VA). BtbN prunes dated autobuilds after about two
+          # weeks; when this URL dies, CI fails to fetch it: move to a current
+          # autobuild of the same FFmpeg release.
           ffmpeg-win64 = pkgs.fetchzip {
-            url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-10-21-13-06/ffmpeg-n8.1.3-20-gc8de997cb1-win64-lgpl-shared-8.1.zip";
-            hash = "sha256-Y0aC2ExTMwoIILKwvAFPNuhRvw7Mf5n8iBCvKDjBZsc=";
+            url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-11-06-12-50/ffmpeg-n8.1.3-34-ga35157abb9-win64-lgpl-shared-8.1.zip";
+            hash = "sha256-cLd4cZdWcaqw2LdmlO3vfnRdv/fLPBsCRxAbLyB4Ia0=";
           };
 
           androidShell =
