@@ -166,6 +166,22 @@ impl Panel {
                 |h| &mut h.mouse,
                 &MOUSE_MODES,
             );
+            rows.row(
+                ui,
+                "Scroll speed",
+                "How far the host scrolls with the mouse wheel or touchpad. 1× is normal speed.",
+                |c| c.scroll_speed,
+                |c, v| c.scroll_speed = v,
+                |h| &mut h.scroll_speed,
+                |ui, v, _| {
+                    ui.add(
+                        egui::Slider::new(v, 0.1..=10.0)
+                            .logarithmic(true)
+                            .step_by(0.1)
+                            .suffix("×"),
+                    );
+                },
+            );
             rows.toggle(
                 ui,
                 "Gamepads",

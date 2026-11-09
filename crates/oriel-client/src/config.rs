@@ -45,6 +45,8 @@ pub struct ClientConfig {
     pub capture: String,
     /// "auto", "desktop" or "captured".
     pub mouse: String,
+    /// Multiplier for horizontal and vertical scroll input.
+    pub scroll_speed: f32,
     pub audio: bool,
     /// Opus bitrate of the host's sound, in kbit/s.
     pub audio_kbps: u32,
@@ -106,6 +108,7 @@ pub struct HostPrefs {
     pub capture: Option<String>,
     pub max_fps: Option<u32>,
     pub mouse: Option<String>,
+    pub scroll_speed: Option<f32>,
     pub gamepads: Option<bool>,
     pub audio: Option<bool>,
     pub audio_kbps: Option<u32>,
@@ -146,6 +149,8 @@ pub struct Effective {
     pub capture: String,
     pub max_fps: u32,
     pub mouse: String,
+    /// Multiplier for horizontal and vertical scroll input.
+    pub scroll_speed: f32,
     pub gamepads: bool,
     pub audio: bool,
     pub audio_kbps: u32,
@@ -355,6 +360,7 @@ impl Default for ClientConfig {
             encoding: "hardware".into(),
             capture: "duplication".into(),
             mouse: "auto".into(),
+            scroll_speed: 1.0,
             audio: true,
             // Transparent for music; Opus allows 6–510.
             audio_kbps: 128,
@@ -403,6 +409,14 @@ impl ClientConfig {
             capture: h.capture.clone().unwrap_or_else(|| self.capture.clone()),
             max_fps: h.max_fps.unwrap_or(self.max_fps),
             mouse: h.mouse.clone().unwrap_or_else(|| self.mouse.clone()),
+            scroll_speed: {
+                let speed = h.scroll_speed.unwrap_or(self.scroll_speed);
+                if speed.is_finite() {
+                    speed.clamp(0.1, 10.0)
+                } else {
+                    1.0
+                }
+            },
             gamepads: h.gamepads.unwrap_or(self.gamepads),
             audio: h.audio.unwrap_or(self.audio),
             audio_kbps: h.audio_kbps.unwrap_or(self.audio_kbps),
@@ -569,6 +583,22 @@ mod tests {
         );
         let c: ClientConfig = toml::from_str(&toml::to_string(&c).unwrap()).unwrap();
         assert_eq!(c.effective(Some("pc")).max_fps, 144);
+    }
+
+    #[test]
+    fn scroll_speed_defaults_and_overrides() {
+        let mut c: ClientConfig = toml::from_str("").unwrap();
+        assert_eq!(c.effective(Some("pc")).scroll_speed, 1.0);
+        c.scroll_speed = 0.5;
+        c.host_mut("pc").scroll_speed = Some(2.5);
+        let c: ClientConfig = toml::from_str(&toml::to_string(&c).unwrap()).unwrap();
+        assert_eq!(c.effective(Some("pc")).scroll_speed, 2.5);
+        assert_eq!(c.effective(Some("other")).scroll_speed, 0.5);
+        let mut c = c;
+        for (stored, expected) in [(0.0, 0.1), (100.0, 10.0), (f32::NAN, 1.0)] {
+            c.host_mut("pc").scroll_speed = Some(stored);
+            assert_eq!(c.effective(Some("pc")).scroll_speed, expected);
+        }
     }
 
     #[test]

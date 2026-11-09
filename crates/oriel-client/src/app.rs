@@ -1058,18 +1058,21 @@ impl Viewer {
         if !self.forwarding() || (!self.relative() && self.over_ui()) {
             return;
         }
-        let (dx, dy) = match delta {
-            MouseScrollDelta::LineDelta(x, y) => ((x * 120.0) as i32, (y * 120.0) as i32),
-            MouseScrollDelta::PixelDelta(p) => {
-                // Roughly 50 px per wheel notch.
-                self.wheel_px.0 += p.x * 120.0 / 50.0;
-                self.wheel_px.1 += p.y * 120.0 / 50.0;
-                let (x, y) = (self.wheel_px.0.trunc(), self.wheel_px.1.trunc());
-                self.wheel_px.0 -= x;
-                self.wheel_px.1 -= y;
-                (x as i32, y as i32)
-            }
+        let speed = f64::from(self.in_force.scroll_speed);
+        let (x, y) = match delta {
+            MouseScrollDelta::LineDelta(x, y) => (f64::from(x) * 120.0, f64::from(y) * 120.0),
+            // Roughly 50 px per wheel notch.
+            MouseScrollDelta::PixelDelta(p) => (p.x * 120.0 / 50.0, p.y * 120.0 / 50.0),
         };
+        // Preserve fractional wheel units, including slow line-based scrolling.
+        self.wheel_px.0 += x * speed;
+        self.wheel_px.1 += y * speed;
+        let (dx, dy) = (
+            self.wheel_px.0.trunc() as i32,
+            self.wheel_px.1.trunc() as i32,
+        );
+        self.wheel_px.0 -= f64::from(dx);
+        self.wheel_px.1 -= f64::from(dy);
         if dx != 0 || dy != 0 {
             self.session.input(InputEvent::MouseWheel { dx, dy });
         }
