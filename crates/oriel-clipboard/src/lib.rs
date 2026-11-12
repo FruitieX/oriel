@@ -6,7 +6,7 @@
 use std::{
     hash::{Hash, Hasher},
     sync::{
-        Arc,
+        Arc, Mutex, MutexGuard,
         atomic::{AtomicBool, Ordering},
         mpsc,
     },
@@ -23,6 +23,18 @@ pub enum Content {
     Text(String),
     /// A PNG image.
     Image(Vec<u8>),
+}
+
+/// Held around every system clipboard access in the process. The
+/// clipboard is not safe to use from two threads at once: on macOS,
+/// `NSPasteboard` corrupts its type cache and a later read crashes. This
+/// thread and the window system's clipboard (egui-winit's, on the main
+/// thread) both take it.
+static LOCK: Mutex<()> = Mutex::new(());
+
+/// Take the process-wide clipboard lock; hold it only for the access itself.
+pub fn lock() -> MutexGuard<'static, ()> {
+    LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 pub struct Options {
@@ -55,7 +67,11 @@ fn run(_options: Options, set_rx: mpsc::Receiver<Content>, _on_change: impl Fn(C
 
 #[cfg(not(target_os = "android"))]
 fn run(options: Options, set_rx: mpsc::Receiver<Content>, on_change: impl Fn(Content)) {
-    let mut clipboard = match arboard::Clipboard::new() {
+    let created = {
+        let _lock = lock();
+        arboard::Clipboard::new()
+    };
+    let mut clipboard = match created {
         Ok(c) => c,
         Err(e) => {
             tracing::warn!("clipboard unavailable: {e}");
@@ -63,19 +79,28 @@ fn run(options: Options, set_rx: mpsc::Receiver<Content>, on_change: impl Fn(Con
         }
     };
     let mut last_text = if options.text {
+        let _lock = lock();
         clipboard.get_text().ok()
     } else {
         None
     };
     // What is on the clipboard now, so neither startup contents nor what
     // the peer just sent is sent back.
-    let mut last_image = clipboard.get_image().ok().map(|i| image_hash(&i));
+    let mut last_image = {
+        let _lock = lock();
+        clipboard.get_image().ok()
+    }
+    .map(|i| image_hash(&i));
     let mut last_image_poll = Instant::now();
     let mut last_seq = sequence_number();
     loop {
         match set_rx.recv_timeout(Duration::from_millis(300)) {
             Ok(Content::Text(text)) => {
-                if clipboard.set_text(text.clone()).is_ok() {
+                let set = {
+                    let _lock = lock();
+                    clipboard.set_text(text.clone())
+                };
+                if set.is_ok() {
                     last_text = Some(text);
                 }
                 last_seq = sequence_number();
@@ -85,7 +110,11 @@ fn run(options: Options, set_rx: mpsc::Receiver<Content>, on_change: impl Fn(Con
                 match decode_png(&png) {
                     Some(image) => {
                         last_image = Some(image_hash(&image));
-                        if let Err(e) = clipboard.set_image(image) {
+                        let set = {
+                            let _lock = lock();
+                            clipboard.set_image(image)
+                        };
+                        if let Err(e) = set {
                             tracing::debug!("cannot set clipboard image: {e}");
                         }
                     }
@@ -112,7 +141,10 @@ fn run(options: Options, set_rx: mpsc::Receiver<Content>, on_change: impl Fn(Con
         last_seq = seq;
 
         if options.text {
-            let text = clipboard.get_text().ok();
+            let text = {
+                let _lock = lock();
+                clipboard.get_text().ok()
+            };
             if text.is_some() && text != last_text {
                 last_text = text.clone();
                 if let Some(text) = text.filter(|t| t.len() <= MAX_TEXT) {
@@ -126,7 +158,11 @@ fn run(options: Options, set_rx: mpsc::Receiver<Content>, on_change: impl Fn(Con
             continue;
         }
         last_image_poll = Instant::now();
-        if let Ok(image) = clipboard.get_image() {
+        let image = {
+            let _lock = lock();
+            clipboard.get_image()
+        };
+        if let Ok(image) = image {
             let hash = image_hash(&image);
             if last_image != Some(hash) {
                 last_image = Some(hash);

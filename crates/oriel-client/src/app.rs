@@ -775,6 +775,7 @@ impl Viewer {
                 crate::android::set_clipboard_text(&text);
                 #[cfg(not(target_os = "android"))]
                 if let Some(gfx) = &mut self.gfx {
+                    let _lock = oriel_clipboard::lock();
                     gfx.clipboard.set_text(text.clone());
                 }
                 self.clipboard_last = Some(text);
@@ -1440,7 +1441,10 @@ impl Viewer {
             crate::android::clipboard_text()
         };
         #[cfg(not(target_os = "android"))]
-        let text = gfx.clipboard.get();
+        let text = {
+            let _lock = oriel_clipboard::lock();
+            gfx.clipboard.get()
+        };
         let Some(text) = text else {
             return;
         };
@@ -2264,7 +2268,12 @@ impl ApplicationHandler<UiEvent> for Viewer {
         if id != gfx.window.id() {
             return;
         }
-        let response = gfx.egui.on_window_event(&gfx.window, &event);
+        // Pasting reads the clipboard.
+        let response = {
+            #[cfg(not(target_os = "android"))]
+            let _lock = oriel_clipboard::lock();
+            gfx.egui.on_window_event(&gfx.window, &event)
+        };
         // egui-winit asks for a repaint on nearly every event (including
         // redraws themselves). Video frames drive redraws; the overlay only
         // needs extra ones while the menu is open or the pointer is on it.

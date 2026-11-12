@@ -1298,9 +1298,12 @@ impl ApplicationHandler<UiEvent> for Launcher {
         }
         // egui-winit asks for a repaint on every event, including redraws
         // themselves; following that blindly redraws in a busy loop.
-        if !matches!(event, WindowEvent::RedrawRequested)
-            && egui.on_window_event(window, &event).repaint
-        {
+        if !matches!(event, WindowEvent::RedrawRequested) && {
+            // Pasting reads the clipboard.
+            #[cfg(not(target_os = "android"))]
+            let _lock = oriel_clipboard::lock();
+            egui.on_window_event(window, &event).repaint
+        } {
             window.request_redraw();
         }
         match event {
@@ -1349,7 +1352,12 @@ impl ApplicationHandler<UiEvent> for Launcher {
                 let Some((window, renderer, egui)) = &mut self.gfx else {
                     return;
                 };
-                egui.handle_platform_output(window, output.platform_output.clone());
+                {
+                    // Copying writes the clipboard.
+                    #[cfg(not(target_os = "android"))]
+                    let _lock = oriel_clipboard::lock();
+                    egui.handle_platform_output(window, output.platform_output.clone());
+                }
                 if let Err(e) = renderer.render(None, &ctx, output) {
                     tracing::error!("render failed: {e:#}");
                 }
