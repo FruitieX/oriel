@@ -66,8 +66,13 @@ app in more detail.
 
 ## Windows installer and service
 
-On Windows, install with `oriel-VERSION-windows-x64-setup.exe` (from
-`scripts/package-windows.sh`, see below). It installs for every user in
+On Windows, install with the setup program: every push to `main` that
+touches the app publishes one as a GitHub prerelease
+(`oriel-windows-x64-setup-main-<build>-<sha>.exe`, see
+[release.yml](../.github/workflows/release.yml)), and
+`scripts/package-windows.sh` builds it locally. It is not code-signed, so
+SmartScreen asks to confirm (More info → Run anyway). Running a newer one
+updates an existing install. It installs for every user in
 Program Files and, by default, the hosting service (shares this computer
 from startup, including the sign-in, lock and UAC screens, with a firewall
 rule for UDP 48600 on private networks, and for the local subnet on

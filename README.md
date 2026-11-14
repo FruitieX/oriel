@@ -84,8 +84,9 @@ oriel connect <host-name>    # or just run `oriel` for the start window
 manage pairings, and `oriel info` shows this device's identity, encoders,
 displays and config directory.
 
-On Windows, `scripts/package-windows.sh` builds an installer that sets up the
-hosting service and the tray app; see [docs/usage.md](docs/usage.md#windows-installer-and-service).
+On Windows, the installer from the
+[latest prerelease](https://github.com/FruitieX/oriel/releases) (or
+`scripts/package-windows.sh`) sets up the hosting service and the tray app; see [docs/usage.md](docs/usage.md#windows-installer-and-service).
 
 ## Configuration
 
@@ -140,9 +141,12 @@ nix develop .#android
 
 ### Installing and updating the Android app
 
-Every push to `main` that touches the app publishes a release-signed APK as a
-GitHub prerelease (`oriel-android-main-<versionCode>-<sha>.apk`, see
-[android-release.yml](.github/workflows/android-release.yml)). To get updates
+Every push to `main` that touches the apps publishes a GitHub prerelease with a
+release-signed APK (`oriel-android-main-<versionCode>-<sha>.apk`) and the
+Windows installer and portable ZIP (see
+[release.yml](.github/workflows/release.yml)). Every release has an APK,
+because Obtainium only looks at the newest one: when the Android build fails,
+the previous APK is carried over. To get updates
 without a cable, install [Obtainium](https://obtainium.imranr.dev/) and add
 `https://github.com/FruitieX/oriel` (or open
 `obtainium://add/https://github.com/FruitieX/oriel` on the phone) with

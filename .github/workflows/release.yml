@@ -1,0 +1,192 @@
+name: Release
+# A GitHub prerelease on every push to main that touches what the apps are
+# built from: the release-signed Android APK (for Obtainium on the family's
+# phones) and the Windows installer and portable ZIP.
+#
+# Both go into the same release: Obtainium only looks at the newest release
+# and gives up if it has no APK, so a Windows-only release would stop the
+# phones' updates. The builds are separate jobs and either one failing does
+# not stop the other's files from being published (see publish).
+#
+# android.yml and windows.yml only check pull requests; this one signs the
+# APK with the release key from repository secrets.
+#
+# Secrets: ORIEL_ANDROID_KEYSTORE_BASE64, ORIEL_ANDROID_KEYSTORE_PASS (the
+# oriel release key, see scripts/android-release.sh) and
+# ORIEL_GOOGLE_SERVICES_JSON (Firebase config, for push wake-ups).
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - android/**
+      - crates/**
+      - "!crates/oriel-hub/**"
+      - assets/**
+      - Cargo.toml
+      - Cargo.lock
+      - flake.nix
+      - flake.lock
+      - nix/**
+      - packaging/**
+      - scripts/build-android.sh
+      - scripts/build-windows.sh
+      - scripts/package-windows.sh
+      - scripts/run-host-dev.bat
+      - scripts/rust-notices.sh
+      - scripts/third-party-notices.sh
+      - about.toml
+      - LICENSE-*
+      - .github/workflows/release.yml
+permissions:
+  contents: read
+concurrency:
+  group: release
+  cancel-in-progress: false
+env:
+  # SHA-256 of the oriel release certificate, as registered with the
+  # Android Developer Console. Public; the build fails if the APK is signed
+  # with anything else (Gradle falls back to the debug key without a keystore).
+  RELEASE_CERT_SHA256: d9f37349e44436ea2bd3e123a8ebbf6f5f4b190e03667d2bab48664b7c682565
+  KEEP_RELEASES: 5
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # versionCode is the commit count (scripts/build-android.sh).
+          fetch-depth: 0
+      - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31.11.3
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - name: Write signing key and Firebase config
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ORIEL_ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASS: ${{ secrets.ORIEL_ANDROID_KEYSTORE_PASS }}
+          GOOGLE_SERVICES_JSON: ${{ secrets.ORIEL_GOOGLE_SERVICES_JSON }}
+        run: |
+          for name in KEYSTORE_BASE64 KEYSTORE_PASS GOOGLE_SERVICES_JSON; do
+            if [[ -z "${!name}" ]]; then
+              echo "secret for $name is not set; refusing to build a release without it" >&2
+              exit 1
+            fi
+          done
+          umask 077
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/release.jks"
+          printf '%s' "$GOOGLE_SERVICES_JSON" > "$RUNNER_TEMP/google-services.json"
+          {
+            echo "ORIEL_ANDROID_KEYSTORE=$RUNNER_TEMP/release.jks"
+            echo "ORIEL_ANDROID_KEYSTORE_ALIAS=oriel"
+            echo "ORIEL_GOOGLE_SERVICES_JSON=$RUNNER_TEMP/google-services.json"
+          } >> "$GITHUB_ENV"
+          echo "::add-mask::$KEYSTORE_PASS"
+          echo "ORIEL_ANDROID_KEYSTORE_PASS=$KEYSTORE_PASS" >> "$GITHUB_ENV"
+      # The phones are arm64; the x86_64 build is for emulators.
+      - name: Build release APK
+        run: nix develop .#android-ci --command scripts/build-android.sh --release --abi arm64-v8a
+      - name: Verify the signing certificate
+        run: |
+          nix develop .#android-ci --command bash -euo pipefail -c '
+            apk=$(ls dist/oriel-*-android.apk)
+            apksigner=$(find "$ANDROID_HOME/build-tools" -name apksigner | sort -V | tail -n 1)
+            "$apksigner" verify --print-certs "$apk" | tee "$RUNNER_TEMP/certs.txt"
+            grep -qi "certificate SHA-256 digest: $RELEASE_CERT_SHA256" "$RUNNER_TEMP/certs.txt" \
+              || { echo "APK is not signed with the registered release certificate" >&2; exit 1; }
+          '
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: android
+          path: dist/oriel-*-android.apk
+          if-no-files-found: error
+          retention-days: 3
+
+  windows:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31.11.3
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - name: Build installer and portable ZIP
+        run: nix develop --command scripts/package-windows.sh
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows
+          path: |
+            dist/oriel-*-windows-x64-setup.exe
+            dist/oriel-*-windows-x64-portable.zip
+          if-no-files-found: error
+          retention-days: 3
+
+  # Runs when either build succeeds, so a broken one does not hold up the
+  # other. A release always needs an APK (see the top): when the Android
+  # build failed, the newest release's APK is carried over. When the
+  # Windows build failed, the release has no Windows files.
+  publish:
+    needs: [android, windows]
+    if: always() && (needs.android.result == 'success' || needs.windows.result == 'success')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      ANDROID_OK: ${{ needs.android.result == 'success' }}
+      WINDOWS_OK: ${{ needs.windows.result == 'success' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Publish prerelease
+        run: |
+          version_code=$(git rev-list --count HEAD)
+          short_sha=$(git rev-parse --short=7 HEAD)
+          build="main-${version_code}-${short_sha}"
+          tag="$build"
+          releases() {
+            gh release list --limit 100 --json tagName,isPrerelease \
+              --jq '.[] | select(.isPrerelease and (.tagName | test("^(android-)?main-"))) | .tagName'
+          }
+          mkdir release
+          notes="Automated Oriel build from main (${GITHUB_SHA})."$'\n'
+          # Obtainium's APK filter on the phones is oriel-android-main-.*\.apk.
+          if [[ $ANDROID_OK == true ]]; then
+            cp artifacts/oriel-*-android.apk "release/oriel-android-${build}.apk"
+            notes+=$'\n'"- Android: \`oriel-android-${build}.apk\` (arm64, versionCode ${version_code}), signed with the Oriel release key. A device that has a debug-signed build from USB deployment must uninstall it once before installing this APK."
+          else
+            previous=$(releases | grep -vxF "$tag" | head -n 1)
+            [[ -n $previous ]] || { echo "Android build failed and no earlier release has an APK" >&2; exit 1; }
+            gh release download "$previous" --pattern 'oriel-android-main-*.apk' --dir release
+            apk=$(cd release && ls oriel-android-main-*.apk)
+            notes+=$'\n'"- Android: the build failed for this commit; \`${apk}\` is carried over from ${previous}."
+          fi
+          if [[ $WINDOWS_OK == true ]]; then
+            cp artifacts/oriel-*-windows-x64-setup.exe "release/oriel-windows-x64-setup-${build}.exe"
+            cp artifacts/oriel-*-windows-x64-portable.zip "release/oriel-windows-x64-portable-${build}.zip"
+            notes+=$'\n'"- Windows: \`oriel-windows-x64-setup-${build}.exe\` installs the hosting service and the tray app (and updates an existing install); \`oriel-windows-x64-portable-${build}.zip\` runs without installing. Not code-signed: SmartScreen asks to confirm (More info → Run anyway)."
+          else
+            notes+=$'\n'"- Windows: the build failed for this commit; use an earlier release."
+          fi
+          (cd release && sha256sum -- * > SHA256SUMS.txt)
+          cat release/SHA256SUMS.txt
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release delete "$tag" --yes --cleanup-tag
+          fi
+          gh release create "$tag" release/* \
+            --target "$GITHUB_SHA" \
+            --prerelease \
+            --title "Oriel build ${version_code}" \
+            --notes "$notes"
+          # Keep only the latest prereleases (android-main-* are from before
+          # Windows builds joined them).
+          releases | tail -n +$((KEEP_RELEASES + 1)) \
+            | while read -r old; do gh release delete "$old" --yes --cleanup-tag || true; done
