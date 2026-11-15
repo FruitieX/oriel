@@ -3,7 +3,7 @@ agp = "9.5.1"
 kotlin = "2.4.21"
 
 [libraries]
-firebase-messaging = { module = "com.google.firebase:firebase-messaging", version = "26.0.1" }
+firebase-messaging = { module = "com.google.firebase:firebase-messaging", version = "26.0.2" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
