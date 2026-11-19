@@ -41,7 +41,7 @@ wgpu = "=30.0.2"
 egui = { version = "=0.37.0", features = ["default_fonts"] }
 egui-wgpu = "=0.37.0"
 egui-winit = "=0.37.0"
-pollster = "=1.0.2"
+pollster = "=1.0.3"
 crossbeam-channel = "=0.5.17"
 parking_lot = "=0.13.0"
 arboard = { version = "=3.7.0", default-features = false }
