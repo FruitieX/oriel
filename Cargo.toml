@@ -27,7 +27,7 @@ tokio = { version = "=1.54.1", features = ["rt-multi-thread", "macros", "sync", 
 quinn = { version = "=0.11.12", default-features = false, features = ["runtime-tokio", "rustls-ring", "log"] }
 rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std", "logging", "tls12"] }
 rcgen = "=0.14.10"
-sha2 = "=0.11.1"
+sha2 = "=0.11.2"
 spake2 = "=0.4.0"
 hmac = "=0.13.0"
 rand = "=0.10.4"
